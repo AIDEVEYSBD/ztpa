@@ -1,0 +1,92 @@
+{
+  "vendor": "Wiz",
+  "export_type": "cloud_exposure",
+  "assets": {
+    "lb-public-01": {
+      "cloud": "aws",
+      "type": "load_balancer",
+      "internet_facing": true,
+      "ip": "52.20.10.10",
+      "tags": [
+        "dmz",
+        "internet-facing",
+        "prod",
+        "cloud"
+      ]
+    },
+    "lb-public-02": {
+      "cloud": "aws",
+      "type": "load_balancer",
+      "internet_facing": true,
+      "ip": "52.20.10.11",
+      "tags": [
+        "dmz",
+        "internet-facing",
+        "prod",
+        "cloud"
+      ]
+    },
+    "appsrv-07": {
+      "cloud": "aws",
+      "type": "ec2",
+      "internet_facing": false,
+      "ip": "10.30.7.7",
+      "tags": [
+        "prod"
+      ]
+    },
+    "app-server-08": {
+      "cloud": "aws",
+      "type": "ec2",
+      "internet_facing": false,
+      "ip": "10.30.7.8",
+      "tags": [
+        "prod"
+      ]
+    },
+    "rds-prod-customers": {
+      "cloud": "aws",
+      "type": "rds",
+      "internet_facing": false,
+      "ip": "10.50.0.20",
+      "tags": [
+        "pci",
+        "customer-data",
+        "prod",
+        "cloud"
+      ]
+    }
+  },
+  "exposures": [
+    {
+      "exposure_id": "WIZ-001",
+      "kind": "internet_ingress",
+      "dst": "lb-public-01",
+      "port": 443,
+      "protocol": "tcp"
+    },
+    {
+      "exposure_id": "WIZ-002",
+      "kind": "lateral",
+      "src": "lb-public-01",
+      "dst": "appsrv-07",
+      "port": 8443,
+      "protocol": "tcp"
+    },
+    {
+      "exposure_id": "WIZ-010",
+      "kind": "internet_ingress",
+      "dst": "lb-public-02",
+      "port": 443,
+      "protocol": "tcp"
+    },
+    {
+      "exposure_id": "WIZ-011",
+      "kind": "lateral",
+      "src": "lb-public-02",
+      "dst": "app-server-08",
+      "port": 443,
+      "protocol": "tcp"
+    }
+  ]
+}

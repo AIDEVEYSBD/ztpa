@@ -1,0 +1,156 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ===== Design tokens (from the ZeroTrust Policy Advisor Claude design) ===== */
+:root, [data-theme="light"] {
+  --bg:#F1F1F5; --surface:#FFFFFF; --surface-2:#FAFAFC; --surface-hover:#F1F1F5; --surface-sunk:#F6F6FA;
+  --border:#E4E4EA; --border-strong:#CFCFD8; --hair:#ECECF1;
+  --text:#1A1A24; --text-2:#5A5A63; --text-3:#8C8C96;
+  --accent:#FFE600; --accent-press:#E6CF00; --accent-ink:#1A1A24; --accent-soft:#FBF6CC;
+  --sev-critical:#CC2A1E; --sev-critical-bg:#FBE9E7; --sev-critical-line:#F2C4BE;
+  --sev-high:#D9620A; --sev-high-bg:#FCEFE2; --sev-high-line:#F2D4B6;
+  --sev-medium:#A06A00; --sev-medium-bg:#F8F1DC; --sev-medium-line:#EAD8A6;
+  --sev-low:#5A5A63; --sev-low-bg:#ECECF0; --sev-low-line:#D8D8DE;
+  --ok:#157F35; --ok-bg:#E6F2E9; --ok-line:#BFE0C8;
+}
+[data-theme="dark"] {
+  --bg:#0F0F14; --surface:#17171F; --surface-2:#1C1C26; --surface-hover:#23232E; --surface-sunk:#121218;
+  --border:#2A2A34; --border-strong:#3A3A46; --hair:#23232E;
+  --text:#ECECF1; --text-2:#9A9AA6; --text-3:#6A6A76;
+  --accent:#FFE600; --accent-press:#FFEF4D; --accent-ink:#1A1A24; --accent-soft:#2A2810;
+  --sev-critical:#FF6257; --sev-critical-bg:#2A1512; --sev-critical-line:#52221C;
+  --sev-high:#FF9A4D; --sev-high-bg:#271C10; --sev-high-line:#4D3415;
+  --sev-medium:#E8B43A; --sev-medium-bg:#23200F; --sev-medium-line:#473C18;
+  --sev-low:#9A9AA6; --sev-low-bg:#20202A; --sev-low-line:#34343F;
+  --ok:#46C46E; --ok-bg:#11241A; --ok-line:#1E4030;
+}
+
+* { box-sizing: border-box; border-color: var(--border); }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: Arial, "Helvetica Neue", Helvetica, "Liberation Sans", sans-serif;
+  font-size: 14px;
+  line-height: 1.45;
+  letter-spacing: -0.006em;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.mono {
+  font-family: "SFMono-Regular", "SF Mono", Menlo, Consolas, "Liberation Mono", "Roboto Mono", monospace;
+  font-feature-settings: "tnum" 1;
+}
+::selection { background: var(--accent); color: #1A1A24; }
+
+/* scrollbars */
+.zt-scroll::-webkit-scrollbar, body::-webkit-scrollbar { width: 10px; height: 10px; }
+.zt-scroll::-webkit-scrollbar-thumb, body::-webkit-scrollbar-thumb { background: var(--border-strong); }
+.zt-scroll::-webkit-scrollbar-track { background: transparent; }
+
+@keyframes ztpulse { 0%,100%{opacity:1;} 50%{opacity:.35;} }
+@keyframes ztdash { to { stroke-dashoffset: -16; } }
+@keyframes ztshimmer { 0%{background-position:-400px 0;} 100%{background-position:400px 0;} }
+.zt-skel { background: linear-gradient(90deg, var(--surface-hover) 0px, var(--surface-2) 200px, var(--surface-hover) 400px); background-size: 800px 100%; animation: ztshimmer 1.3s linear infinite; }
+.zt-trace-line { animation: ztdash 0.6s linear infinite; }
+
+@layer components {
+  /* flat, sharp panels — the enterprise look, no rounded corners */
+  .panel { background: var(--surface); border: 1px solid var(--border); }
+  .sunk { background: var(--surface-sunk); border: 1px solid var(--border); }
+
+  /* each variant is self-contained so `btn-ghost`/`btn-primary` alone render fully */
+  .btn, .btn-primary, .btn-ghost {
+    display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+    height: 32px; padding: 0 13px; font-family: inherit; font-size: 12.5px; font-weight: 700;
+    letter-spacing: -0.006em; line-height: 1; white-space: nowrap; cursor: pointer;
+    border: 1px solid transparent;
+  }
+  .btn:disabled, .btn-primary:disabled, .btn-ghost:disabled { opacity: .5; cursor: default; }
+  .btn-primary { background: var(--accent); color: var(--accent-ink); }
+  .btn-primary:hover:not(:disabled) { background: var(--accent-press); }
+  .btn-ghost { background: var(--surface-2); border-color: var(--border); color: var(--text); }
+  .btn-ghost:hover:not(:disabled) { background: var(--surface-hover); }
+
+  .chip { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px;
+    background: var(--surface-sunk); border: 1px solid var(--border); font-size: 11px; color: var(--text-2); }
+
+  .navitem { width: 100%; display: flex; align-items: center; gap: 10px; padding: 8px; border: none;
+    background: transparent; color: var(--text-2); cursor: pointer; text-align: left; font-size: 13px;
+    font-family: inherit; letter-spacing: -0.006em; border-left: 2px solid transparent; }
+  .navitem:hover { background: var(--surface-hover); }
+  .navitem[data-active="true"] { background: var(--surface-hover); color: var(--text); border-left-color: var(--accent); font-weight: 700; }
+
+  .row:hover { background: var(--surface-hover); }
+  .field { width: 100%; height: 34px; padding: 0 11px; background: var(--surface-sunk); border: 1px solid var(--border);
+    color: var(--text); font-family: inherit; font-size: 13px; outline: none; }
+  .field:focus { border-color: var(--border-strong); }
+  .label { font-size: 11px; font-weight: 700; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.06em; }
+}
+
+/* React Flow controls + attribution, themed for dark/light.
+   !important because @xyflow/react/dist/style.css loads after this file. */
+.react-flow__attribution { display: none !important; }
+.react-flow__controls { box-shadow: none !important; border: 1px solid var(--border) !important; }
+.react-flow__controls-button {
+  background: var(--surface-2) !important;
+  border-bottom: 1px solid var(--border) !important;
+  width: 28px !important; height: 28px !important;
+}
+.react-flow__controls-button:hover { background: var(--surface-hover) !important; }
+.react-flow__controls-button svg,
+.react-flow__controls-button svg path { fill: var(--text) !important; }
+
+/* Skeleton loaders: a sheen sweeps across a sunk surface. Theme-aware via tokens. */
+@keyframes zt-shimmer { 100% { transform: translateX(100%); } }
+.skeleton { position: relative; overflow: hidden; background: var(--surface-sunk); border: 1px solid var(--border); }
+.skeleton::after {
+  content: ""; position: absolute; inset: 0; transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, var(--surface-hover) 55%, transparent);
+  animation: zt-shimmer 1.5s infinite;
+}
+@media (prefers-reduced-motion: reduce) { .skeleton::after { animation: none; } }
+
+/* Print: isolate the posture report (#report) and force a clean LIGHT palette so
+   the PDF is readable regardless of the on-screen theme, with real colours. */
+@page { margin: 14mm; }
+@media print {
+  html, body { height: auto !important; overflow: visible !important; background: #fff !important; }
+
+  /* Hide the app chrome + interactive bits. */
+  nav, header, .print\:hidden, .skeleton { display: none !important; }
+
+  /* Neutralise the flex/scroll shell so the report flows from the top and
+     PAGINATES across pages (position:absolute would clip it to page 1). */
+  #app-shell, #app-col, #app-main, #app-content {
+    display: block !important; height: auto !important; max-height: none !important;
+    overflow: visible !important; flex: none !important; margin: 0 !important; padding: 0 !important;
+  }
+
+  /* Isolate the report subtree; visibility (not position) keeps it in normal flow. */
+  body * { visibility: hidden !important; }
+  #report, #report * { visibility: visible !important; print-color-adjust: exact !important; -webkit-print-color-adjust: exact !important; }
+
+  /* Re-skin the report with the light tokens (independent of the on-screen theme). */
+  #report {
+    position: static !important; width: 100% !important; max-width: none !important;
+    margin: 0 !important; padding: 0 !important; box-shadow: none !important; border: none !important;
+    font-size: 11pt; line-height: 1.45; color: #15151C;
+    --bg:#FFFFFF; --surface:#FFFFFF; --surface-2:#FAFAFC; --surface-hover:#F1F1F5; --surface-sunk:#F7F7FA;
+    --border:#D7D7DE; --border-strong:#BFBFC8; --hair:#E4E4EA;
+    --text:#15151C; --text-2:#44444C; --text-3:#70707A;
+    --accent:#C9A800; --accent-ink:#15151C; --accent-soft:#FBF6CC;
+    --sev-critical:#C0241A; --sev-critical-bg:#FBE9E7; --sev-critical-line:#E7B6AF;
+    --sev-high:#C2560A; --sev-high-bg:#FCEFE2; --sev-high-line:#E7C39B;
+    --sev-medium:#8A5C00; --sev-medium-bg:#F8F1DC; --sev-medium-line:#DEC893;
+    --sev-low:#55555E; --sev-low-bg:#ECECF0; --sev-low-line:#CFCFD8;
+    --ok:#157F35; --ok-bg:#E6F2E9; --ok-line:#BFE0C8;
+  }
+  /* don't split a card/section across a page break */
+  #report .panel, #report .sunk { box-shadow: none !important; break-inside: avoid; background: #fff; }
+  #report > div { break-inside: avoid-page; }
+  #report [style*="background"] { print-color-adjust: exact !important; -webkit-print-color-adjust: exact !important; }
+  #report h1, #report h2, #report h3, #report .label { break-after: avoid; }
+}

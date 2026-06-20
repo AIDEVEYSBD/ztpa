@@ -1,0 +1,14 @@
+# ZeroTrust Policy Advisor — backend (deterministic engine + LLM advisory + API)
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.7
+networkx>=3.2
+python-dotenv>=1.0
+# Provider-pluggable AI: Ollama (local, default, via httpx) + optional hosted
+anthropic>=0.39
+openai>=1.40
+# Postgres (Neon) — system of record
+psycopg[binary]>=3.1
+# dev / test
+pytest>=8.0
+httpx>=0.27

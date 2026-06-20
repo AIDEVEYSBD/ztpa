@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Env / secrets
+.env
+.env.local
+
+# Node / Next
+node_modules/
+.next/
+out/
+dist/
+npm-debug.log*
+.DS_Store
+
+# Generated engine output is committed-by-default for demo reproducibility,
+# but ignore local scratch
+backend/data/scratch/

@@ -1,0 +1,101 @@
+{
+  "vendor": "Guardicore (Akamai)",
+  "export_type": "segmentation_policy",
+  "labels": {
+    "app-server-07": {
+      "role": "app",
+      "env": "prod",
+      "tags": [
+        "prod"
+      ]
+    },
+    "app-server-08": {
+      "role": "app",
+      "env": "prod",
+      "tags": [
+        "prod"
+      ]
+    },
+    "internal-app": {
+      "role": "segment",
+      "env": "prod",
+      "tags": [
+        "prod",
+        "internal-app"
+      ]
+    },
+    "web-tier": {
+      "role": "web",
+      "env": "prod",
+      "tags": [
+        "prod"
+      ]
+    },
+    "app-tier": {
+      "role": "app",
+      "env": "prod",
+      "tags": [
+        "prod"
+      ]
+    },
+    "monitoring": {
+      "role": "monitoring",
+      "env": "prod",
+      "tags": [
+        "prod"
+      ]
+    },
+    "ci-runner": {
+      "role": "ci",
+      "env": "dev",
+      "tags": [
+        "dev"
+      ]
+    },
+    "artifact-store": {
+      "role": "storage",
+      "env": "dev",
+      "tags": [
+        "dev"
+      ]
+    }
+  },
+  "policies": [
+    {
+      "policy_id": "GC-001",
+      "src_label": "app-server-07",
+      "dst_label": "internal-app",
+      "port": 8443,
+      "protocol": "tcp",
+      "action": "allow",
+      "ruleset": "app-east-west"
+    },
+    {
+      "policy_id": "GC-010",
+      "src_label": "web-tier",
+      "dst_label": "app-tier",
+      "port": 8443,
+      "protocol": "tcp",
+      "action": "allow",
+      "ruleset": "tiering"
+    },
+    {
+      "policy_id": "GC-011",
+      "src_label": "monitoring",
+      "dst_label": "app-server-07",
+      "port": 9100,
+      "protocol": "tcp",
+      "action": "allow",
+      "ruleset": "observability"
+    },
+    {
+      "policy_id": "GC-012",
+      "src_label": "ci-runner",
+      "dst_label": "artifact-store",
+      "port": 443,
+      "protocol": "tcp",
+      "action": "allow",
+      "ruleset": "ci"
+    }
+  ]
+}

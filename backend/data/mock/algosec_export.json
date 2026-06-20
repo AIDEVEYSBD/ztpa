@@ -1,0 +1,188 @@
+{
+  "vendor": "AlgoSec",
+  "export_type": "firewall_policy",
+  "device": "afa-edge-fw-01",
+  "generated": "static-demo",
+  "objects": {
+    "db-prod-01": {
+      "type": "host",
+      "value": "10.50.0.10",
+      "tags": [
+        "pci",
+        "customer-data",
+        "prod"
+      ]
+    },
+    "app-segment": {
+      "type": "network",
+      "value": "10.30.0.0/16",
+      "tags": [
+        "prod"
+      ]
+    },
+    "app-server-07": {
+      "type": "host",
+      "value": "10.30.7.7",
+      "tags": [
+        "prod"
+      ]
+    },
+    "app-server-08": {
+      "type": "host",
+      "value": "10.30.7.8",
+      "tags": [
+        "prod"
+      ]
+    },
+    "app-server-09": {
+      "type": "host",
+      "value": "10.30.7.9",
+      "tags": [
+        "prod"
+      ]
+    },
+    "internal-app": {
+      "type": "network",
+      "value": "10.40.0.0/16",
+      "tags": [
+        "prod",
+        "internal-app"
+      ]
+    },
+    "dev-box-01": {
+      "type": "host",
+      "value": "10.31.0.10",
+      "tags": [
+        "dev"
+      ]
+    }
+  },
+  "rules": [
+    {
+      "rule_id": "ALGO-001",
+      "order": 1,
+      "src": "0.0.0.0/0",
+      "dst": "10.0.0.0/8",
+      "service": "any",
+      "action": "allow",
+      "comment": "temporary broad allow (TODO remove)"
+    },
+    {
+      "rule_id": "ALGO-002",
+      "order": 2,
+      "src": "0.0.0.0/0",
+      "dst": "db-prod-01",
+      "service": "tcp/3389",
+      "action": "allow",
+      "comment": "vendor RDP access"
+    },
+    {
+      "rule_id": "ALGO-010",
+      "order": 10,
+      "src": "10.20.5.0/24",
+      "dst": "app-segment",
+      "service": "tcp/443",
+      "action": "allow",
+      "comment": "branch office to app"
+    },
+    {
+      "rule_id": "ALGO-011",
+      "order": 11,
+      "src": "10.0.0.0/8",
+      "dst": "app-segment",
+      "service": "tcp/443",
+      "action": "allow",
+      "comment": "corp to app"
+    },
+    {
+      "rule_id": "ALGO-020",
+      "order": 20,
+      "src": "10.0.0.0/8",
+      "dst": "app-server-07",
+      "service": "tcp/443",
+      "action": "allow",
+      "comment": "corp to app-07"
+    },
+    {
+      "rule_id": "ALGO-021",
+      "order": 21,
+      "src": "10.20.5.7/32",
+      "dst": "app-server-07",
+      "service": "tcp/443",
+      "action": "deny",
+      "comment": "block compromised host (never fires)"
+    },
+    {
+      "rule_id": "ALGO-030",
+      "order": 30,
+      "src": "internal-app",
+      "dst": "db-prod-01",
+      "service": "tcp/5432",
+      "action": "allow",
+      "comment": "app tier to prod db"
+    },
+    {
+      "rule_id": "ALGO-046",
+      "order": 46,
+      "src": "172.16.0.0/12",
+      "dst": "app-server-08",
+      "service": "tcp/3389",
+      "action": "allow",
+      "comment": "ops RDP"
+    },
+    {
+      "rule_id": "ALGO-050",
+      "order": 50,
+      "src": "10.0.0.0/8",
+      "dst": "app-server-09",
+      "service": "tcp/22",
+      "action": "allow",
+      "comment": "corp SSH to app-09"
+    },
+    {
+      "rule_id": "ALGO-060",
+      "order": 60,
+      "src": "10.30.5.0/24",
+      "dst": "app-server-08",
+      "service": "tcp/443",
+      "action": "allow",
+      "comment": "branch to app-08"
+    },
+    {
+      "rule_id": "ALGO-061",
+      "order": 61,
+      "src": "10.30.0.0/16",
+      "dst": "app-server-08",
+      "service": "tcp/443",
+      "action": "allow",
+      "comment": "app segment to app-08 (redundant)"
+    },
+    {
+      "rule_id": "ALGO-070",
+      "order": 70,
+      "src": "10.30.0.0/24",
+      "dst": "app-server-09",
+      "service": "tcp/443",
+      "action": "allow",
+      "comment": "web to app-09"
+    },
+    {
+      "rule_id": "ALGO-071",
+      "order": 71,
+      "src": "10.31.0.0/24",
+      "dst": "dev-box-01",
+      "service": "tcp/22",
+      "action": "allow",
+      "comment": "dev ssh"
+    },
+    {
+      "rule_id": "ALGO-072",
+      "order": 72,
+      "src": "10.10.0.0/24",
+      "dst": "app-server-08",
+      "service": "tcp/9100",
+      "action": "allow",
+      "comment": "monitoring scrape"
+    }
+  ]
+}
