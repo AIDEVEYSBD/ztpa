@@ -22,8 +22,10 @@ DATABASE_URL: str = os.environ.get("DATABASE_URL", "")
 DB_SCHEMA: str = "ztpa"
 
 # --- AI provider routing ---------------------------------------------------
-# auto -> prefer a hosted key for judgment if present, else Ollama; everything
-# else stays local. Force a single provider with ADVISORY_PROVIDER=ollama|anthropic|openai.
+# auto -> leverage a LOCAL model when Ollama is actually running and serving a
+# model (sensitive topology never leaves the box, zero per-call cost); otherwise
+# fall back to a hosted key — OpenAI first, then Anthropic. Force a single
+# provider with ADVISORY_PROVIDER=ollama|anthropic|openai.
 ADVISORY_PROVIDER: str = os.environ.get("ADVISORY_PROVIDER", "auto").strip().lower()
 
 OLLAMA_HOST: str = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
@@ -51,13 +53,52 @@ def has_openai() -> bool:
     return bool(OPENAI_API_KEY)
 
 
+# Probe the local Ollama server at most once per TTL so routing decisions don't
+# pay a network round-trip on every LLM call. Re-checked so a model that comes up
+# (or goes down) mid-session is picked up within the window.
+_OLLAMA_PROBE: dict = {"checked_at": 0.0, "ok": False}
+_OLLAMA_PROBE_TTL: float = 30.0  # seconds
+
+
+def ollama_available() -> bool:
+    """True when a local Ollama server is reachable AND serving ≥1 model.
+
+    'auto' uses this to decide whether a local model exists to leverage; if the
+    server is down or has no models pulled, we fall back to a hosted key.
+    """
+    import time
+
+    now = time.monotonic()
+    if now - _OLLAMA_PROBE["checked_at"] < _OLLAMA_PROBE_TTL:
+        return _OLLAMA_PROBE["ok"]
+
+    ok = False
+    try:
+        import httpx
+
+        r = httpx.get(f"{OLLAMA_HOST}/api/tags", timeout=2.0)
+        ok = r.status_code == 200 and bool(r.json().get("models"))
+    except Exception:
+        ok = False
+
+    _OLLAMA_PROBE.update(checked_at=now, ok=ok)
+    return ok
+
+
 def active_provider() -> str:
-    """Resolve which chat provider to use for judgment jobs."""
+    """Resolve which chat provider to use for judgment jobs.
+
+    Explicit ADVISORY_PROVIDER wins. Under 'auto' we leverage a local model when
+    one exists (Ollama reachable + a model pulled), else fall back to a hosted
+    key — OpenAI first, then Anthropic. If nothing is available we still return
+    'ollama' so callers degrade to the deterministic engine fallback.
+    """
     if ADVISORY_PROVIDER in ("ollama", "anthropic", "openai"):
         return ADVISORY_PROVIDER
-    # auto: prefer the strongest available hosted model, else local.
-    if has_anthropic():
-        return "anthropic"
+    if ollama_available():
+        return "ollama"
     if has_openai():
         return "openai"
+    if has_anthropic():
+        return "anthropic"
     return "ollama"

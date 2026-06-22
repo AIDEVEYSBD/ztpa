@@ -1,5 +1,6 @@
 import type {
-  ActionItem, AskResult, ChangeResult, Finding, GraphData, Health, MergeSuggestion, Remediation,
+  ActionItem, AdminMetrics, AskResult, ChangeResult, Finding, GraphData, Health, MergeSuggestion,
+  Remediation, RemediationRevision, StagedChange, ToolInfo,
 } from "./types";
 
 async function j<T>(url: string, init?: RequestInit): Promise<T> {
@@ -27,10 +28,23 @@ export const api = {
   actions: (snap?: string) => j<{ actions: ActionItem[]; ranked_by: string }>(`/api/actions${qs(snap)}`),
   explain: (id: string) => j<{ explanation: string; by: string; cached?: boolean; pending?: boolean }>(`/api/findings/${id}/explain`, post()),
   remediate: (id: string) => j<Remediation>(`/api/findings/${id}/remediate`, post()),
+  remediateRefine: (id: string, comment: string, prior_change?: Record<string, any>) =>
+    j<Remediation>(`/api/findings/${id}/remediate/refine`, post({ comment, prior_change })),
+  remediationThread: (id: string) => j<{ revisions: RemediationRevision[] }>(`/api/findings/${id}/remediation-thread`),
+  changeSubmit: (body: { kind?: string; finding_id: string; change: Record<string, any>; revision_id?: string; justification?: string }) =>
+    j<{ request_id: string; kind: string; decision: any; target_tool: string }>("/api/change/submit", post({ kind: "remediation", ...body })),
   changeRequests: () => j<{ requests: any[] }>("/api/change-requests"),
   changeDecisions: () => j<{ decisions: any[] }>("/api/change-decisions"),
   classify: (body: { request_id?: string; source?: string; destination?: string; service?: string; justification?: string }) =>
     j<ChangeResult>("/api/change/classify", post(body)),
+  sendToStaging: (body: { request_id: string; target_tool?: string; manual_approve?: boolean }) =>
+    j<{ ok: boolean; staged_id: string; status: string; target_tool: string }>("/api/staging", post(body)),
+  staging: () => j<{ staged: StagedChange[] }>("/api/staging"),
+  stagingPush: (id: string) => j<{ staged_id: string; status: string; conflicts: any[]; resolution: any; push_steps: any[] }>(`/api/staging/${encodeURIComponent(id)}/push`, post()),
+  stagingDiscard: (id: string) => j<{ ok: boolean; deleted: string }>(`/api/staging/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  adminTools: () => j<{ tools: ToolInfo[]; roles: string[] }>("/api/admin/tools"),
+  setToolRoles: (key: string, enabled_roles: string[]) => j<{ ok: boolean; tool_key: string; enabled_roles: string[] }>(`/api/admin/tools/${encodeURIComponent(key)}`, post({ enabled_roles })),
+  adminMetrics: (days = 30) => j<AdminMetrics>(`/api/admin/metrics?days=${days}`),
   ask: (question: string) => j<AskResult>("/api/agent/ask", post({ question })),
   askSuggestions: () => j<{ suggestions: string[] }>("/api/agent/suggestions"),
   report: () => j<any>("/api/report"),

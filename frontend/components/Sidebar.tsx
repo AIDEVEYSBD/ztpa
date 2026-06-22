@@ -3,16 +3,17 @@
 import { useSession, signOut } from "next-auth/react";
 import {
   ShieldHalf, Network, ListChecks, GitBranch, MessageSquare, FileText, Plug, Fingerprint,
-  Users, LogOut, Database, History,
+  Users, LogOut, Database, History, Rocket, SlidersHorizontal, BarChart3,
 } from "lucide-react";
 import { ThemeToggle } from "./theme";
 
-export type ScreenId = "map" | "risks" | "change" | "ask" | "report" | "connectors" | "assets" | "ingest" | "users" | "snapshots";
+export type ScreenId = "map" | "risks" | "change" | "staging" | "ask" | "report" | "connectors" | "assets" | "ingest" | "users" | "snapshots" | "tools" | "metrics";
 
 const CONSOLE: { id: ScreenId; label: string; icon: any }[] = [
   { id: "map", label: "Network Map", icon: Network },
   { id: "risks", label: "Risk To-Do", icon: ListChecks },
   { id: "change", label: "Change Gate", icon: GitBranch },
+  { id: "staging", label: "Staging Area", icon: Rocket },
   { id: "ask", label: "Ask the Network", icon: MessageSquare },
   { id: "report", label: "Posture Report", icon: FileText },
 ];
@@ -71,6 +72,15 @@ export function Sidebar({ active, onSelect, counts }: {
         {REFERENCE.map((it) => navItem(it))}
         {role === "admin" && (
           <>
+            <div className="label px-2 pb-1.5 pt-[18px] text-[10px] tracking-[0.08em]">Admin</div>
+            <button onClick={() => onSelect("tools")} className="navitem" data-active={active === "tools"}>
+              <SlidersHorizontal size={16} className="shrink-0" />
+              <span className="flex-1 truncate">Tools & Usage</span>
+            </button>
+            <button onClick={() => onSelect("metrics")} className="navitem" data-active={active === "metrics"}>
+              <BarChart3 size={16} className="shrink-0" />
+              <span className="flex-1 truncate">Metrics & Cost</span>
+            </button>
             <button onClick={() => onSelect("ingest")} className="navitem" data-active={active === "ingest"}>
               <Database size={16} className="shrink-0" />
               <span className="flex-1 truncate">Ingested data</span>

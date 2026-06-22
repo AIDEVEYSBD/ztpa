@@ -5,7 +5,7 @@ transaction so `SET search_path TO ztpa` persists across statements even through
 a connection pooler (PgBouncer transaction mode pins one backend per
 transaction). schema.sql avoids dollar-quoting, so splitting on ';' is safe.
 
-Usage:  python db/migrate.py
+Usage:  python db/migrate.py [schema_file]   # defaults to schema.sql
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ import sys
 
 import psycopg
 
-SCHEMA_PATH = pathlib.Path(__file__).with_name("schema.sql")
+DEFAULT_SCHEMA = pathlib.Path(__file__).with_name("schema.sql")
 
 try:  # load repo-root .env so DATABASE_URL is available when run standalone
     from dotenv import load_dotenv
@@ -25,11 +25,18 @@ except Exception:
     pass
 
 
-def _strip_comments(chunk: str) -> str:
-    """Drop comment-only / blank lines so we can tell whether a chunk is real."""
-    return "\n".join(
-        line for line in chunk.splitlines() if not line.strip().startswith("--")
-    ).strip()
+def _strip_line_comments(sql: str) -> str:
+    """Remove every `-- ... ` line comment (to end of line) BEFORE we split on ';'.
+
+    A ';' inside a comment (e.g. "-- snapshot; data here") would otherwise split a
+    statement in half. schema.sql uses no '--' inside string literals, so cutting
+    at the first '--' on each line is safe and makes re-runs reliable.
+    """
+    out = []
+    for line in sql.splitlines():
+        idx = line.find("--")
+        out.append(line if idx == -1 else line[:idx])
+    return "\n".join(out)
 
 
 def main() -> int:
@@ -38,8 +45,9 @@ def main() -> int:
         print("ERROR: DATABASE_URL is not set (load it from .env).", file=sys.stderr)
         return 2
 
-    sql = SCHEMA_PATH.read_text()
-    statements = [c for c in sql.split(";") if _strip_comments(c)]
+    schema_path = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_SCHEMA
+    sql = _strip_line_comments(schema_path.read_text())
+    statements = [c for c in sql.split(";") if c.strip()]
 
     # autocommit=False -> one transaction for the whole file (search_path persists).
     with psycopg.connect(url) as conn:
@@ -48,7 +56,7 @@ def main() -> int:
                 cur.execute(chunk)        # leading comments are ignored by Postgres
         conn.commit()
 
-    print(f"applied {len(statements)} statements to schema ztpa")
+    print(f"applied {len(statements)} statements from {schema_path.name} to schema ztpa")
     return 0
 
 

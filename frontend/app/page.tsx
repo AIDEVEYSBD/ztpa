@@ -15,13 +15,17 @@ import { ReportPanel } from "@/components/ReportPanel";
 import { Connectors } from "@/components/Connectors";
 import { AssetsPanel } from "@/components/AssetsPanel";
 import { IngestInspector } from "@/components/IngestInspector";
+import { Staging } from "@/components/Staging";
 import { UsersAdmin } from "@/components/admin/UsersAdmin";
 import { SnapshotsAdmin } from "@/components/admin/SnapshotsAdmin";
+import { ToolsAdmin } from "@/components/admin/ToolsAdmin";
+import { MetricsAdmin } from "@/components/admin/MetricsAdmin";
 
 const META: Record<ScreenId, { title: string; sub: string }> = {
   map: { title: "Network Map", sub: "Unified reachability across AlgoSec, Guardicore and Wiz" },
-  risks: { title: "Risk To-Do", sub: "Prioritized, root-cause-grouped actions, worst first" },
-  change: { title: "Change Gate", sub: "Simulated delta, then auto-approve or escalate" },
+  risks: { title: "Risk To-Do", sub: "Prioritized actions — iterate a fix, then send it to the Change Gate" },
+  change: { title: "Change Gate", sub: "Simulated delta, then auto-approve or escalate — then send to staging" },
+  staging: { title: "Staging Area", sub: "Approved changes, ready to push to the source system" },
   ask: { title: "Ask the Network", sub: "Plain-English questions, grounded in engine facts" },
   report: { title: "Posture Report", sub: "Executive and compliance summary" },
   connectors: { title: "Connectors", sub: "Bring your own source via a validated profile" },
@@ -29,6 +33,8 @@ const META: Record<ScreenId, { title: string; sub: string }> = {
   ingest: { title: "Ingested data", sub: "What the connectors produced for this snapshot (admin)" },
   users: { title: "Manage users", sub: "Invite users and assign roles (admin)" },
   snapshots: { title: "Snapshots", sub: "Point-in-time runs, with delete (admin)" },
+  tools: { title: "Tools & Usage", sub: "Available tools, per-role access, and usage metrics (admin)" },
+  metrics: { title: "Metrics & Cost", sub: "Application-wide KPIs, token usage and estimated cost (admin)" },
 };
 
 export default function Dashboard() {
@@ -88,8 +94,9 @@ export default function Dashboard() {
                 initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }}
                 transition={{ duration: 0.22, ease: "easeOut" }}>
                 {screen === "map" && <NetworkMap graph={graph} findings={findings} counts={counts} loading={loading.graph} />}
-                {screen === "risks" && <RiskTodo actions={actions} findings={findings} readOnly={historical} loading={loading.actions || loading.findings} />}
-                {screen === "change" && <ChangeGate />}
+                {screen === "risks" && <RiskTodo actions={actions} findings={findings} readOnly={historical} loading={loading.actions || loading.findings} onNavigate={setScreen} />}
+                {screen === "change" && <ChangeGate onNavigate={setScreen} />}
+                {screen === "staging" && <Staging />}
                 {screen === "ask" && <Assistant />}
                 {screen === "report" && <ReportPanel />}
                 {screen === "connectors" && <Connectors />}
@@ -97,6 +104,8 @@ export default function Dashboard() {
                 {screen === "ingest" && <IngestInspector snapshot={viewSnap} />}
                 {screen === "users" && <UsersAdmin />}
                 {screen === "snapshots" && <SnapshotsAdmin onView={(id) => { setViewSnap(id); setScreen("map"); }} />}
+                {screen === "tools" && <ToolsAdmin />}
+                {screen === "metrics" && <MetricsAdmin />}
               </motion.div>
             </AnimatePresence>
           </div>

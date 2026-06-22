@@ -66,6 +66,10 @@ _JSON_COLUMNS: dict[str, set[str]] = {
     "change_requests": {"proposed"},
     "change_decisions": {"criteria", "delta_summary"},
     "audit_log": {"detail"},
+    "ai_metrics": set(),
+    "tool_settings": set(),
+    "remediation_revisions": {"change", "validation"},
+    "staged_changes": {"payload", "conflicts", "resolution", "push_steps"},
 }
 
 

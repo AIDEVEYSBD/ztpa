@@ -1,6 +1,6 @@
 # Demo script — ZeroTrust Policy Advisor
 
-~7 minutes, fully local (no internet needed). Cold start: `make db && make demo && make backend && make frontend`, open **http://localhost:3000**. Everything below reads the precomputed snapshot from Postgres; only the AI calls run live (on Ollama).
+~7 minutes, fully local (no internet needed). Cold start: `python tasks.py db && python tasks.py demo && python tasks.py dev`, open **http://localhost:3000**. Everything below reads the precomputed snapshot from Postgres; only the AI calls run live (on Ollama).
 
 Opening line: *"Admins juggle four consoles and four mental models. The one risk that matters most — an attack path that crosses all of them — is invisible to every single tool. This stitches them into one map, one ranked to-do list, and a change gate you can trust."*
 

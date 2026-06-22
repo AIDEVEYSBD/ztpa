@@ -81,7 +81,7 @@ export function Assistant() {
                       <Prose>{t.a?.answer ?? ""}</Prose>
                       {!!t.a?.trace?.length && (
                         <div className="mt-2 rounded-lg border bg-surfaceHover p-2">
-                          <div className="mb-1 flex items-center gap-1 text-[10px] font-semibold text-muted"><Terminal size={11} /> TOOL TRACE (deterministic)</div>
+                          <div className="mb-1 flex items-center gap-1 text-[10px] font-semibold text-muted"><Terminal size={11} /> TOOL TRACE </div>
                           {t.a.trace.map((tr, j) => (
                             <div key={j} className="font-mono text-[10px] text-muted">
                               <span className="text-text2">{tr.tool}</span>({Object.values(tr.args ?? {}).join(", ")})
@@ -109,9 +109,9 @@ export function Assistant() {
         {suggested === undefined
           ? Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-12 w-full" />)
           : suggested.map((s) => (
-              <button key={s} onClick={() => ask(s)} disabled={busy}
-                className={cn("panel w-full p-3 text-left text-xs", busy ? "cursor-not-allowed opacity-50" : "hover:bg-surfaceHover")}>{s}</button>
-            ))}
+            <button key={s} onClick={() => ask(s)} disabled={busy}
+              className={cn("panel w-full p-3 text-left text-xs", busy ? "cursor-not-allowed opacity-50" : "hover:bg-surfaceHover")}>{s}</button>
+          ))}
         {busy && <div className="px-1 pt-1 text-[11px] text-text3">Answering… one question at a time so the trace stays readable.</div>}
       </div>
     </div>

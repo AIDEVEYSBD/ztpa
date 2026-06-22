@@ -164,8 +164,11 @@ CREATE TABLE IF NOT EXISTS findings (
     raw_refs         text[] NOT NULL DEFAULT '{}',
     source_tools     text[] NOT NULL DEFAULT '{}',
     explanation      text,                         -- LLM-generated, cached
+    explanation_by   text,                         -- provider:model that produced the cached explanation
     created_at       timestamptz NOT NULL DEFAULT now()
 );
+-- widen older snapshots' findings table that predate explanation_by (idempotent).
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS explanation_by text;
 
 -- ranked, root-cause-grouped actions (LLM ranking output)
 CREATE TABLE IF NOT EXISTS ranked_actions (
@@ -216,6 +219,85 @@ CREATE TABLE IF NOT EXISTS audit_log (
     detail       jsonb NOT NULL DEFAULT '{}'::jsonb
 );
 
+-- widen change_requests so remediation changes (not just add-allow) flow through
+-- the same request/decision tables (idempotent).
+ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS kind text;
+ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS origin text;
+
+-- ============================================================================
+-- ai_metrics -- one row per AI / agent-tool invocation (Tools + KPI dashboards)
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS ai_metrics (
+    id                 uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    ts                 timestamptz NOT NULL DEFAULT now(),
+    kind               text NOT NULL,                  -- llm | agent_tool | embed
+    capability         text NOT NULL,                  -- explain | rank | classify | remediate | ...
+    tool_name          text,                           -- agent tool name, else the capability
+    provider           text,                           -- ollama | anthropic | openai | engine
+    model              text,
+    role               text,                           -- admin | analyst | viewer | system
+    actor_email        text,
+    latency_ms         integer,
+    prompt_tokens      integer NOT NULL DEFAULT 0,
+    completion_tokens  integer NOT NULL DEFAULT 0,
+    total_tokens       integer NOT NULL DEFAULT 0,
+    est_cost_usd       numeric(12,6) NOT NULL DEFAULT 0,
+    ok                 boolean NOT NULL DEFAULT true,
+    error              text,
+    snapshot_id        text,
+    subject            text
+);
+
+-- ============================================================================
+-- tool_settings -- per-role enable/disable for each tool/capability (admin)
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS tool_settings (
+    tool_key       text PRIMARY KEY,
+    enabled_roles  text[] NOT NULL DEFAULT '{admin,analyst,viewer}',
+    updated_by     text,
+    updated_at     timestamptz NOT NULL DEFAULT now()
+);
+
+-- ============================================================================
+-- remediation_revisions -- the durable Risk-To-Do iteration thread per finding
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS remediation_revisions (
+    revision_id  text PRIMARY KEY,
+    thread_id    text NOT NULL,
+    finding_id   text NOT NULL,
+    snapshot_id  text,
+    seq          integer NOT NULL,
+    comment      text,                                 -- user comment that produced this revision (null for seq 0)
+    fix_text     text,
+    change       jsonb NOT NULL DEFAULT '{}'::jsonb,
+    validation   jsonb NOT NULL DEFAULT '{}'::jsonb,
+    by           text,
+    status       text NOT NULL DEFAULT 'draft',        -- draft | accepted
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (thread_id, seq)
+);
+
+-- ============================================================================
+-- staged_changes -- the staging area: approved changes ready to push to source
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS staged_changes (
+    staged_id    text PRIMARY KEY,
+    snapshot_id  text,
+    request_id   text,                                 -- references change_requests (soft link)
+    origin       text,                                 -- risk_todo | change_gate
+    kind         text,                                 -- add_allow | remediation
+    target_tool  text,                                 -- algosec | guardicore | wiz
+    payload      jsonb NOT NULL DEFAULT '{}'::jsonb,
+    decision     text,                                 -- auto_approve | escalate | manual_approved
+    status       text NOT NULL DEFAULT 'staged',       -- staged | pushing | pushed | conflict | failed
+    conflicts    jsonb NOT NULL DEFAULT '[]'::jsonb,
+    resolution   jsonb NOT NULL DEFAULT '{}'::jsonb,
+    push_steps   jsonb NOT NULL DEFAULT '[]'::jsonb,
+    created_by   text,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    pushed_at    timestamptz
+);
+
 -- ============================================================================
 -- indexes
 -- ============================================================================
@@ -231,3 +313,10 @@ CREATE INDEX IF NOT EXISTS idx_edges_src          ON graph_edges (snapshot_id, s
 CREATE INDEX IF NOT EXISTS idx_edges_dst          ON graph_edges (snapshot_id, dst_node);
 CREATE INDEX IF NOT EXISTS idx_decisions_request  ON change_decisions (request_id);
 CREATE INDEX IF NOT EXISTS idx_audit_subject      ON audit_log (subject);
+CREATE INDEX IF NOT EXISTS idx_metrics_ts         ON ai_metrics (ts DESC);
+CREATE INDEX IF NOT EXISTS idx_metrics_capability ON ai_metrics (capability);
+CREATE INDEX IF NOT EXISTS idx_metrics_provider   ON ai_metrics (provider, model);
+CREATE INDEX IF NOT EXISTS idx_remrev_thread      ON remediation_revisions (thread_id, seq);
+CREATE INDEX IF NOT EXISTS idx_remrev_finding     ON remediation_revisions (finding_id);
+CREATE INDEX IF NOT EXISTS idx_staged_status      ON staged_changes (status);
+CREATE INDEX IF NOT EXISTS idx_staged_tool        ON staged_changes (target_tool);

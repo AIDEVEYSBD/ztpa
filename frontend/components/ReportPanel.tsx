@@ -58,7 +58,7 @@ export function ReportPanel() {
         <div className="mb-3 flex items-center gap-2 text-[13px] font-bold"><FileText size={16} /> Executive &amp; compliance posture report</div>
         <p className="mb-4 max-w-2xl text-[13px] text-text2">
           A board-ready report: severity breakdown, the cross-tool exposures, a prioritised remediation plan, and a
-          PCI-DSS / Zero-Trust compliance read. The orchestrator returns the facts instantly; the local model then
+          PCI-DSS / Zero-Trust compliance read. The orchestrator returns the facts instantly; the model then
           writes the narrative. Every rule reference is clickable.
         </p>
         {err && <div className="mb-3 border border-sev-critical-line bg-sev-critical-bg px-3 py-2 text-[12px] text-sev-critical">The report service did not respond. Make sure the API is running, then try again.</div>}
@@ -136,7 +136,7 @@ export function ReportPanel() {
         {/* LLM narrative (streams in after the facts) */}
         {narrLoading && r.narrative_pending ? (
           <div className="space-y-3">
-            <div className="flex items-center gap-1.5 text-[11px] text-text3"><Sparkles size={12} className="text-accent" /> writing executive narrative with the local model…</div>
+            <div className="flex items-center gap-1.5 text-[11px] text-text3"><Sparkles size={12} className="text-accent" /> writing executive narrative with the AI model…</div>
             <Skeleton className="h-5 w-52" />
             <SkeletonText lines={4} />
             <Skeleton className="h-5 w-44" />

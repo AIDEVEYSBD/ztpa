@@ -150,8 +150,13 @@ def persist_ranked_actions(cur: psycopg.Cursor, sid: str, ranked: RankedActions)
     return len(ranked.actions)
 
 
-def cache_explanation(cur: psycopg.Cursor, finding_id: str, text: str) -> None:
-    cur.execute("UPDATE ztpa.findings SET explanation = %s WHERE finding_id = %s", [text, finding_id])
+def cache_explanation(cur: psycopg.Cursor, finding_id: str, text: str, by: str | None = None) -> None:
+    """Persist the explanation plus the provider:model that produced it, so the
+    cache can report real provenance (e.g. 'openai:gpt-4o') instead of a bare 'cache'."""
+    cur.execute(
+        "UPDATE ztpa.findings SET explanation = %s, explanation_by = %s WHERE finding_id = %s",
+        [text, by, finding_id],
+    )
 
 
 # --- human-confirmed asset merges (durable across snapshots) ----------------
@@ -194,12 +199,61 @@ def delete_asset_merge(cur: psycopg.Cursor, a: str, b: str) -> None:
     cur.execute("DELETE FROM ztpa.asset_merges WHERE merge_id = %s", [det_id("merge", a, b)])
 
 
+# --- remediation iteration thread (Risk To-Do) -----------------------------
+
+def remediation_thread_id(sid: str, finding_id: str) -> str:
+    return det_id("rthread", sid or "", finding_id)
+
+
+def load_remediation_thread(cur: psycopg.Cursor, sid: str, finding_id: str) -> list[dict]:
+    tid = remediation_thread_id(sid, finding_id)
+    return [dict(r) for r in cur.execute(
+        "SELECT revision_id, thread_id, finding_id, seq, comment, fix_text, change, validation, by, "
+        "status, created_at FROM ztpa.remediation_revisions WHERE thread_id=%s ORDER BY seq",
+        [tid]).fetchall()]
+
+
+def persist_remediation_revision(cur: psycopg.Cursor, sid: str, finding_id: str,
+                                 draft: dict, comment: str | None = None) -> dict:
+    """Append the next revision to a finding's thread and return the stored row."""
+    tid = remediation_thread_id(sid, finding_id)
+    row = cur.execute("SELECT COALESCE(MAX(seq), -1) AS m FROM ztpa.remediation_revisions WHERE thread_id=%s",
+                      [tid]).fetchone()
+    seq = int(row["m"]) + 1
+    rid = det_id("rev", tid, str(seq))
+    upsert(cur, "remediation_revisions", {
+        "revision_id": rid, "thread_id": tid, "finding_id": finding_id, "snapshot_id": sid, "seq": seq,
+        "comment": comment, "fix_text": draft.get("fix_text"), "change": draft.get("change") or {},
+        "validation": draft.get("validation") or {}, "by": draft.get("by"), "status": "draft",
+    }, ["revision_id"])
+    audit(cur, "agent", "remediate_revision", subject=finding_id, snapshot_id=sid,
+          detail={"seq": seq, "resolves": (draft.get("validation") or {}).get("resolves")})
+    return {"revision_id": rid, "thread_id": tid, "finding_id": finding_id, "seq": seq, "comment": comment,
+            "fix_text": draft.get("fix_text"), "change": draft.get("change"),
+            "validation": draft.get("validation"), "by": draft.get("by"), "status": "draft"}
+
+
+def accept_remediation_revision(cur: psycopg.Cursor, revision_id: str) -> None:
+    cur.execute("UPDATE ztpa.remediation_revisions SET status='accepted' WHERE revision_id=%s", [revision_id])
+
+
+# --- staging area -----------------------------------------------------------
+
+def persist_staged_change(cur: psycopg.Cursor, row: dict) -> str:
+    upsert(cur, "staged_changes", row, ["staged_id"])
+    audit(cur, "user", "stage_change", subject=row.get("request_id"), snapshot_id=row.get("snapshot_id"),
+          detail={"target_tool": row.get("target_tool"), "kind": row.get("kind"), "decision": row.get("decision")})
+    return row["staged_id"]
+
+
 def persist_change_decision(cur: psycopg.Cursor, sid: str, request: ChangeRequest,
-                            decision: ChangeDecision) -> str:
+                            decision: ChangeDecision, kind: str = "add_allow",
+                            origin: str = "change_gate") -> str:
     upsert(cur, "change_requests", {
         "request_id": request.id, "snapshot_id": sid,
         "proposed": json.loads(request.proposed.model_dump_json()),
         "requested_by": request.requested_by, "justification": request.justification,
+        "kind": kind, "origin": origin,
     }, ["request_id"])
     decision_id = det_id("dec", sid, request.id)
     upsert(cur, "change_decisions", {

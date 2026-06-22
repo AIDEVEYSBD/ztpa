@@ -58,6 +58,14 @@
       "tags": [
         "dev"
       ]
+    },
+    "data-segment": {
+      "role": "segment",
+      "env": "prod",
+      "tags": [
+        "prod",
+        "data-segment"
+      ]
     }
   },
   "policies": [
@@ -96,6 +104,15 @@
       "protocol": "tcp",
       "action": "allow",
       "ruleset": "ci"
+    },
+    {
+      "policy_id": "GC-002",
+      "src_label": "app-server-08",
+      "dst_label": "data-segment",
+      "port": 8443,
+      "protocol": "tcp",
+      "action": "allow",
+      "ruleset": "app-east-west"
     }
   ]
 }

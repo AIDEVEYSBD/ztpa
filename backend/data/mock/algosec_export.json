@@ -55,6 +55,23 @@
       "tags": [
         "dev"
       ]
+    },
+    "db-prod-02": {
+      "type": "host",
+      "value": "10.50.0.30",
+      "tags": [
+        "pci",
+        "customer-data",
+        "prod"
+      ]
+    },
+    "data-segment": {
+      "type": "network",
+      "value": "10.45.0.0/16",
+      "tags": [
+        "prod",
+        "data-segment"
+      ]
     }
   },
   "rules": [
@@ -183,6 +200,15 @@
       "service": "tcp/9100",
       "action": "allow",
       "comment": "monitoring scrape"
+    },
+    {
+      "rule_id": "ALGO-031",
+      "order": 31,
+      "src": "data-segment",
+      "dst": "db-prod-02",
+      "service": "tcp/5432",
+      "action": "allow",
+      "comment": "data segment to prod db-02"
     }
   ]
 }

@@ -56,27 +56,33 @@ Model routing (default): `qwen3-coder:30b` for structured judgment + tool-callin
 
 What's **real**: normalizer + canonical model, identity layer, graph, the 4 analyzers + severity + guardrails, change simulation + delta, the AI advisory/agent layer (live), persistence, the dashboard. What's **simulated**: the three tool connectors (we ingest realistic mock exports representative of each tool — never live integration).
 
+> For the exact severity formula, sub-score lookup tables, reachability math, change-delta logic, determinism/ids, and the known simplifications, see **[docs/ENGINE.md](docs/ENGINE.md)**.
+
 ---
 
 ## Quickstart
 
+All orchestration goes through `tasks.py` — a single cross-platform runner (Windows, macOS, Linux, WSL) that needs only a system **Python on PATH**; no `make`, no bash, no `psql`.
+
 ```bash
-# 0. Prereqs: Python 3.12, Node 18+, Ollama running with qwen3-coder + gemma4 + nomic-embed-text.
-make setup                      # venv + backend deps + frontend deps; copies .env.example -> .env
+# 0. Prereqs: Python 3.11+, Node 18+, Ollama running with qwen3-coder + gemma4 + nomic-embed-text.
+python tasks.py setup           # venv + backend deps + frontend deps; copies .env.example -> .env
 
 # 1. Configure .env  (DATABASE_URL required; ANTHROPIC_API_KEY optional)
 #    DATABASE_URL="postgresql://...neon.tech/neondb?sslmode=require&channel_binding=require"
 
 # 2. Build the database + the demo snapshot
-make db                         # apply ztpa schema to Neon
-make demo                       # seed exports -> deterministic engine -> Postgres -> cache AI artifacts
+python tasks.py db              # apply ztpa schema + auth schema to Neon (via psycopg)
+python tasks.py demo            # seed exports -> deterministic engine -> Postgres -> cache AI artifacts
 
-# 3. Run (two terminals, or `make dev`)
-make backend                    # FastAPI  on http://127.0.0.1:8000
-make frontend                   # dashboard on http://127.0.0.1:3000
+# 3. Run (two terminals, or `python tasks.py dev` for both)
+python tasks.py backend         # FastAPI  on http://127.0.0.1:8000
+python tasks.py frontend        # dashboard on http://127.0.0.1:3000
 
 # Optional: prove the engine meets every acceptance criterion
-make verify
+python tasks.py verify
+
+# Run `python tasks.py help` to list every command.
 ```
 
 A **cold run reproduces the demo identically** (deterministic ids → byte-identical rows; the dashboard reads the precomputed snapshot from Postgres; only the AI calls run live, and they fail closed).
@@ -99,8 +105,9 @@ backend/
   app/main.py                                       # FastAPI
   scripts/         seed_demo.py precompute.py precompute_ai.py verify_engine.py
 frontend/          Next.js dashboard (app/, components/, lib/)
-db/                schema.sql migrate.py
-Makefile  DEMO.md  README.md
+db/                schema.sql auth_schema.sql migrate.py
+docs/              ENGINE.md       # core logic, calculations & math (the deterministic engine)
+tasks.py  DEMO.md  README.md      # tasks.py = cross-platform runner (no make required)
 ```
 
 ---

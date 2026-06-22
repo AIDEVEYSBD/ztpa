@@ -115,4 +115,83 @@ export interface Remediation {
   change: Record<string, any>;
   validation: { resolves: boolean; introduces_new_criticals?: string[]; engine_corrected_ai?: boolean };
   by: string;
+  thread_id?: string;
+  seq?: number;
+  revision_id?: string;
+}
+
+export interface RemediationRevision {
+  revision_id: string;
+  thread_id: string;
+  finding_id: string;
+  seq: number;
+  comment?: string | null;
+  fix_text?: string;
+  change: Record<string, any>;
+  validation: { resolves?: boolean; introduces_new_criticals?: string[] };
+  by?: string;
+  status: string;
+}
+
+export interface PushStep {
+  key: string;
+  label: string;
+  status: "ok" | "warn" | "blocked";
+  detail: string;
+}
+export interface Conflict {
+  kind: string;
+  detail: string;
+  against?: string;
+  resolution: string;
+}
+export interface StagedChange {
+  staged_id: string;
+  request_id: string;
+  origin: string;
+  kind: string;
+  target_tool: string;
+  payload: Record<string, any>;
+  decision: string;
+  status: "staged" | "pushing" | "pushed" | "conflict" | "failed";
+  conflicts: Conflict[];
+  resolution: Record<string, any>;
+  push_steps: PushStep[];
+  created_at?: string;
+  pushed_at?: string | null;
+  justification?: string | null;
+  requested_by?: string | null;
+}
+
+export interface ToolInfo {
+  key: string;
+  label: string;
+  kind: "agent_tool" | "ai_capability";
+  description: string;
+  example_output: string;
+  enabled_roles: string[];
+  metrics: {
+    uses: number;
+    avg_latency_ms: number;
+    total_tokens: number;
+    est_cost_usd: number;
+    errors: number;
+    last_used?: string | null;
+  };
+}
+
+export interface AdminMetrics {
+  days: number;
+  totals: { calls: number; tokens: number; cost: number; avg_latency: number; errors: number; p50_latency: number; p95_latency: number };
+  by_provider: { provider: string; model: string; calls: number; tokens: number; cost: number }[];
+  by_capability: { capability: string; calls: number; tokens: number; cost: number; avg_latency: number }[];
+  by_role: { role: string; calls: number; tokens: number }[];
+  timeseries: { day: string; calls: number; tokens: number; cost: number }[];
+  top_tools: { tool_name: string; uses: number; tokens: number }[];
+  decisions: Record<string, number>;
+  staging: Record<string, number>;
+  snapshots: number;
+  findings: number;
+  critical: number;
+  active_snapshot: string;
 }

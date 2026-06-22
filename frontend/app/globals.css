@@ -4,6 +4,7 @@
 
 /* ===== Design tokens (from the ZeroTrust Policy Advisor Claude design) ===== */
 :root, [data-theme="light"] {
+  color-scheme: light;
   --bg:#F1F1F5; --surface:#FFFFFF; --surface-2:#FAFAFC; --surface-hover:#F1F1F5; --surface-sunk:#F6F6FA;
   --border:#E4E4EA; --border-strong:#CFCFD8; --hair:#ECECF1;
   --text:#1A1A24; --text-2:#5A5A63; --text-3:#8C8C96;
@@ -15,6 +16,7 @@
   --ok:#157F35; --ok-bg:#E6F2E9; --ok-line:#BFE0C8;
 }
 [data-theme="dark"] {
+  color-scheme: dark;
   --bg:#0F0F14; --surface:#17171F; --surface-2:#1C1C26; --surface-hover:#23232E; --surface-sunk:#121218;
   --border:#2A2A34; --border-strong:#3A3A46; --hair:#23232E;
   --text:#ECECF1; --text-2:#9A9AA6; --text-3:#6A6A76;
@@ -42,6 +44,17 @@ body {
 .mono {
   font-family: "SFMono-Regular", "SF Mono", Menlo, Consolas, "Liberation Mono", "Roboto Mono", monospace;
   font-feature-settings: "tnum" 1;
+}
+
+/* Chrome paints autofilled inputs with its own near-white background + dark
+   text, which reads as white-on-white once our dark theme sets a light text
+   colour. Force autofill to keep the themed surface + text. */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--text);
+  -webkit-box-shadow: 0 0 0 1000px var(--surface-sunk) inset;
+  caret-color: var(--text);
 }
 ::selection { background: var(--accent); color: #1A1A24; }
 

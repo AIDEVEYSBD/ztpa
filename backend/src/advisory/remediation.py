@@ -113,12 +113,20 @@ def _validate(ctx, finding: Finding, change: dict) -> dict:
         return {"resolves": False, "error": str(e)}
 
 
-def draft(finding: Finding, ctx) -> dict:
+def draft(finding: Finding, ctx, comment: str | None = None, prior: dict | None = None) -> dict:
     # Bounded so a cold local model degrades to the deterministic fix instead of
     # hanging the request (which a dev proxy resets). The fix is still validated
     # by re-simulation regardless of whether the model or the fallback proposed it.
-    r = complete(system=_PROMPT, user=json.dumps(_facts(finding)), role="judge",
-                 temperature=0.2, expect_json=True, timeout=120.0)
+    # `comment` + `prior` let the Risk-To-Do thread iterate: the model revises the
+    # previous proposal in light of the reviewer's feedback rather than starting cold.
+    user = json.dumps(_facts(finding))
+    if comment or prior:
+        user += (
+            "\n\nThe reviewer is iterating on a prior proposal. Revise it to address their"
+            f" comment.\nPrior fix: {json.dumps(prior or {})}\nReviewer comment: {comment or ''}"
+        )
+    r = complete(system=_PROMPT, user=user, role="judge", capability="remediate",
+                 temperature=0.2, expect_json=True, timeout=120.0, subject=finding.id)
     data = parse_json(r.text, None) if r.ok else None
     llm_change = _coerce_change(data, finding)
     llm_text = data.get("fix_text") if isinstance(data, dict) else None

@@ -7,11 +7,13 @@ the full tool trace (so the UI can show exactly what was computed)."""
 from __future__ import annotations
 
 import json
+import time
 
 import httpx
 
 from .. import settings
 from ..advisory.client import complete
+from ..metrics import record_metric
 from . import tools as T
 
 _SYSTEM = (
@@ -19,7 +21,10 @@ _SYSTEM = (
     "policy by CALLING TOOLS -- never compute reachability, subnet math, or paths yourself. "
     "Ground every statement in tool results and cite the concrete path when something is "
     "reachable. If unsure which asset the user means, call resolve or risk_findings first. "
-    "Be concise and concrete; prefer naming the exact rule refs and hops."
+    "Be concise and concrete; prefer naming the exact rule refs and hops. "
+    "Refer to findings by their human title in quotes (e.g. \"Cross-tool path: Internet can "
+    "reach db-prod-01\"). NEVER print internal identifiers such as the F_... finding IDs or "
+    "snap_... snapshot IDs -- those are database keys, not for the user."
 )
 
 
@@ -40,9 +45,16 @@ def _ollama_loop(ctx, question: str, max_iters: int = 5) -> dict:
     for _ in range(max_iters):
         payload = {"model": settings.OLLAMA_JUDGE_MODEL, "messages": messages,
                    "tools": T.SCHEMAS, "stream": False, "options": {"temperature": 0.1}}
+        t0 = time.perf_counter()
         resp = httpx.post(f"{settings.OLLAMA_HOST}/api/chat", json=payload, timeout=settings.OLLAMA_TIMEOUT)
         resp.raise_for_status()
-        msg = resp.json().get("message", {}) or {}
+        body = resp.json()
+        record_metric(kind="llm", capability="assistant", provider="ollama",
+                      model=settings.OLLAMA_JUDGE_MODEL,
+                      latency_ms=round((time.perf_counter() - t0) * 1000),
+                      prompt_tokens=int(body.get("prompt_eval_count") or 0),
+                      completion_tokens=int(body.get("eval_count") or 0), ok=True)
+        msg = body.get("message", {}) or {}
         calls = msg.get("tool_calls") or []
         if not calls:
             return {"answer": (msg.get("content") or "").strip(), "trace": trace,

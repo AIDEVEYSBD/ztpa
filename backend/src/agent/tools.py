@@ -7,8 +7,12 @@ recomputes them. They operate on an EngineResult passed as `ctx`.
 
 from __future__ import annotations
 
+import time
+
+from .. import request_ctx, tools_registry
 from ..change.simulate import simulate_change
 from ..graph.reachability import find_paths as g_find_paths, reachable as g_reachable, who_can_reach
+from ..metrics import record_metric
 from ..models import PolicyRecord
 from ..normalizers.common import is_cidr, parse_service
 
@@ -89,10 +93,23 @@ def dispatch(ctx, name: str, args: dict) -> dict:
     fn = DISPATCH.get(name)
     if fn is None:
         return {"error": f"unknown tool {name}"}
+    # Per-role enforcement: a disabled tool fails closed with a clear message the
+    # assistant narrates, rather than crashing the loop.
+    if not tools_registry.is_enabled(name):
+        record_metric(kind="agent_tool", capability="assistant", tool_name=name,
+                      provider="engine", model="deterministic", ok=False,
+                      error="disabled for role", latency_ms=0)
+        return {"error": f"tool '{name}' is disabled for role {request_ctx.role()}", "disabled": True}
+    t0 = time.perf_counter()
     try:
-        return fn(ctx, **(args or {}))
+        out = fn(ctx, **(args or {}))
+        ok, err = True, None
     except Exception as e:  # noqa: BLE001
-        return {"error": f"{type(e).__name__}: {e}", "tool": name, "args": args}
+        out, ok, err = {"error": f"{type(e).__name__}: {e}", "tool": name, "args": args}, False, str(e)
+    record_metric(kind="agent_tool", capability="assistant", tool_name=name,
+                  provider="engine", model="deterministic",
+                  latency_ms=round((time.perf_counter() - t0) * 1000), ok=ok, error=err)
+    return out
 
 
 # OpenAI / Ollama function-calling schemas

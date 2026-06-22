@@ -127,6 +127,38 @@ SEVERITY_CONFIG: dict = {
 }
 
 # --------------------------------------------------------------------------
+# AI cost model -- USD per 1M tokens, {input, output}, keyed by provider:model.
+# Local Ollama models are $0 (the data-residency + zero-per-call-cost story).
+# Hosted prices are list prices for the configured default models; unknown
+# models fall through to PRICE_UNKNOWN (cost 0, flagged) so the dashboard never
+# invents a number. Keep these as tunable knobs, like the severity weights.
+# --------------------------------------------------------------------------
+PRICE_PER_MTOK: dict[str, dict[str, float]] = {
+    # Anthropic (list price per 1M tokens)
+    "anthropic:claude-opus-4-8": {"in": 5.0, "out": 25.0},
+    "anthropic:claude-sonnet-4-6": {"in": 3.0, "out": 15.0},
+    "anthropic:claude-haiku-4-5": {"in": 1.0, "out": 5.0},
+    # OpenAI
+    "openai:gpt-4o": {"in": 2.5, "out": 10.0},
+    "openai:gpt-4o-mini": {"in": 0.15, "out": 0.6},
+    "openai:text-embedding-3-small": {"in": 0.02, "out": 0.0},
+}
+PRICE_UNKNOWN = {"in": 0.0, "out": 0.0}
+
+
+def price_for(provider: str, model: str) -> dict[str, float]:
+    """Per-MTok {in, out} for a provider:model. Ollama (local) is always free."""
+    if provider == "ollama":
+        return {"in": 0.0, "out": 0.0}
+    return PRICE_PER_MTOK.get(f"{provider}:{model}", PRICE_UNKNOWN)
+
+
+def est_cost_usd(provider: str, model: str, prompt_tokens: int, completion_tokens: int) -> float:
+    p = price_for(provider, model)
+    return round((prompt_tokens / 1_000_000) * p["in"] + (completion_tokens / 1_000_000) * p["out"], 6)
+
+
+# --------------------------------------------------------------------------
 # Over-permissive detection predicate knobs.
 # --------------------------------------------------------------------------
 OVERPERMISSIVE_CONFIG: dict = {

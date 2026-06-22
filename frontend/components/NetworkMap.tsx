@@ -133,6 +133,8 @@ export function NetworkMap({ graph, findings = [], counts = {}, loading = false 
   }, [graph, mode, traced, pathSet, pathPairs, allPathNodes]);
 
   const hero = paths[selIdx];
+  // Don't render data (or a definitive "nothing here") until the API has answered.
+  const ready = !!graph && !loading;
   // legend reflects the tools actually present in this snapshot's edges
   const legendTools = useMemo(() => {
     const s = new Set<string>();
@@ -144,10 +146,18 @@ export function NetworkMap({ graph, findings = [], counts = {}, loading = false 
     <div className="space-y-4">
       {/* severity summary */}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Stat band="critical" value={bands.critical} label="Critical" sub={`${counts.findings ?? findings.length} total findings`} />
-        <Stat band="high" value={bands.high} label="High" sub="over-broad prod access" />
-        <Stat band="medium" value={bands.medium} label="Medium" sub="hygiene & mgmt-plane" />
-        <Stat band="low" value={bands.low} label="Low" sub="informational" />
+        {!ready ? (
+          Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} className="panel space-y-2 p-4"><Skeleton className="h-7 w-12" /><Skeleton className="h-3 w-20" /><Skeleton className="h-2.5 w-28" /></div>
+          ))
+        ) : (
+          <>
+            <Stat band="critical" value={bands.critical} label="Critical" sub={`${counts.findings ?? findings.length} total findings`} />
+            <Stat band="high" value={bands.high} label="High" sub="over-broad prod access" />
+            <Stat band="medium" value={bands.medium} label="Medium" sub="hygiene & mgmt-plane" />
+            <Stat band="low" value={bands.low} label="Low" sub="informational" />
+          </>
+        )}
       </div>
 
       <div className="grid gap-4 xl:grid-cols-[1fr_332px]">
@@ -212,10 +222,10 @@ export function NetworkMap({ graph, findings = [], counts = {}, loading = false 
         {/* hop panel */}
         <section className="panel self-start">
           <div className="flex items-center justify-between border-b border-border px-3.5 py-2.5">
-            <span className="text-[12.5px] font-bold">Cross-tool path{paths.length > 1 ? `s · ${paths.length}` : ""}</span>
-            {hero && <span className="inline-flex items-center gap-1 text-[10.5px] font-bold uppercase tracking-[0.03em] text-sev-critical"><OctagonAlert size={12} /> Reachable</span>}
+            <span className="text-[12.5px] font-bold">Cross-tool path{ready && paths.length > 1 ? `s · ${paths.length}` : ""}</span>
+            {ready && hero && <span className="inline-flex items-center gap-1 text-[10.5px] font-bold uppercase tracking-[0.03em] text-sev-critical"><OctagonAlert size={12} /> Reachable</span>}
           </div>
-          {paths.length > 1 && (
+          {ready && paths.length > 1 && (
             <div className="flex flex-wrap gap-1.5 border-b border-border p-2">
               {paths.map((p: any, i: number) => (
                 <button key={i} onClick={() => setSel(i)}
@@ -225,7 +235,15 @@ export function NetworkMap({ graph, findings = [], counts = {}, loading = false 
               ))}
             </div>
           )}
-          {hero ? (
+          {!ready ? (
+            <div className="space-y-3 p-3.5">
+              <Skeleton className="h-3 w-full" /><Skeleton className="h-3 w-4/5" />
+              <div className="space-y-2 pt-1">
+                {Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-10 w-full" />)}
+              </div>
+              <Skeleton className="h-14 w-full" />
+            </div>
+          ) : hero ? (
             <div className="p-3.5">
               <p className="mb-3.5 text-[12px] leading-relaxed text-text2">
                 The internet reaches <span className="mono text-text">{hero.terminal}</span> in {(hero.hops ?? []).length} hops across <b className="text-text">{hero.tools?.length}</b> tools that no single console reveals.

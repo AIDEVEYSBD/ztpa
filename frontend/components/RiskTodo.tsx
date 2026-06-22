@@ -2,9 +2,10 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { ChevronRight, Sparkles, Wrench, Check, X, ArrowRight, RotateCw } from "lucide-react";
+import { ChevronRight, Sparkles, Wrench, Check, X, ArrowRight, RotateCw, Send, MessageSquarePlus } from "lucide-react";
 import { api } from "@/lib/api";
 import type { ActionItem, Band, Finding, Remediation } from "@/lib/types";
+import type { ScreenId } from "./Sidebar";
 import { SeverityPill, ToolBadge, cn, Spinner, SkeletonRows, SkeletonText } from "./ui";
 import { Prose } from "./Markdown";
 import { RuleRef } from "./RuleRef";
@@ -13,7 +14,7 @@ import { SearchBox } from "@/lib/tableTools";
 const BAND_ORDER: Record<Band, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 const BANDS: Band[] = ["critical", "high", "medium", "low"];
 
-export function RiskTodo({ actions, findings, readOnly = false, loading = false }: { actions: ActionItem[]; findings: Finding[]; readOnly?: boolean; loading?: boolean }) {
+export function RiskTodo({ actions, findings, readOnly = false, loading = false, onNavigate }: { actions: ActionItem[]; findings: Finding[]; readOnly?: boolean; loading?: boolean; onNavigate?: (s: ScreenId) => void }) {
   const byId = useMemo(() => Object.fromEntries(findings.map((f) => [f.finding_id, f])), [findings]);
 
   const enriched = useMemo(() => actions.map((a) => {
@@ -88,7 +89,7 @@ export function RiskTodo({ actions, findings, readOnly = false, loading = false 
                 <motion.div initial={{ height: 0 }} animate={{ height: "auto" }} exit={{ height: 0 }}
                   className="overflow-hidden border-t">
                   <div className="divide-y">
-                    {fs.map((f) => <FindingRow key={f.finding_id} f={f} readOnly={readOnly} />)}
+                    {fs.map((f) => <FindingRow key={f.finding_id} f={f} readOnly={readOnly} onNavigate={onNavigate} />)}
                   </div>
                 </motion.div>
               )}
@@ -111,15 +112,28 @@ function BandChip({ band, label, n, active, onClick }: { band?: Band; label: str
   );
 }
 
-type Expl = { explanation: string; by: string; pending?: boolean; error?: boolean };
+type Expl = { explanation: string; by: string; pending?: boolean; error?: boolean; provider?: string };
 
-function FindingRow({ f, readOnly }: { f: Finding; readOnly?: boolean }) {
+// Truthfully name the provider doing the work — the engine routes to a local
+// Ollama model when one is up, else a hosted one (OpenAI/Anthropic).
+const providerLabel = (p?: string) =>
+  p === "ollama" ? "the local model"
+  : p === "openai" ? "OpenAI"
+  : p === "anthropic" ? "Anthropic"
+  : "the AI model";
+
+function FindingRow({ f, readOnly, onNavigate }: { f: Finding; readOnly?: boolean; onNavigate?: (s: ScreenId) => void }) {
   const [open, setOpen] = useState(false);
   const [explain, setExplain] = useState<Expl>();
   const [exLoading, setExLoading] = useState(false);
   const [rem, setRem] = useState<Remediation>();
   const [remLoading, setRemLoading] = useState(false);
   const [remErr, setRemErr] = useState(false);
+  const [comment, setComment] = useState("");
+  const [refining, setRefining] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [actErr, setActErr] = useState<string>();
   const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => () => { if (pollRef.current) clearTimeout(pollRef.current); }, []);
@@ -153,8 +167,26 @@ function FindingRow({ f, readOnly }: { f: Finding; readOnly?: boolean }) {
   const retryExplain = () => { if (pollRef.current) clearTimeout(pollRef.current); setExplain(undefined); setExLoading(true); fetchExplain(0); };
 
   const remediate = async () => {
-    setRemLoading(true); setRemErr(false);
+    setRemLoading(true); setRemErr(false); setSent(false); setActErr(undefined);
     try { setRem(await api.remediate(f.finding_id)); } catch { setRemErr(true); } finally { setRemLoading(false); }
+  };
+
+  const refine = async () => {
+    if (!comment.trim() || !rem) return;
+    setRefining(true); setActErr(undefined); setSent(false);
+    try {
+      const next = await api.remediateRefine(f.finding_id, comment.trim(), rem.change);
+      setRem(next); setComment("");
+    } catch { setActErr("Could not re-iterate right now. Try again."); } finally { setRefining(false); }
+  };
+
+  const sendToGate = async () => {
+    if (!rem) return;
+    setSending(true); setActErr(undefined);
+    try {
+      await api.changeSubmit({ finding_id: f.finding_id, change: rem.change, revision_id: rem.revision_id });
+      setSent(true);
+    } catch { setActErr("Could not send to the Change Gate. Try again."); } finally { setSending(false); }
   };
 
   return (
@@ -181,7 +213,7 @@ function FindingRow({ f, readOnly }: { f: Finding; readOnly?: boolean }) {
               {explain?.pending && (
                 <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-text3">
                   <span className="h-3 w-3 animate-spin rounded-full border-2 border-accent border-t-transparent" />
-                  Refining with the local model…
+                  Refining with {providerLabel(explain.provider)}…
                 </div>
               )}
               {explain?.error ? (
@@ -194,24 +226,61 @@ function FindingRow({ f, readOnly }: { f: Finding; readOnly?: boolean }) {
                 <button onClick={remediate} disabled={remLoading} className="btn-ghost text-xs">
                   {remLoading ? <Spinner label="Drafting + re-simulating…" /> : <><Wrench size={13} /> Draft &amp; validate a fix</>}
                 </button>
-                {remErr && <div className="text-[11px] text-sev-high">Could not draft a fix right now (the local model may be loading). Try again.</div>}
+                {remErr && <div className="text-[11px] text-sev-high">Could not draft a fix right now (the model may be loading). Try again.</div>}
               </div>
             )) : (
-              <div className="rounded-lg border bg-panel p-3">
-                <div className="mb-1 flex items-center gap-1.5 text-xs font-semibold">
-                  <Wrench size={12} className="text-text2" /> Suggested fix
-                  <span className={cn("chip ml-auto", rem.validation.resolves
-                    ? "border-sev-low-line bg-sev-low-bg text-sev-low" : "border-sev-high-line bg-sev-high-bg text-sev-high")}>
-                    {rem.validation.resolves ? <><Check size={12} /> re-simulated: resolves</> : <><X size={12} /> does not resolve</>}
-                  </span>
+              <div className="space-y-2.5">
+                <div className="rounded-lg border bg-panel p-3">
+                  <div className="mb-1 flex items-center gap-1.5 text-xs font-semibold">
+                    <Wrench size={12} className="text-text2" /> Suggested fix
+                    {rem.seq != null && rem.seq > 0 && <span className="chip border-border text-[10px] text-text3">revision {rem.seq + 1}</span>}
+                    <span className={cn("chip ml-auto", rem.validation.resolves
+                      ? "border-sev-low-line bg-sev-low-bg text-sev-low" : "border-sev-high-line bg-sev-high-bg text-sev-high")}>
+                      {rem.validation.resolves ? <><Check size={12} /> re-simulated: resolves</> : <><X size={12} /> does not resolve</>}
+                    </span>
+                  </div>
+                  <Prose className="!text-sm">{rem.fix_text}</Prose>
+                  <div className="mt-2 flex flex-wrap items-center gap-1.5 font-mono text-[11px] text-muted">
+                    <span>{rem.change.op}</span><span className="text-text2">{rem.change.target_ref}</span>
+                    {rem.change.new_source && <><ArrowRight size={11} className="shrink-0" /><span>{rem.change.new_source}</span></>}
+                    {rem.change.new_service && <><ArrowRight size={11} className="shrink-0" /><span>{rem.change.new_service}</span></>}
+                  </div>
+                  {rem.validation.engine_corrected_ai && (
+                    <div className="mt-1 text-[10px] text-text2">engine corrected the AI's first proposal, then proved this one</div>
+                  )}
                 </div>
-                <Prose className="!text-sm">{rem.fix_text}</Prose>
-                <div className="mt-2 flex flex-wrap items-center gap-1.5 font-mono text-[11px] text-muted">
-                  <span>{rem.change.op}</span><span className="text-text2">{rem.change.target_ref}</span>
-                  {rem.change.new_source && <><ArrowRight size={11} className="shrink-0" /><span>{rem.change.new_source}</span></>}
-                </div>
-                {rem.validation.engine_corrected_ai && (
-                  <div className="mt-1 text-[10px] text-text2">engine corrected the AI's first proposal, then proved this one</div>
+
+                {readOnly ? null : sent ? (
+                  <div className="flex flex-wrap items-center gap-2 rounded-lg border border-ok-line bg-ok-bg p-2.5 text-[12px]">
+                    <Check size={14} className="text-ok" />
+                    <span className="font-semibold text-ok">Sent to the Change Gate.</span>
+                    {onNavigate && (
+                      <button onClick={() => onNavigate("change")} className="ml-auto font-bold underline">Open Change Gate</button>
+                    )}
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {/* Iterate: comment -> re-draft -> repeat, until it's right */}
+                    <label className="block">
+                      <span className="label mb-1 flex items-center gap-1.5"><MessageSquarePlus size={12} /> Comment to refine this fix</span>
+                      <textarea value={comment} onChange={(e) => setComment(e.target.value)} rows={2}
+                        placeholder="e.g. don't remove the rule — scope the source to the jump host instead"
+                        className="field !text-[12px]" />
+                    </label>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button onClick={refine} disabled={refining || !comment.trim()} className="btn-ghost text-xs">
+                        {refining ? <Spinner label="Re-iterating…" /> : <><RotateCw size={13} /> Re-iterate</>}
+                      </button>
+                      <button onClick={sendToGate} disabled={sending || !rem.validation.resolves}
+                        className="btn-primary ml-auto !py-1.5 text-xs" title={rem.validation.resolves ? "" : "Refine until the fix resolves the finding"}>
+                        {sending ? <Spinner label="Sending…" /> : <><Send size={13} /> Accept &amp; send to Change Gate</>}
+                      </button>
+                    </div>
+                    {!rem.validation.resolves && (
+                      <div className="text-[11px] text-text3">Refine with a comment until the fix re-simulates as resolving, then you can send it to the gate.</div>
+                    )}
+                    {actErr && <div className="text-[11px] text-sev-high">{actErr}</div>}
+                  </div>
                 )}
               </div>
             )}

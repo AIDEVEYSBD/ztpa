@@ -38,7 +38,8 @@ def main(warm_explanations: bool = False) -> None:
             print(f"decision {req.id}: {decision.decision} (by={decision.decided_by})")
         if warm_explanations:
             for f in r.findings:
-                cache_explanation(cur, f.id, explain(f)["explanation"])
+                res = explain(f)
+                cache_explanation(cur, f.id, res["explanation"], res.get("by"))
             print(f"explanations cached: {len(r.findings)}")
     print(f"precompute_ai done for {r.snapshot_id}")
 
