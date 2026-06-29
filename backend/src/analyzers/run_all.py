@@ -12,7 +12,7 @@ from time import perf_counter
 
 import networkx as nx
 
-from ..change.apply import apply_overlay
+from ..change.apply import apply_overlay, ensure_entities
 from ..graph.build import build_graph
 from ..identity import resolve_identities
 from ..ids import content_fingerprint, det_id, snapshot_id as make_snapshot_id
@@ -67,10 +67,15 @@ def run(label: str = "seed-demo", manual_merges: list[tuple[str, str]] = (),
     nr = normalize_all()
     # Fold in any operator-accepted changes (pushed from staging) so a recompute
     # reflects the applied state -- the fingerprint below then yields a NEW
-    # snapshot id, exactly as if the source export had changed.
-    records = apply_overlay(nr.records, applied_changes) if applied_changes else nr.records
+    # snapshot id, exactly as if the source export had changed. Entities are
+    # augmented in lockstep so an overlay-introduced endpoint still resolves to an
+    # asset (else its graph node would have no backing asset row).
+    records, entities = nr.records, nr.entities
+    if applied_changes:
+        records = apply_overlay(nr.records, applied_changes)
+        entities = ensure_entities(nr.entities, records)
     t1 = perf_counter()
-    idr = resolve_identities(nr.entities, manual_merges)
+    idr = resolve_identities(entities, manual_merges)
     t2 = perf_counter()
     graph = build_graph(records, idr.assets, idr.alias_map)
     t3 = perf_counter()

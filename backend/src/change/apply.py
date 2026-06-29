@@ -20,7 +20,7 @@ fingerprint (and therefore the snapshot id) already reflects the applied state.
 from __future__ import annotations
 
 from ..models import PolicyRecord
-from ..normalizers.common import is_cidr, parse_service
+from ..normalizers.common import ObservedEntity, is_cidr, parse_service
 
 
 def apply_remediation(records: list[PolicyRecord], change: dict) -> list[PolicyRecord]:
@@ -73,3 +73,28 @@ def apply_overlay(records: list[PolicyRecord], applied: list[dict]) -> list[Poli
         else:  # remediation (and any restrictive change shaped like one)
             out = apply_remediation(out, payload)
     return out
+
+
+def ensure_entities(base_entities: list[ObservedEntity], records: list[PolicyRecord]) -> list[ObservedEntity]:
+    """Augment the observed-entity set with any endpoint referenced by `records`
+    that normalization didn't already emit -- e.g. an overlay add_allow (or a
+    scope_source remediation) that names a new source/destination. Without this,
+    an overlay endpoint becomes a graph node with no backing asset, which fails on
+    persist as a graph_nodes.asset_id FK violation. Existing entities (richer:
+    tags/ip from the tool catalogs, cross-tool merges) are left untouched; we only
+    fill genuine gaps. The record's ip is carried so IP-based merges still apply."""
+    known = {e.name for e in base_entities}
+    extra: list[ObservedEntity] = []
+    for rec in records:
+        for name, kind, ip, tags in (
+            (rec.source, rec.source_kind, rec.source_ip, []),
+            (rec.destination, rec.destination_kind, rec.dest_ip, list(rec.dest_tags)),
+        ):
+            if not name or name in known:
+                continue
+            known.add(name)
+            if kind == "cidr":
+                extra.append(ObservedEntity(name=name, kind="cidr", tool=rec.source_tool, cidr=name, abstract=True))
+            else:
+                extra.append(ObservedEntity(name=name, kind="identity", tool=rec.source_tool, ip=ip, tags=tags))
+    return list(base_entities) + extra
