@@ -155,7 +155,7 @@ CREATE TABLE IF NOT EXISTS findings (
     finding_id       text PRIMARY KEY,             -- deterministic
     snapshot_id      text NOT NULL REFERENCES snapshots(snapshot_id) ON DELETE CASCADE,
     type             text NOT NULL
-                       CHECK (type IN ('over_permissive', 'cidr_overlap', 'shadowed_rule', 'cross_tool_path')),
+                       CHECK (type IN ('over_permissive', 'cidr_overlap', 'shadowed_rule', 'cross_tool_path', 'transport_exposure')),
     severity         integer NOT NULL CHECK (severity BETWEEN 0 AND 100),
     severity_band    text NOT NULL CHECK (severity_band IN ('low', 'medium', 'high', 'critical')),
     forced_critical  boolean NOT NULL DEFAULT false,
@@ -232,6 +232,12 @@ ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS origin text;
 ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'open';
 ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS rejected_by text;
 ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS reject_reason text;
+
+-- widen findings.type to include the transport/application-layer exposure class
+-- (QUIC / HTTP-3 blind spots), added after the initial schema (idempotent).
+ALTER TABLE findings DROP CONSTRAINT IF EXISTS findings_type_check;
+ALTER TABLE findings ADD CONSTRAINT findings_type_check
+    CHECK (type IN ('over_permissive', 'cidr_overlap', 'shadowed_rule', 'cross_tool_path', 'transport_exposure'));
 
 -- ============================================================================
 -- ai_metrics -- one row per AI / agent-tool invocation (Tools + KPI dashboards)

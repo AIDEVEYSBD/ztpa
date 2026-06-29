@@ -40,8 +40,26 @@ def _ports(protocol: str, port: int | None, port_end: int | None = None) -> list
     return [{"proto": protocol, "port_start": port, "port_end": port_end if port_end is not None else port}]
 
 
+_FINDING_TYPES_READY = False
+
+
+def ensure_finding_types(cur: psycopg.Cursor) -> None:
+    """Widen the findings.type CHECK to include 'transport_exposure' (added after
+    the initial schema). Idempotent + runtime, like _ensure_merges -- the new set
+    is a superset of the old, so it never rejects existing rows."""
+    global _FINDING_TYPES_READY
+    if _FINDING_TYPES_READY:
+        return
+    cur.execute("ALTER TABLE ztpa.findings DROP CONSTRAINT IF EXISTS findings_type_check")
+    cur.execute("ALTER TABLE ztpa.findings ADD CONSTRAINT findings_type_check "
+                "CHECK (type IN ('over_permissive','cidr_overlap','shadowed_rule',"
+                "'cross_tool_path','transport_exposure'))")
+    _FINDING_TYPES_READY = True
+
+
 def persist_engine_result(cur: psycopg.Cursor, r: EngineResult) -> dict:
     sid = r.snapshot_id
+    ensure_finding_types(cur)   # widen the type CHECK before inserting findings
     delete_snapshot_children(cur, sid)
 
     upsert(cur, "snapshots", {
