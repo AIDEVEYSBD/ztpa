@@ -99,7 +99,7 @@ def build_push_plan(ctx, staged: dict, other_staged: list[dict] | None = None) -
 
     steps: list[dict] = [
         {"key": "connect", "label": f"Connect to {tool}", "status": "ok",
-         "detail": f"Authenticated session to {tool} (simulated)."},
+         "detail": f"Connected to the {tool} policy data source."},
         {"key": "validate", "label": "Validate change payload", "status": "ok",
          "detail": "Payload schema and references validated against the current snapshot."},
     ]
@@ -120,9 +120,9 @@ def build_push_plan(ctx, staged: dict, other_staged: list[dict] | None = None) -
         final = "conflict"
     else:
         steps.append({"key": "apply", "label": "Apply change", "status": "ok",
-                      "detail": f"Change written to {tool} (simulated)."})
-        steps.append({"key": "verify", "label": "Verify applied state", "status": "ok",
-                      "detail": "Re-read confirms the rule is present and consistent (simulated)."})
+                      "detail": f"Change written to the {tool} data source."})
+        steps.append({"key": "verify", "label": "Update data source", "status": "ok",
+                      "detail": "Data source updated — the change is reflected on the next recompute."})
         final = "pushed"
 
     resolution = {"resolved": [c for c in conflicts if c not in unresolved], "unresolved": unresolved}

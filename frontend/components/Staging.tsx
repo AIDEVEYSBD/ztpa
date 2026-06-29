@@ -34,8 +34,8 @@ export function Staging() {
       <div className="flex flex-wrap items-end gap-2">
         <p className="max-w-3xl text-[13px] text-text2">
           Changes approved in the Change Gate are staged here, grouped by the source system they target.
-          We are not wired to the live tools — <b>Push</b> runs a simulated, stepped deployment that detects and
-          resolves real rule conflicts (computed by the engine) before applying.
+          <b>Push</b> runs a stepped, deterministic deployment that detects and resolves real rule conflicts
+          (computed by the engine), then writes the change to the data source — reflected on the next recompute.
         </p>
         <button onClick={load} className="btn-ghost ml-auto text-xs"><RefreshCw size={13} /> Refresh</button>
       </div>
@@ -159,7 +159,7 @@ function StagedCard({ item, onChanged }: { item: StagedChange; onChanged: () => 
 
       <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-hair pt-2">
         {status === "pushed" ? (
-          <span className="flex items-center gap-1.5 text-[12px] text-ok"><ShieldCheck size={13} /> Applied to {TOOL_LABEL[item.target_tool] ?? item.target_tool} (simulated)</span>
+          <span className="flex items-center gap-1.5 text-[12px] text-ok"><ShieldCheck size={13} /> Applied to {TOOL_LABEL[item.target_tool] ?? item.target_tool} — data source updated</span>
         ) : status === "conflict" ? (
           <span className="flex items-center gap-1.5 text-[12px] text-sev-high"><AlertTriangle size={13} /> Held for human review</span>
         ) : (
