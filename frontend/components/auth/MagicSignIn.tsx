@@ -13,7 +13,7 @@ export function MagicSignIn({ token }: { token: string }) {
     if (!token) { setError("Missing link token."); return; }
     signIn("magic", { token, redirect: false }).then((r) => {
       if (r?.error) setError("This link is invalid or has expired.");
-      else window.location.href = "/";
+      else window.location.href = "/console";
     });
   }, [token]);
 

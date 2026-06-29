@@ -48,15 +48,18 @@ def build_graph(records: list[PolicyRecord], assets: list[Asset],
         s, d = canon(r.source), canon(r.destination)
         ensure(s)
         ensure(d)
-        grant = {"service": r.service, "port": r.port, "protocol": r.protocol,
-                 "tool": r.source_tool, "ref": r.raw_ref}
+        grant = {"service": r.service, "port": r.port, "port_end": r.port_end, "protocol": r.protocol,
+                 "l7_app": r.l7_app, "l7_source": r.l7_source, "tool": r.source_tool, "ref": r.raw_ref}
+        apps = {r.l7_app} if r.l7_app else set()
         if g.has_edge(s, d):
             data = g[s][d]
             data["grants"].append(grant)
             data["tools"] = sorted(set(data["tools"]) | {r.source_tool})
             data["services"] = sorted(set(data["services"]) | {r.service})
+            data["apps"] = sorted(set(data.get("apps", [])) | apps)
         else:
-            g.add_edge(s, d, grants=[grant], tools=[r.source_tool], services=[r.service])
+            g.add_edge(s, d, grants=[grant], tools=[r.source_tool], services=[r.service],
+                       apps=sorted(apps))
     return g
 
 

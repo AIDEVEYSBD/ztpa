@@ -44,7 +44,7 @@ export function RuleRef({ refId, snapshot }: { refId: string; snapshot?: string 
       {open && (
         <>
           <span className="fixed inset-0 z-40" onClick={(e) => { e.stopPropagation(); setOpen(false); }} />
-          <span className="panel absolute right-0 z-50 mt-1 block w-[300px] p-3 text-left shadow-[0_8px_28px_rgba(0,0,0,0.25)]">
+          <span className="popover absolute right-0 z-50 mt-1 block w-[300px] p-3 text-left">
             {loading ? (
               <span className="text-[12px] text-text3">loading…</span>
             ) : rule ? (

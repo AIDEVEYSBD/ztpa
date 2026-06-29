@@ -15,7 +15,12 @@ from pydantic import BaseModel, Field
 Tag = str  # e.g. "pci", "customer-data", "crown-jewel", "prod", "dev", "dmz"
 
 SourceTool = Literal["algosec", "guardicore", "wiz", "sd_wan", "sd_lan"]
-FindingType = Literal["over_permissive", "cidr_overlap", "shadowed_rule", "cross_tool_path"]
+FindingType = Literal[
+    "over_permissive", "cidr_overlap", "shadowed_rule", "cross_tool_path", "transport_exposure",
+]
+# L4 transport protocols we decode. "any" = every protocol/port (a wildcard rule).
+Protocol = Literal["tcp", "udp", "icmp", "sctp", "any"]
+L7Source = Literal["declared", "inferred"]
 SeverityBand = Literal["low", "medium", "high", "critical"]
 
 
@@ -34,9 +39,12 @@ class PolicyRecord(BaseModel):
     destination: str
     destination_kind: Literal["cidr", "identity"]
     dest_tags: list[Tag] = Field(default_factory=list)
-    service: str                                      # e.g. "tcp/3389"
-    port: Optional[int] = None
-    protocol: Literal["tcp", "udp", "any"] = "tcp"
+    service: str                                      # e.g. "tcp/3389", "quic", "tcp/8000-8100"
+    port: Optional[int] = None                        # single port, or range start
+    port_end: Optional[int] = None                    # range end (None = single port)
+    protocol: Protocol = "tcp"
+    l7_app: Optional[str] = None                      # decoded App-ID (e.g. "quic", "tls"); None if unknown
+    l7_source: Optional[L7Source] = None              # how l7_app was decoded (provenance)
     action: Literal["allow", "deny"]
     order: Optional[int] = None                       # rule order within source (for shadowing)
     # Optional metadata carried for the graph / UI (never used by subnet math):

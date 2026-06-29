@@ -9,11 +9,12 @@ memory for live reachability/simulation (identical data to the persisted snapsho
 from __future__ import annotations
 
 import sys
+import threading
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # backend root
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException  # noqa: E402
+from fastapi import Depends, FastAPI, HTTPException  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from psycopg.types.json import Jsonb  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
@@ -33,9 +34,10 @@ from src.graph.zones import zone_of  # noqa: E402
 from src.ids import det_id  # noqa: E402
 from src.models import ChangeRequest, RankedAction, RankedActions  # noqa: E402
 from src.persist import (  # noqa: E402
-    accept_remediation_revision, cache_explanation, delete_asset_merge, load_asset_merges,
-    load_remediation_thread, persist_asset_merge, persist_change_decision, persist_engine_result,
-    persist_ranked_actions, persist_remediation_revision, persist_staged_change,
+    accept_remediation_revision, cache_explanation, delete_asset_merge, ensure_change_request_status,
+    load_applied_changes, load_asset_merges, load_remediation_thread, persist_asset_merge,
+    persist_change_decision, persist_engine_result, persist_ranked_actions,
+    persist_remediation_revision, persist_staged_change, reject_change_request, reset_change_workflow,
 )
 
 app = FastAPI(title="ZeroTrust Policy Advisor", version="1.0")
@@ -87,6 +89,16 @@ def _load_merges() -> list[tuple[str, str]]:
         return []
 
 
+def _load_applied() -> list[dict]:
+    """Operator-accepted changes (pushed from staging), re-applied to the records
+    on every run so a recompute reflects the applied state."""
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            return load_applied_changes(cur)
+    except Exception:
+        return []
+
+
 def engine() -> EngineResult:
     """Cached deterministic engine; persists the snapshot if the DB lacks it."""
     global _ENGINE
@@ -95,7 +107,7 @@ def engine() -> EngineResult:
             write_scenario(_ACTIVE_SCENARIO)   # keep data/mock consistent with the active scenario
         except Exception:
             pass
-        _ENGINE = run(label=_ACTIVE_SCENARIO, manual_merges=_load_merges())
+        _ENGINE = run(label=_ACTIVE_SCENARIO, manual_merges=_load_merges(), applied_changes=_load_applied())
         try:
             with get_conn() as conn, conn.cursor() as cur:
                 row = fetch_one(cur, "SELECT snapshot_id FROM ztpa.snapshots WHERE snapshot_id=%s",
@@ -120,6 +132,23 @@ def _finding(fid: str):
     return next((f for f in engine().findings if f.id == fid), None)
 
 
+@app.on_event("startup")
+def _warm_engine() -> None:
+    """Build the deterministic engine in a background thread at boot, so the first
+    finding a user opens doesn't pay the ~10s cold engine build on the request
+    path. Daemon thread: never blocks startup, never crashes the server if the DB
+    is briefly unavailable (engine() already swallows DB errors)."""
+    import threading
+
+    def _go() -> None:
+        try:
+            engine()
+        except Exception:
+            pass  # a real request will retry the build lazily
+
+    threading.Thread(target=_go, name="warm-engine", daemon=True).start()
+
+
 # --------------------------------------------------------------------------
 @app.get("/api/health")
 def health():
@@ -141,7 +170,7 @@ def recompute():
         write_scenario(_ACTIVE_SCENARIO)   # regenerate the active scenario so data/mock stays consistent
     except Exception:
         pass
-    _ENGINE = run(label=_ACTIVE_SCENARIO, manual_merges=_load_merges())
+    _ENGINE = run(label=_ACTIVE_SCENARIO, manual_merges=_load_merges(), applied_changes=_load_applied())
     snap = _ENGINE.snapshot_id
     with get_conn() as conn, conn.cursor() as cur:
         summary = persist_engine_result(cur, _ENGINE)
@@ -172,7 +201,7 @@ def switch_dataset(body: DatasetBody, _: None = Depends(require_admin)):
     except ValueError as e:
         raise HTTPException(400, str(e))
     _ACTIVE_SCENARIO = body.scenario
-    _ENGINE = run(label=body.scenario, manual_merges=_load_merges())
+    _ENGINE = run(label=body.scenario, manual_merges=_load_merges(), applied_changes=_load_applied())
     snap = _ENGINE.snapshot_id
     with get_conn() as conn, conn.cursor() as cur:
         summary = persist_engine_result(cur, _ENGINE)
@@ -245,21 +274,25 @@ def graph(snapshot: str | None = None):
     t = view_sid(snapshot)
     with get_conn() as conn, conn.cursor() as cur:
         nodes = fetch_all(cur, "SELECT node_id,kind,label,tags,ip_set FROM ztpa.graph_nodes WHERE snapshot_id=%s", [t])
-        edges = fetch_all(cur, "SELECT src_node,dst_node,source_tool,ports,rule_uid FROM ztpa.graph_edges WHERE snapshot_id=%s", [t])
+        edges = fetch_all(cur, "SELECT src_node,dst_node,source_tool,ports,l7_app,rule_uid FROM ztpa.graph_edges WHERE snapshot_id=%s", [t])
         ct = fetch_all(cur, "SELECT signals FROM ztpa.findings WHERE snapshot_id=%s AND type='cross_tool_path' ORDER BY finding_id", [t])
     for n in nodes:
         n["zone"] = zone_of(n["node_id"], n.get("tags") or [])
     grouped: dict[tuple, dict] = {}
     for ed in edges:
         key = (ed["src_node"], ed["dst_node"])
-        g = grouped.setdefault(key, {"src": ed["src_node"], "dst": ed["dst_node"], "tools": set(), "services": set()})
+        g = grouped.setdefault(key, {"src": ed["src_node"], "dst": ed["dst_node"], "tools": set(),
+                                     "services": set(), "apps": set()})
         g["tools"].add(ed["source_tool"])
+        if ed.get("l7_app"):
+            g["apps"].add(ed["l7_app"])
         for p in (ed.get("ports") or []):
-            g["services"].add(f"{p.get('proto')}/{p.get('port_start')}")
+            start, end = p.get("port_start"), p.get("port_end")
+            g["services"].add(f"{p.get('proto')}/{start}" if end in (None, start) else f"{p.get('proto')}/{start}-{end}")
         if not ed.get("ports"):
             g["services"].add("any")
     edge_list = [{"src": v["src"], "dst": v["dst"], "tools": sorted(v["tools"]),
-                  "services": sorted(v["services"])} for v in grouped.values()]
+                  "services": sorted(v["services"]), "apps": sorted(v["apps"])} for v in grouped.values()]
     cross = [r["signals"] for r in ct]
     highlight = cross[0].get("path") if cross else []
     return {"nodes": nodes, "edges": edge_list, "highlight_path": highlight, "cross_tool_paths": cross}
@@ -303,7 +336,7 @@ def _bg_explain(fid: str, f) -> None:
 
 
 @app.post("/api/findings/{fid}/explain")
-def explain_finding(fid: str, background: BackgroundTasks):
+def explain_finding(fid: str):
     _require_capability("explain")
     f = _finding(fid)
     if not f:
@@ -317,10 +350,12 @@ def explain_finding(fid: str, background: BackgroundTasks):
         by = f"{src} (cached)" if src else "cache"
         return {"explanation": row["explanation"], "by": by, "cached": True, "pending": False}
     # Not cached: return the deterministic explanation immediately and compute the
-    # richer LLM one in the background (de-duped per finding). The UI re-fetches.
+    # richer LLM one on a real daemon thread (de-duped per finding). FastAPI
+    # BackgroundTasks run as part of the response lifecycle and kept the request
+    # open until the LLM finished — a true thread returns the fallback instantly.
     if fid not in _explaining:
         _explaining.add(fid)
-        background.add_task(_bg_explain, fid, f)
+        threading.Thread(target=_bg_explain, args=(fid, f), name=f"explain-{fid}", daemon=True).start()
     # tell the UI which provider will produce the richer explanation, so it can
     # label the "refining…" state truthfully (local model vs a hosted one).
     return {"explanation": explain_mod._fallback(f), "by": "engine_fallback",
@@ -411,7 +446,7 @@ def _apply_merges_and_persist(action: str, a: str, b: str) -> dict:
     """Re-resolve identities with the current confirmed merges, then re-persist the
     snapshot (delete_snapshot_children + reinsert) so DB-backed reads reflect it."""
     global _ENGINE
-    _ENGINE = run(label=_ACTIVE_SCENARIO, manual_merges=_load_merges())
+    _ENGINE = run(label=_ACTIVE_SCENARIO, manual_merges=_load_merges(), applied_changes=_load_applied())
     snap = _ENGINE.snapshot_id
     with get_conn() as conn, conn.cursor() as cur:
         persist_engine_result(cur, _ENGINE)
@@ -502,10 +537,13 @@ def change_decisions_log(limit: int = 25):
     ruled on it (decision, guardrail, who decided, when). Reads the
     change_requests + change_decisions tables that classify() writes."""
     with get_conn() as conn, conn.cursor() as cur:
+        ensure_change_request_status(cur)
         rows = fetch_all(cur, """
             SELECT d.decision_id, d.request_id, d.decision, d.forced_escalate, d.confidence,
                    d.model AS decided_by, d.triggering_reason, d.decided_at,
+                   d.criteria, d.delta_summary,
                    r.proposed, r.justification, r.requested_by, r.kind, r.origin,
+                   r.status AS request_status, r.rejected_by, r.reject_reason,
                    s.staged_id, s.status AS staged_status
             FROM ztpa.change_decisions d
             JOIN ztpa.change_requests r ON r.request_id = d.request_id
@@ -584,12 +622,15 @@ class StageBody(BaseModel):
 @app.post("/api/staging")
 def stage_change(body: StageBody):
     with get_conn() as conn, conn.cursor() as cur:
+        ensure_change_request_status(cur)
         row = fetch_one(cur, """
-            SELECT d.decision, r.proposed, r.kind, r.origin, r.snapshot_id
+            SELECT d.decision, r.proposed, r.kind, r.origin, r.snapshot_id, r.status
             FROM ztpa.change_decisions d JOIN ztpa.change_requests r ON r.request_id = d.request_id
             WHERE d.request_id = %s""", [body.request_id])
         if not row:
             raise HTTPException(404, "change request/decision not found")
+        if row.get("status") == "rejected":
+            raise HTTPException(409, "this change request was rejected and cannot be staged")
         if row["decision"] == "escalate":
             if not body.manual_approve:
                 raise HTTPException(400, "escalated change requires manual approval to stage")
@@ -650,6 +691,50 @@ def staging_delete(staged_id: str):
         cur.execute("DELETE FROM ztpa.staged_changes WHERE staged_id=%s", [staged_id])
         audit(cur, "user", "discard_staged_change", subject=staged_id, detail={})
     return {"ok": True, "deleted": staged_id}
+
+
+# --- Change Gate: reject a request -----------------------------------------
+class RejectBody(BaseModel):
+    request_id: str
+    reason: str | None = None
+
+
+@app.post("/api/change/reject")
+def reject_change(body: RejectBody):
+    """Decline a change request. A governance action, so only an approver
+    (admin/analyst) may reject -- mirrors who can approve an escalation. The
+    request moves out of Actions into the Decision log marked 'rejected', and can
+    no longer be staged."""
+    if request_ctx.role() not in ("admin", "analyst"):
+        raise HTTPException(403, "only admin or analyst can reject a change")
+    by = request_ctx.current().email or "reviewer"
+    with get_conn() as conn, conn.cursor() as cur:
+        n = reject_change_request(cur, body.request_id, by, body.reason)
+        if not n:
+            raise HTTPException(404, "change request not found")
+    return {"ok": True, "request_id": body.request_id, "status": "rejected", "rejected_by": by}
+
+
+# --- Admin: reset the change-gate demo -------------------------------------
+@app.post("/api/admin/reset-demo")
+def reset_demo(_: None = Depends(require_admin)):
+    """Clear the change-governance working set (requests, decisions, staged
+    changes, remediation threads) and recompute a clean baseline. Use this to
+    re-run the demo: any pushed change is cleared, so the resolved finding
+    reappears on the next recompute."""
+    global _ENGINE
+    with get_conn() as conn, conn.cursor() as cur:
+        cleared = reset_change_workflow(cur)
+        audit(cur, "user", "reset_demo", detail=cleared)
+    _ENGINE = run(label=_ACTIVE_SCENARIO, manual_merges=_load_merges(), applied_changes=_load_applied())
+    snap = _ENGINE.snapshot_id
+    with get_conn() as conn, conn.cursor() as cur:
+        summary = persist_engine_result(cur, _ENGINE)
+        summary["timings"] = _ENGINE.timings
+        summary["paths"] = sum(1 for f in _ENGINE.findings if f.type == "cross_tool_path")
+        cur.execute("DELETE FROM ztpa.ranked_actions WHERE snapshot_id=%s", [snap])
+        cur.execute("UPDATE ztpa.findings SET explanation=NULL WHERE snapshot_id=%s", [snap])
+    return {"ok": True, "cleared": cleared, "snapshot_id": snap, "summary": summary}
 
 
 # --- Admin: tools registry + per-role toggles ------------------------------

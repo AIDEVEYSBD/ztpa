@@ -1,16 +1,17 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { UserPlus } from "lucide-react";
+import { UserPlus, Users as UsersIcon } from "lucide-react";
 import { adminCreateUser, adminListUsers } from "@/app/actions";
 import type { AppUser, Role } from "@/lib/users";
-import { cn, Spinner, Skeleton } from "../ui";
+import { Spinner, Skeleton, Chip, Eyebrow, EmptyState } from "../ui";
+import type { ChipVariant } from "../ui";
 import { DevLink } from "../auth/AuthShell";
 
-const ROLE_STYLE: Record<string, string> = {
-  admin: "border-accent bg-accent-soft text-text",
-  analyst: "border-border text-text2",
-  viewer: "border-border text-text3",
+const ROLE_VARIANT: Record<string, ChipVariant> = {
+  admin: "accent",
+  analyst: "neutral",
+  viewer: "neutral",
 };
 
 export function UsersAdmin() {
@@ -35,7 +36,7 @@ export function UsersAdmin() {
   return (
     <div className="space-y-5">
       <div className="panel p-5">
-        <div className="mb-3 flex items-center gap-2 text-[13px] font-bold"><UserPlus size={16} /> Invite a user</div>
+        <div className="mb-4 flex items-center gap-2"><Eyebrow><UserPlus size={13} /> Invite a user</Eyebrow></div>
         <form onSubmit={invite} className="flex flex-wrap items-end gap-3">
           <label className="min-w-[220px] flex-1">
             <span className="label mb-1 block">Email</span>
@@ -55,33 +56,35 @@ export function UsersAdmin() {
           </label>
           <button className="btn-primary" disabled={loading}>{loading ? <Spinner /> : "Send invite"}</button>
         </form>
-        {result && !result.ok && <p className="mt-2 text-[12px] text-sev-critical">{result.error}</p>}
-        {result?.ok && <p className="mt-2 text-[12px] text-ok">Invite created for {email || "the user"}.</p>}
+        {result && !result.ok && <p className="mt-3 text-[12px] text-sev-critical">{result.error}</p>}
+        {result?.ok && <p className="mt-3 text-[12px] text-ok">Invite created for {email || "the user"}.</p>}
         {result?.devLink && <DevLink href={result.devLink} />}
       </div>
 
       <div className="panel p-5">
-        <div className="mb-3 text-[13px] font-bold">Users ({users.length})</div>
+        <div className="mb-4 flex items-center gap-2"><Eyebrow>Users</Eyebrow><span className="text-[12px] text-text3">({users.length})</span></div>
         {!loaded ? (
           <div className="space-y-2">
             {Array.from({ length: 3 }).map((_, i) => (
-              <div key={i} className="flex items-center gap-3 border-b border-hair py-2 last:border-0">
+              <div key={i} className="flex items-center gap-3 border-b border-hair py-2.5 last:border-0">
                 <Skeleton className="h-3.5 w-48" /><Skeleton className="h-3 w-24" /><Skeleton className="ml-auto h-5 w-16" />
               </div>
             ))}
           </div>
+        ) : users.length === 0 ? (
+          <EmptyState icon={UsersIcon} title="No users yet" sub="Invite someone above to get started." />
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[420px] text-[13px]">
-              <thead className="text-left"><tr className="label border-b border-border [&>th]:py-1.5 [&>th]:font-bold">
+              <thead><tr className="border-b border-border text-left [&>th]:py-2 [&>th]:pr-3 [&>th]:text-[11px] [&>th]:font-bold [&>th]:uppercase [&>th]:tracking-[0.08em] [&>th]:text-text3">
                 <th>Email</th><th>Name</th><th>Role</th><th>Status</th></tr></thead>
               <tbody>
                 {users.map((u) => (
-                  <tr key={u.id} className="border-b border-hair last:border-0">
-                    <td className="break-all py-2 pr-3 font-medium">{u.email}</td>
+                  <tr key={u.id} className="border-b border-hair transition-colors last:border-0 hover:bg-surfaceHover">
+                    <td className="break-all py-2.5 pr-3 font-medium">{u.email}</td>
                     <td className="pr-3 text-text2">{u.name || "no name"}</td>
-                    <td className="pr-3"><span className={cn("chip", ROLE_STYLE[u.role])}>{u.role}</span></td>
-                    <td className="text-[12px] text-text2">{u.status}</td>
+                    <td className="pr-3"><Chip variant={ROLE_VARIANT[u.role] ?? "neutral"}>{u.role}</Chip></td>
+                    <td className="pr-3"><Chip variant={u.status === "active" ? "ok" : "info"}>{u.status}</Chip></td>
                   </tr>
                 ))}
               </tbody>

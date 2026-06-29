@@ -169,6 +169,9 @@ CREATE TABLE IF NOT EXISTS findings (
 );
 -- widen older snapshots' findings table that predate explanation_by (idempotent).
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS explanation_by text;
+-- widen the finding type domain to include transport_exposure (QUIC / L7) (idempotent).
+ALTER TABLE findings DROP CONSTRAINT IF EXISTS findings_type_check;
+ALTER TABLE findings ADD CONSTRAINT findings_type_check CHECK (type IN ('over_permissive', 'cidr_overlap', 'shadowed_rule', 'cross_tool_path', 'transport_exposure'));
 
 -- ranked, root-cause-grouped actions (LLM ranking output)
 CREATE TABLE IF NOT EXISTS ranked_actions (
@@ -223,6 +226,12 @@ CREATE TABLE IF NOT EXISTS audit_log (
 -- the same request/decision tables (idempotent).
 ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS kind text;
 ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS origin text;
+
+-- request lifecycle: 'open' (awaiting action) or 'rejected' (declined by a reviewer).
+-- Approved/staged requests are tracked via staged_changes, not this column.
+ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'open';
+ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS rejected_by text;
+ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS reject_reason text;
 
 -- ============================================================================
 -- ai_metrics -- one row per AI / agent-tool invocation (Tools + KPI dashboards)

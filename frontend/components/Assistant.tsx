@@ -55,22 +55,22 @@ export function Assistant() {
       <div className="panel flex h-[560px] flex-col">
         <div ref={scrollRef} className="zt-scroll flex-1 space-y-4 overflow-y-auto p-4">
           {turns.length === 0 && (
-            <div className="grid h-full place-items-center text-center text-sm text-muted">
+            <div className="grid h-full place-items-center text-center text-sm text-text2">
               <div>
-                <Bot className="mx-auto mb-2 text-text2" size={28} />
+                <Bot className="mx-auto mb-2 text-text3" size={28} />
                 Ask plain-English questions about your network.<br />The agent calls deterministic engine tools, so every answer is grounded in computed facts.
               </div>
             </div>
           )}
           {turns.map((t, i) => (
             <div key={i} className="space-y-2">
-              <div className="flex items-start gap-2">
-                <User size={16} className="mt-0.5 text-muted" />
-                <div className="text-sm font-medium">{t.q}</div>
+              <div className="flex items-start justify-end gap-2">
+                <div className="sunk max-w-[85%] px-3 py-2 text-sm font-medium text-text">{t.q}</div>
+                <User size={16} className="mt-1.5 shrink-0 text-text3" />
               </div>
               <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex items-start gap-2">
-                <Bot size={16} className="mt-0.5 text-text2" />
-                <div className="min-w-0 flex-1">
+                <span className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center bg-accent-ink"><Bot size={15} className="text-accent" /></span>
+                <div className="panel min-w-0 flex-1 p-3">
                   {t.loading ? (
                     <div className="space-y-2">
                       <Spinner label="Calling deterministic tools…" />
@@ -80,16 +80,16 @@ export function Assistant() {
                     <>
                       <Prose>{t.a?.answer ?? ""}</Prose>
                       {!!t.a?.trace?.length && (
-                        <div className="mt-2 rounded-lg border bg-surfaceHover p-2">
-                          <div className="mb-1 flex items-center gap-1 text-[10px] font-semibold text-muted"><Terminal size={11} /> TOOL TRACE </div>
+                        <div className="sunk mt-2 p-2">
+                          <div className="label mb-1 flex items-center gap-1 text-[10px]"><Terminal size={11} className="text-accent-fg" /> Tool trace</div>
                           {t.a.trace.map((tr, j) => (
-                            <div key={j} className="font-mono text-[10px] text-muted">
+                            <div key={j} className="mono text-[10px] text-text3">
                               <span className="text-text2">{tr.tool}</span>({Object.values(tr.args ?? {}).join(", ")})
                             </div>
                           ))}
                         </div>
                       )}
-                      {t.a?.by && <div className="mt-1 text-[10px] text-muted">via {t.a.by}</div>}
+                      {t.a?.by && <div className="mt-1.5 text-[10px] text-text3">via {t.a.by}</div>}
                     </>
                   )}
                 </div>
@@ -105,12 +105,12 @@ export function Assistant() {
         </form>
       </div>
       <div className="space-y-2">
-        <div className="text-xs font-semibold text-muted">Try asking <span className="font-normal text-text3">· from this snapshot</span></div>
+        <div className="label flex items-center gap-1.5">Try asking <span className="font-normal normal-case tracking-normal text-text3">· from this snapshot</span></div>
         {suggested === undefined
           ? Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-12 w-full" />)
           : suggested.map((s) => (
             <button key={s} onClick={() => ask(s)} disabled={busy}
-              className={cn("panel w-full p-3 text-left text-xs", busy ? "cursor-not-allowed opacity-50" : "hover:bg-surfaceHover")}>{s}</button>
+              className={cn("panel w-full p-3 text-left text-xs text-text2 transition-colors", busy ? "cursor-not-allowed opacity-50" : "hover:border-accent hover:text-text")}>{s}</button>
           ))}
         {busy && <div className="px-1 pt-1 text-[11px] text-text3">Answering… one question at a time so the trace stays readable.</div>}
       </div>

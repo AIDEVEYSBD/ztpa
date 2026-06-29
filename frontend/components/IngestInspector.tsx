@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { ArrowRight } from "lucide-react";
 import { api } from "@/lib/api";
-import { ToolBadge, Skeleton, cn } from "./ui";
+import { ToolBadge, Chip, Eyebrow, Skeleton, cn } from "./ui";
 import { RuleRef } from "./RuleRef";
 import { useFilterSort, SearchBox, SortSelect } from "@/lib/tableTools";
 
@@ -39,7 +39,7 @@ export function IngestInspector({ snapshot }: { snapshot?: string }) {
         <Skeleton className="h-4 w-3/4 max-w-xl" />
         {[3, 6, 4].map((rows, p) => (
           <div key={p} className="panel">
-            <div className="border-b border-border px-4 py-2.5"><Skeleton className="h-3.5 w-40" /></div>
+            <div className="panel-head"><Skeleton className="h-3.5 w-40" /></div>
             <div className="divide-y divide-hair">
               {Array.from({ length: rows }).map((_, i) => (
                 <div key={i} className="flex items-center gap-3 px-4 py-2.5">
@@ -63,7 +63,7 @@ export function IngestInspector({ snapshot }: { snapshot?: string }) {
       </p>
 
       <div className="panel">
-        <div className="border-b border-border px-4 py-2.5 text-[12.5px] font-bold">Sources ({d.sources.length})</div>
+        <div className="panel-head"><Eyebrow>Sources ({d.sources.length})</Eyebrow></div>
         <div className="divide-y divide-hair">
           {d.sources.map((s) => (
             <div key={s.tool} className="flex items-center gap-3 px-4 py-2.5 text-[13px]">
@@ -76,8 +76,8 @@ export function IngestInspector({ snapshot }: { snapshot?: string }) {
       </div>
 
       <div className="panel">
-        <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-2.5">
-          <span className="text-[12.5px] font-bold">Canonical rules ({rt.rows.length}{rt.rows.length !== rules.length ? ` of ${rules.length}` : ""})</span>
+        <div className="flex flex-wrap items-center gap-2 border-b border-hair px-4 py-2.5">
+          <Eyebrow>Canonical rules ({rt.rows.length}{rt.rows.length !== rules.length ? ` of ${rules.length}` : ""})</Eyebrow>
           <span className="hidden text-[11px] text-text3 sm:inline">normalized · set-valued · provenance kept</span>
           <div className="ml-auto flex items-center gap-2">
             <SearchBox value={rt.q} onChange={rt.setQ} placeholder="Filter rules…" />
@@ -92,8 +92,8 @@ export function IngestInspector({ snapshot }: { snapshot?: string }) {
               <span className="mono break-all">{side(r.src_value)}</span>
               <ArrowRight size={11} className="shrink-0 text-text3" />
               <span className="mono break-all">{side(r.dst_value)}</span>
-              <span className="chip mono text-[10px]">{svc(r)}</span>
-              <span className={cn("mono border px-1.5 text-[10px]", r.action === "allow" ? "border-ok-line text-ok" : "border-sev-critical-line text-sev-critical")}>{r.action}</span>
+              <Chip mono>{svc(r)}</Chip>
+              <Chip variant={r.action === "allow" ? "ok" : "danger"} mono>{r.action}</Chip>
               <span className="ml-auto flex items-center gap-1.5"><ToolBadge tool={r.source_tool} /><RuleRef refId={r.raw_rule_id} snapshot={snapshot} /></span>
             </div>
           ))}
@@ -101,7 +101,7 @@ export function IngestInspector({ snapshot }: { snapshot?: string }) {
       </div>
 
       <div className="panel">
-        <div className="border-b border-border px-4 py-2.5 text-[12.5px] font-bold">Resolved objects ({d.resolved_objects.length})</div>
+        <div className="panel-head"><Eyebrow>Resolved objects ({d.resolved_objects.length})</Eyebrow></div>
         <div className="zt-scroll max-h-[320px] divide-y divide-hair overflow-y-auto">
           {d.resolved_objects.map((o, i) => (
             <div key={i} className="flex items-center gap-2 px-4 py-2 text-[12px]">

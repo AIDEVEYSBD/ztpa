@@ -87,6 +87,21 @@
       "dst": "app-server-08",
       "port": 443,
       "protocol": "tcp"
+    },
+    {
+      "exposure_id": "WIZ-020",
+      "kind": "internet_ingress",
+      "dst": "lb-public-01",
+      "port": 443,
+      "protocol": "udp"
+    },
+    {
+      "exposure_id": "WIZ-021",
+      "kind": "lateral",
+      "src": "lb-public-01",
+      "dst": "appsrv-07",
+      "port": 443,
+      "protocol": "udp"
     }
   ]
 }

@@ -160,14 +160,14 @@ export function NetworkMap({ graph, findings = [], counts = {}, loading = false 
         )}
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-[1fr_332px]">
+      <div className="grid gap-4 xl:grid-cols-[1fr_332px] 3xl:grid-cols-[1fr_400px]">
         <section className="panel min-w-0">
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3.5 py-2.5">
-            <div className="flex items-center gap-2 text-[12.5px] font-bold"><Route size={15} className="text-text2" /> Unified reachability graph</div>
+            <span className="eyebrow">Unified reachability graph</span>
             <div className="flex items-center gap-2">
               <div className="flex border border-border text-[11px]">
-                <button onClick={() => setMode("focus")} className={cn("px-2 py-1", mode === "focus" ? "bg-surfaceHover font-bold" : "text-text2")}>Focus</button>
-                <button onClick={() => setMode("full")} className={cn("border-l border-border px-2 py-1", mode === "full" ? "bg-surfaceHover font-bold" : "text-text2")}>All</button>
+                <button onClick={() => setMode("focus")} className={cn("px-2.5 py-1 transition-colors", mode === "focus" ? "bg-accent-soft font-bold text-accent-fg" : "text-text2 hover:bg-surfaceHover")}>Focus</button>
+                <button onClick={() => setMode("full")} className={cn("border-l border-border px-2.5 py-1 transition-colors", mode === "full" ? "bg-accent-soft font-bold text-accent-fg" : "text-text2 hover:bg-surfaceHover")}>All</button>
               </div>
               <button onClick={() => setTraced((t) => !t)} className={cn(traced ? "btn-primary" : "btn-ghost", "!h-[30px]")}>
                 <Route size={13} /> {traced ? "Tracing path" : "Trace path"}
@@ -185,7 +185,7 @@ export function NetworkMap({ graph, findings = [], counts = {}, loading = false 
             </div>
           )}
 
-          <div className="relative h-[420px] bg-sunk sm:h-[520px]">
+          <div className="relative h-[420px] bg-sunk sm:h-[520px] 3xl:h-[640px]">
             {!graph ? (
               <div className="grid h-full grid-cols-4 items-center gap-6 p-8">
                 {[0, 1, 2, 3].map((col) => (
@@ -222,7 +222,7 @@ export function NetworkMap({ graph, findings = [], counts = {}, loading = false 
         {/* hop panel */}
         <section className="panel self-start">
           <div className="flex items-center justify-between border-b border-border px-3.5 py-2.5">
-            <span className="text-[12.5px] font-bold">Cross-tool path{ready && paths.length > 1 ? `s · ${paths.length}` : ""}</span>
+            <span className="eyebrow">Cross-tool path{ready && paths.length > 1 ? `s · ${paths.length}` : ""}</span>
             {ready && hero && <span className="inline-flex items-center gap-1 text-[10.5px] font-bold uppercase tracking-[0.03em] text-sev-critical"><OctagonAlert size={12} /> Reachable</span>}
           </div>
           {ready && paths.length > 1 && (
@@ -246,7 +246,7 @@ export function NetworkMap({ graph, findings = [], counts = {}, loading = false 
           ) : hero ? (
             <div className="p-3.5">
               <p className="mb-3.5 text-[12px] leading-relaxed text-text2">
-                The internet reaches <span className="mono text-text">{hero.terminal}</span> in {(hero.hops ?? []).length} hops across <b className="text-text">{hero.tools?.length}</b> tools that no single console reveals.
+                The internet reaches <span className="mono text-text">{hero.terminal}</span> in {(hero.hops ?? []).length} hops across <b className="text-text">{hero.tools?.length}</b> tools.
               </p>
               <div className="space-y-0">
                 {(hero.hops ?? []).map((h: any, i: number) => (
@@ -257,7 +257,9 @@ export function NetworkMap({ graph, findings = [], counts = {}, loading = false 
                     </div>
                     <div className="ml-[4px] border-l border-border py-1.5 pl-[14px]">
                       <div className="border border-border bg-surface2 px-2.5 py-1.5" style={{ borderLeft: "2px solid var(--sev-high)" }}>
-                        <div className="text-[11px] text-text2">permits <span className="mono font-bold text-text">{h.service}</span></div>
+                        <div className="text-[11px] text-text2">permits <span className="mono font-bold text-text">{h.service}</span>
+                          {h.l7_app && <span className="ml-1.5 chip border-sev-high-line bg-sev-high-bg px-1 py-0 text-[9px] uppercase text-sev-high" title="Decoded application">{h.l7_app}</span>}
+                        </div>
                         <div className="mt-1.5 flex items-center gap-1.5"><ToolBadge tool={h.tool} /><span className="text-[10px] text-text3">rule</span><RuleRef refId={h.ref} /></div>
                       </div>
                     </div>

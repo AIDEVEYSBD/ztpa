@@ -47,6 +47,72 @@ PORT_CLASS_LABEL = {
 }
 
 # --------------------------------------------------------------------------
+# L7 application identity (App-ID) decoding -- categorical, never computed.
+# --------------------------------------------------------------------------
+# The transport layer alone (tcp/udp + port) under-describes a rule: udp/443 is
+# QUIC/HTTP-3, and most legacy firewalls cannot inspect it. We decode an L7 app
+# tag from two sources, both deterministic and audit-flagged (l7_source):
+#   - "declared": the source export carried an explicit App-ID token.
+#   - "inferred": a fixed (protocol, port) -> app lookup in this table.
+# Neither path calls a model. Unknown (protocol, port) -> no l7 tag.
+
+# App-ID tokens we recognize when a source names a service by application, not
+# by port (e.g. AlgoSec service "quic", a Guardicore policy "app": "http3").
+L7_APPS = {
+    "http", "https", "tls", "ssl", "http2", "quic", "http3", "doq", "dns-over-quic",
+    "dns", "ssh", "rdp", "smb", "ldap", "ldaps", "ntp", "syslog", "kerberos",
+    "mysql", "postgresql", "postgres", "mssql", "mongodb", "redis", "kubernetes",
+}
+
+# An App-ID names the application; the transport it rides is fixed. Used to
+# resolve a bare app token (e.g. "quic") back to (protocol, port) so the L4
+# facts stay populated alongside the L7 tag.
+APP_TRANSPORT: dict[str, tuple[str, int]] = {
+    "quic": ("udp", 443), "http3": ("udp", 443), "doq": ("udp", 853),
+    "dns-over-quic": ("udp", 853),
+    "https": ("tcp", 443), "tls": ("tcp", 443), "ssl": ("tcp", 443),
+    "http2": ("tcp", 443), "http": ("tcp", 80),
+    "dns": ("udp", 53), "ssh": ("tcp", 22), "rdp": ("tcp", 3389), "smb": ("tcp", 445),
+    "ldap": ("tcp", 389), "ldaps": ("tcp", 636), "ntp": ("udp", 123),
+    "syslog": ("udp", 514), "kerberos": ("tcp", 88),
+    "mysql": ("tcp", 3306), "postgresql": ("tcp", 5432), "postgres": ("tcp", 5432),
+    "mssql": ("tcp", 1433), "mongodb": ("tcp", 27017), "redis": ("tcp", 6379),
+}
+
+# Deterministic L4 -> likely L7 inference: (protocol, port) -> app tag.
+# This is the lookup that lets a plain "udp/443" rule be decoded as QUIC.
+APP_BY_PORT: dict[tuple[str, int], str] = {
+    ("udp", 443): "quic", ("udp", 80): "http3-discovery",
+    ("udp", 853): "dns-over-quic", ("udp", 53): "dns", ("tcp", 53): "dns",
+    ("tcp", 443): "tls", ("tcp", 8443): "tls", ("tcp", 80): "http", ("tcp", 8080): "http",
+    ("tcp", 22): "ssh", ("tcp", 3389): "rdp", ("tcp", 445): "smb",
+    ("tcp", 389): "ldap", ("tcp", 636): "ldaps", ("udp", 123): "ntp", ("udp", 514): "syslog",
+    ("tcp", 5432): "postgresql", ("tcp", 3306): "mysql", ("tcp", 1433): "mssql",
+    ("tcp", 27017): "mongodb", ("tcp", 6379): "redis", ("tcp", 6443): "kubernetes",
+}
+
+# Applications that ride encrypted and/or UDP transports legacy firewalls
+# typically cannot decrypt or inspect. A reachable allow on one of these is an
+# inspection blind spot -- the class of risk this feature surfaces.
+INSPECTION_BLIND_APPS = {"quic", "http3", "doq", "dns-over-quic", "http3-discovery"}
+
+# --------------------------------------------------------------------------
+# Transport / application-layer exposure (transport_exposure) knobs.
+# --------------------------------------------------------------------------
+TRANSPORT_CONFIG: dict = {
+    # Added to the smooth severity when the exposed app is uninspectable.
+    "blind_spot_bump": 15,
+    # tcp/443 AND udp/443 both allowed to one dest: an inspectable TLS path
+    # exists yet QUIC can silently win -- you cannot force inspection. Fixed base
+    # (a hygiene/control-gap finding), bumped if the dest is sensitive.
+    "fallback_base": 40,
+    "fallback_sensitive_bump": 20,
+    # The (protocol, port) pairs whose simultaneous presence trips the
+    # "fallback not blocked" check.
+    "fallback_pairs": [(("tcp", 443), ("udp", 443))],
+}
+
+# --------------------------------------------------------------------------
 # Destination sensitivity (D) — max over the destination's tags.
 # --------------------------------------------------------------------------
 TAG_SENSITIVITY: dict[str, float] = {

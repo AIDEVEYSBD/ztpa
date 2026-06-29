@@ -17,8 +17,8 @@ export function ResetForm({ token }: { token: string }) {
     if (password !== confirm) { setError("Passwords do not match."); return; }
     setLoading(true); setError(undefined);
     const r = await doReset(token, password);
-    setLoading(false);
-    if (r.ok) window.location.href = "/login?reset=1"; else setError(r.error);
+    if (r.ok) window.location.href = "/login?reset=1";
+    else { setError(r.error); setLoading(false); }
   };
 
   if (!token) {
@@ -36,7 +36,7 @@ export function ResetForm({ token }: { token: string }) {
         <AuthInput label="New password" type="password" required minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="at least 8 characters" />
         <AuthInput label="Confirm password" type="password" required value={confirm} onChange={(e) => setConfirm(e.target.value)} />
         {error && <p className="text-xs text-sev-critical">{error}</p>}
-        <button className="btn-primary w-full" disabled={loading}>{loading ? <Spinner /> : "Update password"}</button>
+        <button className="btn-primary w-full" disabled={loading}>{loading ? <Spinner label="Updating…" /> : "Update password"}</button>
       </form>
     </AuthShell>
   );

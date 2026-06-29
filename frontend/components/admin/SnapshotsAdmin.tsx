@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Trash2, Eye } from "lucide-react";
+import { Trash2, Eye, History } from "lucide-react";
 import { api } from "@/lib/api";
-import { Skeleton, cn } from "../ui";
+import { Skeleton, cn, Chip, EmptyState } from "../ui";
 import { useFilterSort, SearchBox, SortSelect } from "@/lib/tableTools";
 
 export function SnapshotsAdmin({ onView }: { onView: (id: string) => void }) {
@@ -66,6 +66,9 @@ function SnapshotTimeline({ snaps, active, onView, confirm, setConfirm, busy, de
         <span className="ml-auto text-[11px] text-text3">{t.rows.length} snapshot{t.rows.length !== 1 ? "s" : ""}</span>
       </div>
 
+      {t.rows.length === 0 ? (
+        <div className="panel"><EmptyState icon={History} title="No snapshots found" sub="Try a different search, or run an analysis to create one." /></div>
+      ) : (
       <div className="relative pl-5">
         <div className="absolute bottom-2 left-[7px] top-2 w-px bg-border" />
         {t.rows.map((s) => {
@@ -77,8 +80,8 @@ function SnapshotTimeline({ snaps, active, onView, confirm, setConfirm, busy, de
               <div className="panel p-3">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="mono text-[13px] font-bold">@{s.snapshot_id.replace(/^snap_/, "").slice(0, 10)}</span>
-                  {s.label && <span className="chip text-[10px]">{s.label}</span>}
-                  {isActive && <span className="mono bg-accent px-1 text-[9px] text-accent-ink">ACTIVE</span>}
+                  {s.label && <Chip variant="neutral">{s.label}</Chip>}
+                  {isActive && <Chip variant="accent" mono>ACTIVE</Chip>}
                   <span className="ml-auto text-[11px] text-text3">{new Date(s.created_at).toLocaleString()}</span>
                 </div>
                 <div className="mono mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-text2">
@@ -92,12 +95,12 @@ function SnapshotTimeline({ snaps, active, onView, confirm, setConfirm, busy, de
                     <span className="flex flex-wrap items-center gap-2 text-[11px]">
                       <span className="text-sev-critical">Delete this snapshot and all its data?</span>
                       <button onClick={() => del(s.snapshot_id)} disabled={busy}
-                        className="btn !h-7 bg-sev-critical px-2.5 text-[11px] text-white">{busy ? "Deleting…" : "Yes, delete"}</button>
+                        className="btn-danger !h-7 !px-2.5 text-[11px]">{busy ? "Deleting…" : "Yes, delete"}</button>
                       <button onClick={() => setConfirm(undefined)} className="btn-ghost !h-7 text-[11px]">Cancel</button>
                     </span>
                   ) : (
                     <button onClick={() => setConfirm(s.snapshot_id)} disabled={isActive}
-                      className="btn-ghost !h-7 text-[11px] disabled:opacity-40"
+                      className="btn-danger !h-7 text-[11px]"
                       title={isActive ? "The active snapshot can't be deleted" : "Delete snapshot"}>
                       <Trash2 size={12} /> Delete
                     </button>
@@ -108,6 +111,7 @@ function SnapshotTimeline({ snaps, active, onView, confirm, setConfirm, busy, de
           );
         })}
       </div>
+      )}
     </div>
   );
 }

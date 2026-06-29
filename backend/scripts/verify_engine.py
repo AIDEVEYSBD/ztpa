@@ -32,6 +32,9 @@ def main() -> int:
     p3 = find(lambda f: f.type == "cidr_overlap" and f.signals.get("dest") == "app-segment")
     p4 = find(lambda f: f.type == "shadowed_rule" and f.signals.get("shadowed_action") == "deny")
     p5 = find(lambda f: f.type == "cross_tool_path")
+    p6 = find(lambda f: f.type == "transport_exposure" and f.signals.get("subtype") == "quic_blind_spot"
+              and f.signals.get("source") == "0.0.0.0/0")
+    p7 = find(lambda f: f.type == "transport_exposure" and f.signals.get("subtype") == "tls_fallback_not_blocked")
 
     check("P1 any/any present", p1 is not None)
     check("P1 forced_critical", bool(p1 and p1.forced_critical))
@@ -47,6 +50,12 @@ def main() -> int:
         check("P5 reaches_sensitive", p5.signals.get("reaches_sensitive") is True)
         check("P5 spans 3 tools", len(p5.signals.get("tools", [])) == 3)
     check("exactly one cross-tool path", sum(1 for f in fs if f.type == "cross_tool_path") == 1)
+    check("P6 QUIC blind spot present (internet)", p6 is not None)
+    check("P6 QUIC blind spot forced_critical", bool(p6 and p6.forced_critical))
+    check("P6 QUIC decoded l7_app", bool(p6 and p6.signals.get("l7_app") == "quic"))
+    check("P7 TLS fallback-not-blocked present", p7 is not None)
+    check("L7 decode: declared App-ID resolved to QUIC transport",
+          any(f.signals.get("l7_source") == "declared" for f in fs if f.type == "transport_exposure"))
     check("every finding has a severity_vector", all("severity_vector" in f.signals for f in fs))
     check("determinism (byte-identical re-run)",
           [(f.id, f.severity, f.severity_band) for f in r1.findings] ==

@@ -18,15 +18,17 @@ export function LoginForm({ reset }: { reset?: boolean }) {
   const onPassword = async (e: React.FormEvent) => {
     e.preventDefault(); setLoading(true); setError(undefined);
     const r = await signIn("password", { email, password, redirect: false });
-    setLoading(false);
-    if (r?.error) setError("Invalid email or password."); else window.location.href = "/";
+    // Keep the spinner up through the redirect so the button never flickers
+    // back to its idle label before the page changes.
+    if (r?.error) { setError("Invalid email or password."); setLoading(false); }
+    else window.location.href = "/console";
   };
   const onMagic = async (e: React.FormEvent) => {
     e.preventDefault(); setLoading(true); setError(undefined);
     const r = await requestMagic(email); setLoading(false); setSent({ devLink: r.devLink });
   };
 
-  const tab = (active: boolean) => cn("flex-1 rounded-md px-3 py-1.5 transition-colors", active ? "bg-surfaceHover font-semibold" : "text-muted");
+  const tab = (active: boolean) => cn("flex-1 px-3 py-1.5 transition-colors", active ? "bg-accent-soft font-bold text-accent-fg" : "text-text2 hover:bg-surfaceHover");
 
   return (
     <AuthShell title="Sign in">
@@ -41,7 +43,7 @@ export function LoginForm({ reset }: { reset?: boolean }) {
           <AuthInput label="Email" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" />
           <AuthInput label="Password" type="password" required value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" />
           {error && <p className="text-xs text-sev-critical">{error}</p>}
-          <button className="btn-primary w-full" disabled={loading}>{loading ? <Spinner /> : "Sign in"}</button>
+          <button className="btn-primary w-full" disabled={loading}>{loading ? <Spinner label="Signing in…" /> : "Sign in"}</button>
           <div className="text-center text-xs text-muted"><Link href="/forgot" className="underline">Forgot password?</Link></div>
         </form>
       ) : sent ? (
@@ -52,7 +54,7 @@ export function LoginForm({ reset }: { reset?: boolean }) {
       ) : (
         <form onSubmit={onMagic} className="space-y-3">
           <AuthInput label="Email" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" />
-          <button className="btn-primary w-full" disabled={loading}>{loading ? <Spinner /> : "Email me a sign-in link"}</button>
+          <button className="btn-primary w-full" disabled={loading}>{loading ? <Spinner label="Sending link…" /> : "Email me a sign-in link"}</button>
         </form>
       )}
     </AuthShell>

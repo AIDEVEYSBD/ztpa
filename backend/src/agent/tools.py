@@ -65,14 +65,15 @@ def risk_findings(ctx, type: str | None = None, min_severity: int = 0) -> dict:
 
 
 def simulate_change_tool(ctx, source: str, destination: str, service: str, action: str = "allow") -> dict:
-    proto, port, label = parse_service(service)
+    svc = parse_service(service)
     cd = _canon(ctx, destination)
     dest_tags = ctx.graph.nodes[cd]["tags"] if cd in ctx.graph else []
     proposed = PolicyRecord(
         id="adhoc", source_tool="algosec", raw_ref="ADHOC",
         source=source, source_kind="cidr" if is_cidr(source) else "identity",
         destination=destination, destination_kind="cidr" if is_cidr(destination) else "identity",
-        dest_tags=dest_tags, service=label, port=port, protocol=proto, action=action, order=9999,
+        dest_tags=dest_tags, service=svc.label, port=svc.port, port_end=svc.port_end,
+        protocol=svc.protocol, l7_app=svc.l7_app, l7_source=svc.l7_source, action=action, order=9999,
     )
     delta = simulate_change(ctx.records, ctx.assets, ctx.alias_map, proposed)
     return {"new_paths": [" -> ".join(p["display_path"]) for p in delta["new_paths"]],

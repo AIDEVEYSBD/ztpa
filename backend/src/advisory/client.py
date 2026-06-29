@@ -60,10 +60,38 @@ def _ollama_complete(system, user, model, temperature, expect_json, timeout=None
                        completion_tokens=int(data.get("eval_count") or 0))
 
 
-def _anthropic_complete(system, user, model, temperature, expect_json) -> LLMResponse:
-    import anthropic
+# Reuse one client per provider for the process lifetime. The first request on a
+# fresh client pays ~6s of TLS + connection setup; a kept-alive client makes every
+# later call ~1s. Building a client per call (the old behavior) paid that setup on
+# every single completion.
+_OPENAI_CLIENT = None
+_ANTHROPIC_CLIENT = None
+_LLM_TIMEOUT = 60.0
+_LLM_RETRIES = 1
 
-    client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+
+def _get_openai_client():
+    global _OPENAI_CLIENT
+    if _OPENAI_CLIENT is None:
+        from openai import OpenAI
+
+        _OPENAI_CLIENT = OpenAI(api_key=settings.OPENAI_API_KEY,
+                                timeout=_LLM_TIMEOUT, max_retries=_LLM_RETRIES)
+    return _OPENAI_CLIENT
+
+
+def _get_anthropic_client():
+    global _ANTHROPIC_CLIENT
+    if _ANTHROPIC_CLIENT is None:
+        import anthropic
+
+        _ANTHROPIC_CLIENT = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY,
+                                                timeout=_LLM_TIMEOUT, max_retries=_LLM_RETRIES)
+    return _ANTHROPIC_CLIENT
+
+
+def _anthropic_complete(system, user, model, temperature, expect_json) -> LLMResponse:
+    client = _get_anthropic_client()
     if expect_json:
         system = system + "\nRespond with ONLY valid JSON. No prose, no code fences."
     msg = client.messages.create(
@@ -78,9 +106,7 @@ def _anthropic_complete(system, user, model, temperature, expect_json) -> LLMRes
 
 
 def _openai_complete(system, user, model, temperature, expect_json) -> LLMResponse:
-    from openai import OpenAI
-
-    client = OpenAI(api_key=settings.OPENAI_API_KEY)
+    client = _get_openai_client()
     kwargs = {"response_format": {"type": "json_object"}} if expect_json else {}
     resp = client.chat.completions.create(
         model=model, temperature=temperature,
@@ -144,9 +170,7 @@ def embed(texts: list[str]) -> list[list[float]]:
             pass
     if settings.has_openai():
         try:
-            from openai import OpenAI
-
-            client = OpenAI(api_key=settings.OPENAI_API_KEY)
+            client = _get_openai_client()
             resp = client.embeddings.create(model="text-embedding-3-small", input=texts)
             usage = getattr(resp, "usage", None)
             record_metric(kind="embed", capability="embed", provider="openai",
@@ -190,14 +214,7 @@ def parse_json(text: str, default):
 
 def provider_status() -> dict:
     active = settings.active_provider()
-    ollama_ok, ollama_models = False, []
-    try:
-        r = httpx.get(f"{settings.OLLAMA_HOST}/api/tags", timeout=5)
-        if r.status_code == 200:
-            ollama_ok = True
-            ollama_models = sorted(m["name"] for m in r.json().get("models", []))
-    except Exception:
-        pass
+    ollama_ok, ollama_models = settings.ollama_probe()  # shared, cached probe
     return {
         "active_provider": active,
         "judge_model": model_for(active, "judge"),

@@ -101,11 +101,22 @@ export function RiskTodo({ actions, findings, readOnly = false, loading = false,
   );
 }
 
+/** Decoded L7 application tag (e.g. QUIC). Highlighted when the app is uninspectable. */
+function L7Chip({ app, uninspectable }: { app: string; uninspectable?: boolean }) {
+  return (
+    <span title={uninspectable ? "Uninspectable application — likely a firewall blind spot" : "Decoded application"}
+      className={cn("chip shrink-0 text-[10px] uppercase tracking-wide",
+        uninspectable ? "border-sev-high-line bg-sev-high-bg text-sev-high" : "border-border text-text2")}>
+      {app}
+    </span>
+  );
+}
+
 function BandChip({ band, label, n, active, onClick }: { band?: Band; label: string; n: number; active: boolean; onClick: () => void }) {
   return (
     <button onClick={onClick} data-active={active}
       className={cn("inline-flex items-center gap-1.5 border px-2 py-1 text-[11px] font-medium capitalize",
-        active ? "border-accent text-text" : "border-border text-text2 hover:bg-surfaceHover")}>
+        active ? "border-accent bg-accent-soft text-accent-fg" : "border-border text-text2 hover:bg-surfaceHover")}>
       {band && <span className="h-1.5 w-1.5" style={{ background: `var(--sev-${band})` }} />}
       {label} <span className="mono text-text3">{n}</span>
     </button>
@@ -146,8 +157,12 @@ function FindingRow({ f, readOnly, onNavigate }: { f: Finding; readOnly?: boolea
       const r = await api.explain(f.finding_id);
       setExplain(r);
       setExLoading(false);
-      if (r.pending && attempt < 10) {
-        pollRef.current = setTimeout(() => fetchExplain(attempt + 1), 7000);
+      if (r.pending && attempt < 14) {
+        // Adaptive backoff: poll fast at first so a hosted-model explanation
+        // (~1-2s) swaps in almost immediately, then ease off for a slow/cold
+        // local model. ~0.8s, 1.2s, 1.9s, … capped at 6s.
+        const wait = Math.min(800 * 1.5 ** attempt, 6000);
+        pollRef.current = setTimeout(() => fetchExplain(attempt + 1), wait);
       }
     } catch {
       setExLoading(false);
@@ -194,6 +209,7 @@ function FindingRow({ f, readOnly, onNavigate }: { f: Finding; readOnly?: boolea
       <div role="button" tabIndex={0} onClick={toggle} className="flex w-full cursor-pointer items-center gap-2 text-left">
         <SeverityPill band={f.severity_band} severity={f.severity} forced={f.forced_critical} />
         <span className="min-w-0 flex-1 truncate text-sm">{f.signals?.title ?? f.type}</span>
+        {f.signals?.l7_app && <L7Chip app={f.signals.l7_app} uninspectable={!!f.signals.uninspectable} />}
         {f.source_tools.map((t) => <ToolBadge key={t} tool={t} />)}
         <span className="flex shrink-0 flex-wrap justify-end gap-1" onClick={(e) => e.stopPropagation()}>
           {f.raw_refs.map((r) => <RuleRef key={r} refId={r} />)}
@@ -203,7 +219,7 @@ function FindingRow({ f, readOnly, onNavigate }: { f: Finding; readOnly?: boolea
       <AnimatePresence>
         {open && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            className="mt-3 space-y-3 rounded-lg bg-surfaceHover p-3">
+            className="mt-3 space-y-3 sunk p-3">
             <div>
               <div className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-muted">
                 <Sparkles size={12} className="text-text2" /> Why this matters

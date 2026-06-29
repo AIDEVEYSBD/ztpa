@@ -37,6 +37,9 @@ export const api = {
   changeDecisions: () => j<{ decisions: any[] }>("/api/change-decisions"),
   classify: (body: { request_id?: string; source?: string; destination?: string; service?: string; justification?: string }) =>
     j<ChangeResult>("/api/change/classify", post(body)),
+  rejectChange: (body: { request_id: string; reason?: string }) =>
+    j<{ ok: boolean; request_id: string; status: string; rejected_by: string }>("/api/change/reject", post(body)),
+  resetDemo: () => j<{ ok: boolean; cleared: Record<string, number>; snapshot_id: string }>("/api/admin/reset-demo", post()),
   sendToStaging: (body: { request_id: string; target_tool?: string; manual_approve?: boolean }) =>
     j<{ ok: boolean; staged_id: string; status: string; target_tool: string }>("/api/staging", post(body)),
   staging: () => j<{ staged: StagedChange[] }>("/api/staging"),

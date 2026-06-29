@@ -46,25 +46,25 @@ export function MetricsAdmin() {
       </div>
 
       <div className="panel p-4">
-        <div className="label mb-2">Daily activity</div>
+        <div className="eyebrow mb-2.5">Daily activity</div>
         <TimeChart data={m.timeseries} />
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="grid gap-4 lg:grid-cols-2 3xl:grid-cols-4">
         <div className="panel p-4">
-          <div className="label mb-2">By capability</div>
+          <div className="eyebrow mb-2.5">By capability</div>
           <Bars rows={m.by_capability.map((c) => ({ label: c.capability, value: c.calls, meta: `${fmtNum(c.tokens)} tok · ${fmtCost(c.cost)} · ${c.avg_latency}ms` }))} />
         </div>
         <div className="panel p-4">
-          <div className="label mb-2">By provider / model</div>
+          <div className="eyebrow mb-2.5">By provider / model</div>
           <Bars rows={m.by_provider.map((p) => ({ label: `${p.provider}:${p.model}`, value: p.calls, meta: `${fmtNum(p.tokens)} tok · ${fmtCost(p.cost)}` }))} />
         </div>
         <div className="panel p-4">
-          <div className="label mb-2">Usage by role</div>
+          <div className="eyebrow mb-2.5">Usage by role</div>
           <Bars rows={m.by_role.map((r) => ({ label: r.role, value: r.calls, meta: `${fmtNum(r.tokens)} tok` }))} />
         </div>
         <div className="panel p-4">
-          <div className="label mb-2">Top tools</div>
+          <div className="eyebrow mb-2.5">Top tools</div>
           <Bars rows={m.top_tools.map((tt) => ({ label: tt.tool_name, value: tt.uses, meta: `${fmtNum(tt.tokens)} tok` }))} />
         </div>
       </div>

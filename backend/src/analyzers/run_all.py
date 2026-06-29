@@ -12,13 +12,14 @@ from time import perf_counter
 
 import networkx as nx
 
+from ..change.apply import apply_overlay
 from ..graph.build import build_graph
 from ..identity import resolve_identities
 from ..ids import content_fingerprint, det_id, snapshot_id as make_snapshot_id
 from ..models import Asset, AssetCorrelation, Finding, PolicyRecord
 from ..normalizers import normalize_all
 from ..normalizers.common import ResolvedObject
-from . import cidr_overlap, over_permissive, path_trace, shadowing
+from . import cidr_overlap, over_permissive, path_trace, shadowing, transport_exposure
 
 _BAND_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 
@@ -49,6 +50,7 @@ def reanalyze(records: list[PolicyRecord], assets: list[Asset],
     findings += cidr_overlap.analyze(records)
     findings += shadowing.analyze(records, graph, alias_map)
     findings += path_trace.analyze(graph)
+    findings += transport_exposure.analyze(records, graph, alias_map)
     return findings
 
 
@@ -59,21 +61,27 @@ def _fingerprint(records: list[PolicyRecord]) -> str:
     ))
 
 
-def run(label: str = "seed-demo", manual_merges: list[tuple[str, str]] = ()) -> EngineResult:
+def run(label: str = "seed-demo", manual_merges: list[tuple[str, str]] = (),
+        applied_changes: list[dict] = ()) -> EngineResult:
     t0 = perf_counter()
     nr = normalize_all()
+    # Fold in any operator-accepted changes (pushed from staging) so a recompute
+    # reflects the applied state -- the fingerprint below then yields a NEW
+    # snapshot id, exactly as if the source export had changed.
+    records = apply_overlay(nr.records, applied_changes) if applied_changes else nr.records
     t1 = perf_counter()
     idr = resolve_identities(nr.entities, manual_merges)
     t2 = perf_counter()
-    graph = build_graph(nr.records, idr.assets, idr.alias_map)
+    graph = build_graph(records, idr.assets, idr.alias_map)
     t3 = perf_counter()
-    sid = make_snapshot_id(label, _fingerprint(nr.records))
+    sid = make_snapshot_id(label, _fingerprint(records))
 
     findings: list[Finding] = []
-    findings += over_permissive.analyze(nr.records, graph, idr.alias_map)
-    findings += cidr_overlap.analyze(nr.records)
-    findings += shadowing.analyze(nr.records, graph, idr.alias_map)
+    findings += over_permissive.analyze(records, graph, idr.alias_map)
+    findings += cidr_overlap.analyze(records)
+    findings += shadowing.analyze(records, graph, idr.alias_map)
     findings += path_trace.analyze(graph)
+    findings += transport_exposure.analyze(records, graph, idr.alias_map)
     t4 = perf_counter()
 
     # finalize snapshot-scoped deterministic ids from the stable local keys
@@ -92,7 +100,7 @@ def run(label: str = "seed-demo", manual_merges: list[tuple[str, str]] = ()) -> 
         "total": round((t4 - t0) * 1000),
     }
     return EngineResult(
-        snapshot_id=sid, label=label, records=nr.records, assets=idr.assets,
+        snapshot_id=sid, label=label, records=records, assets=idr.assets,
         correlations=idr.correlations, resolved=nr.resolved, alias_map=idr.alias_map,
         graph=graph, findings=findings, timings=timings,
     )

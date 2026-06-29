@@ -13,6 +13,7 @@ export const authConfig = {
   callbacks: {
     authorized({ request, auth }) {
       const p = request.nextUrl.pathname;
+      if (p === "/") return true;                 // public marketing landing page
       if (p.startsWith("/api/auth")) return true;
       if (PUBLIC.some((x) => p === x || p.startsWith(x + "/"))) return true;
       return !!auth?.user;

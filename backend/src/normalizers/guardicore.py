@@ -30,7 +30,7 @@ def normalize(export: dict) -> NormalizeResult:
 
     for i, pol in enumerate(export.get("policies", [])):
         s, d = pol["src_label"], pol["dst_label"]
-        proto, port, label = parse_service(None, pol.get("port"), pol.get("protocol"))
+        svc = parse_service(None, pol.get("port"), pol.get("protocol"), app=pol.get("app"))
         for nm in (s, d):
             if nm not in entities:
                 entities[nm] = ObservedEntity(name=nm, kind="identity", tool=TOOL,
@@ -38,7 +38,8 @@ def normalize(export: dict) -> NormalizeResult:
         res.records.append(PolicyRecord(
             id=pol["policy_id"], source_tool=TOOL, raw_ref=pol["policy_id"],
             source=s, source_kind="identity", destination=d, destination_kind="identity",
-            dest_tags=labels.get(d, {}).get("tags", []), service=label, port=port, protocol=proto,
+            dest_tags=labels.get(d, {}).get("tags", []), service=svc.label, port=svc.port,
+            port_end=svc.port_end, protocol=svc.protocol, l7_app=svc.l7_app, l7_source=svc.l7_source,
             action=pol["action"], order=(i + 1) * 10, note=pol.get("ruleset"),
         ))
 

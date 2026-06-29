@@ -10,8 +10,8 @@ from __future__ import annotations
 import json
 
 from ..analyzers.run_all import reanalyze
+from ..change.apply import apply_remediation as _apply
 from ..models import Finding
-from ..normalizers.common import is_cidr, parse_service
 from .client import complete, parse_json
 
 _PROMPT = (
@@ -34,27 +34,6 @@ def _sig(f: Finding):
     return (f.type, frozenset(f.involved))
 
 
-def _apply(records, change: dict):
-    op, ref = change.get("op"), change.get("target_ref")
-    order_of = {r.raw_ref: r.order for r in records if r.order is not None}
-    shadowing_order = order_of.get(change.get("shadowing_ref"))
-    out = []
-    for rec in records:
-        if rec.raw_ref == ref:
-            if op == "remove":
-                continue
-            if op == "scope_source" and change.get("new_source"):
-                ns = change["new_source"]
-                rec = rec.model_copy(update={"source": ns, "source_kind": "cidr" if is_cidr(ns) else "identity"})
-            elif op == "restrict_service" and change.get("new_service"):
-                proto, port, label = parse_service(change["new_service"])
-                rec = rec.model_copy(update={"service": label, "port": port, "protocol": proto})
-            elif op == "reorder_before" and shadowing_order is not None:
-                rec = rec.model_copy(update={"order": shadowing_order - 1})
-        out.append(rec)
-    return out
-
-
 def _fallback_change(f: Finding, records) -> dict:
     s = f.signals
     if f.type == "over_permissive":
@@ -69,6 +48,14 @@ def _fallback_change(f: Finding, records) -> dict:
     if f.type == "shadowed_rule":
         return {"op": "reorder_before", "target_ref": s.get("shadowed_ref"),
                 "shadowing_ref": s.get("shadowing_ref")}
+    if f.type == "transport_exposure":
+        # Drop the uninspectable (QUIC/UDP) grant. For fallback-not-blocked that is
+        # the udp side specifically (keep the inspectable TLS path); for a blind
+        # spot it is the rule itself.
+        if s.get("subtype") == "tls_fallback_not_blocked":
+            udp_refs = s.get("udp_refs") or f.raw_refs
+            return {"op": "remove", "target_ref": udp_refs[0]}
+        return {"op": "remove", "target_ref": f.raw_refs[0]}
     return {"op": "remove", "target_ref": f.raw_refs[0]}
 
 

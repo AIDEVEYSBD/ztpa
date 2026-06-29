@@ -57,7 +57,8 @@ def detect_conflicts(ctx, staged: dict, other_staged: list[dict] | None = None) 
 
     src = payload.get("source", "")
     dst = _canon(ctx, payload.get("destination", ""))
-    proto, port, _ = parse_service(payload.get("service", "any"))
+    svc = parse_service(payload.get("service", "any"))
+    proto, port = svc.protocol, svc.port
     src_is_cidr = is_cidr(src)
 
     conflicts: list[dict] = []

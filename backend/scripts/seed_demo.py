@@ -59,6 +59,13 @@ def algosec_export() -> dict:
             {"rule_id": "ALGO-070", "order": 70, "src": "10.30.0.0/24",  "dst": "app-server-09", "service": "tcp/443",  "action": "allow", "comment": "web to app-09"},
             {"rule_id": "ALGO-071", "order": 71, "src": "10.31.0.0/24",  "dst": "dev-box-01",    "service": "tcp/22",   "action": "allow", "comment": "dev ssh"},
             {"rule_id": "ALGO-072", "order": 72, "src": "10.10.0.0/24",  "dst": "app-server-08", "service": "tcp/9100", "action": "allow", "comment": "monitoring scrape"},
+            # --- transport / application-layer (QUIC / HTTP-3) ---
+            # udp/443 decodes to QUIC: internet -> internal app server, uninspectable -> transport_exposure, FORCED critical.
+            # app-server-09 already has tcp/443 (ALGO-070), so this trips "TLS fallback not blocked" too. Targets a
+            # leaf host (no edge onward) so it does not open a *second* cross-tool path -- the money shot stays singular.
+            {"rule_id": "ALGO-080", "order": 80, "src": "0.0.0.0/0",     "dst": "app-server-09", "service": "udp/443", "action": "allow", "comment": "HTTP/3 edge accel (UDP 443) - added for perf"},
+            # explicit App-ID rule ("quic" token) -> declared L7 decode, corp source (not internet) -> lower-band blind spot.
+            {"rule_id": "ALGO-082", "order": 82, "src": "10.0.0.0/8",    "dst": "app-server-08", "service": "quic",    "action": "allow", "comment": "corp QUIC to app-08 (App-ID rule)"},
         ],
     }
 
@@ -85,6 +92,8 @@ def guardicore_export() -> dict:
             {"policy_id": "GC-010", "src_label": "web-tier",      "dst_label": "app-tier",       "port": 8443, "protocol": "tcp", "action": "allow", "ruleset": "tiering"},
             {"policy_id": "GC-011", "src_label": "monitoring",    "dst_label": "app-server-07",  "port": 9100, "protocol": "tcp", "action": "allow", "ruleset": "observability"},
             {"policy_id": "GC-012", "src_label": "ci-runner",     "dst_label": "artifact-store", "port": 443,  "protocol": "tcp", "action": "allow", "ruleset": "ci"},
+            # explicit App-ID policy: Guardicore names the app, not a port -> declared QUIC decode.
+            {"policy_id": "GC-020", "src_label": "web-tier",      "dst_label": "app-tier",       "app": "quic", "action": "allow", "ruleset": "tiering-http3"},
         ],
     }
 
@@ -114,6 +123,10 @@ def wiz_export() -> dict:
             {"exposure_id": "WIZ-002", "kind": "lateral", "src": "lb-public-01", "dst": "appsrv-07", "port": 8443, "protocol": "tcp"},
             {"exposure_id": "WIZ-010", "kind": "internet_ingress", "dst": "lb-public-02", "port": 443,  "protocol": "tcp"},
             {"exposure_id": "WIZ-011", "kind": "lateral", "src": "lb-public-02", "dst": "app-server-08", "port": 443,  "protocol": "tcp"},
+            # QUIC (udp/443) at the edge and laterally toward app-server-07: extends the cross-tool
+            # chain over an uninspectable transport. Edge LB is meant to be exposed (dmz) -> lower band.
+            {"exposure_id": "WIZ-020", "kind": "internet_ingress", "dst": "lb-public-01", "port": 443, "protocol": "udp"},
+            {"exposure_id": "WIZ-021", "kind": "lateral", "src": "lb-public-01", "dst": "appsrv-07", "port": 443, "protocol": "udp"},
         ],
     }
 

@@ -15,7 +15,7 @@ from ..config import (
     ADMIN_LATERAL_PORTS, DATA_STORE_PORTS, D_UNTAGGED, EXPOSURE_BANDS, E_IDENTITY,
     GENERAL_APP_PORTS, INFRA_CONTROL_PORTS, P_ADMIN, P_ANY_PORT, P_DATA_STORE,
     P_GENERAL_APP, P_INFRA_CONTROL, P_UNKNOWN, PORT_CLASS_LABEL, SENSITIVE_TAGS,
-    SEVERITY_CONFIG, TAG_SENSITIVITY,
+    SEVERITY_CONFIG, TAG_SENSITIVITY, TRANSPORT_CONFIG,
 )
 from ..graph.zones import boundary_multiplier
 from ..normalizers.common import parse_service
@@ -53,8 +53,10 @@ def port_score(protocol: str | None, port: int | None) -> tuple[float, str]:
 
 
 def port_score_from_service(service: str | None) -> tuple[float, str]:
-    proto, port, _ = parse_service(service) if service else ("tcp", None, "")
-    return port_score(proto, port)
+    if not service:
+        return port_score("tcp", None)
+    svc = parse_service(service)
+    return port_score(svc.protocol, svc.port)
 
 
 def dest_score(tags: list[str]) -> float:
@@ -114,6 +116,41 @@ def score_over_permissive(*, source, source_kind, protocol, port, dest_tags,
         "forced_reasons": reasons,
         "port_class": p_class,
         "E": E, "P": P, "D": D, "B": B,
+    }
+
+
+def score_transport_exposure(*, subtype, source, source_kind, protocol, port, l7_app,
+                             dest_tags, src_zone, dst_zone) -> dict:
+    """Severity for transport-/application-layer exposure findings.
+
+    quic_blind_spot: the smooth vector + a bump for the uninspectable app, forced
+    critical when it crosses a boundary or reaches a sensitive asset from the
+    internet. tls_fallback_not_blocked: a fixed control-gap base (you can't force
+    the inspectable path), bumped for a sensitive destination.
+    """
+    E = exposure_score(source, source_kind)
+    P, p_class = port_score(protocol, port)
+    D = dest_score(dest_tags)
+    B = boundary_multiplier(src_zone, dst_zone)
+    base = severity_from_vector(E, P, D, B)
+    tc = TRANSPORT_CONFIG
+    sensitive = bool(set(dest_tags) & SENSITIVE_TAGS)
+
+    forced, reasons = False, []
+    if subtype == "tls_fallback_not_blocked":
+        severity = tc["fallback_base"] + (tc["fallback_sensitive_bump"] if sensitive else 0)
+    else:  # quic_blind_spot
+        severity = base + tc["blind_spot_bump"]
+        if _is_internet(E) and (B > 1.0 or sensitive):
+            forced = True
+            reasons.append(f"uninspectable app ({l7_app}) reachable from the internet to "
+                           f"{'a regulated/crown-jewel asset' if sensitive else 'an internal asset'}")
+    return {
+        "severity": min(severity, 100),
+        "vector": {"E": E, "P": P, "D": D, "B": B},
+        "forced_critical": forced,
+        "forced_reasons": reasons,
+        "port_class": p_class,
     }
 
 

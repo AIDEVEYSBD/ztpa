@@ -34,6 +34,7 @@ export interface GraphEdge {
   dst: string;
   tools: string[];
   services: string[];
+  apps?: string[];
 }
 export interface GraphData {
   nodes: GraphNode[];

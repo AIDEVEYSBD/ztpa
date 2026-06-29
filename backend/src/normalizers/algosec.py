@@ -50,11 +50,12 @@ def normalize(export: dict) -> NormalizeResult:
         d_val, d_kind, d_ip, _d_cidr, d_tags, d_ent = _resolve(rule["dst"], objects)
         merge_entities(entities, s_ent)
         merge_entities(entities, d_ent)
-        proto, port, label = parse_service(rule.get("service"))
+        svc = parse_service(rule.get("service"), app=rule.get("app"))
         res.records.append(PolicyRecord(
             id=rule["rule_id"], source_tool=TOOL, raw_ref=rule["rule_id"],
             source=s_val, source_kind=s_kind, destination=d_val, destination_kind=d_kind,
-            dest_tags=d_tags, service=label, port=port, protocol=proto,
+            dest_tags=d_tags, service=svc.label, port=svc.port, port_end=svc.port_end,
+            protocol=svc.protocol, l7_app=svc.l7_app, l7_source=svc.l7_source,
             action=rule["action"], order=rule.get("order"),
             source_ip=s_ip, dest_ip=d_ip, note=rule.get("comment"),
         ))

@@ -2,34 +2,72 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ===== Design tokens (from the ZeroTrust Policy Advisor Claude design) ===== */
+/* ============================================================================ *
+ * ZeroTrust Policy Advisor — design system
+ * ----------------------------------------------------------------------------
+ * Confident/enterprise doctrine + AEGIS glass: electric-yellow (#FFE600) accent on a
+ * warm near-black canvas. Squared, flat, hairline structure; depth comes from
+ * frosted glass, an ambient aurora wash, and a soft accent glow — never from
+ * rounding. Single primary accent; meaning carried by state colour + icon.
+ *
+ * The CSS custom properties below are the single source of truth. Tailwind
+ * utilities (see tailwind.config.ts) and the component/primitive classes here
+ * both read from them, so the entire app re-skins from one place and adapts to
+ * light / dark automatically.
+ * ============================================================================ */
+
+/* ===== Design tokens — LIGHT (default) ===================================== */
 :root, [data-theme="light"] {
   color-scheme: light;
   --bg:#F1F1F5; --surface:#FFFFFF; --surface-2:#FAFAFC; --surface-hover:#F1F1F5; --surface-sunk:#F6F6FA;
+  --elevated:#FFFFFF;
   --border:#E4E4EA; --border-strong:#CFCFD8; --hair:#ECECF1;
   --text:#1A1A24; --text-2:#5A5A63; --text-3:#8C8C96;
-  --accent:#FFE600; --accent-press:#E6CF00; --accent-ink:#1A1A24; --accent-soft:#FBF6CC;
+  --accent:#FFE600; --accent-2:#FFD000; --accent-press:#E6CF00; --accent-ink:#1A1A24; --accent-soft:#FBF6CC;
+  --accent-fg:#8A7400; /* readable accent for text/foreground on light surfaces */
+  --accent-glow:rgba(255,230,0,0.28);
+  --info:#0E8C88; --info-bg:#E2F3F2; --info-line:#B8E0DE;
+  --ok:#157F35; --ok-bg:#E6F2E9; --ok-line:#BFE0C8;
   --sev-critical:#CC2A1E; --sev-critical-bg:#FBE9E7; --sev-critical-line:#F2C4BE;
   --sev-high:#D9620A; --sev-high-bg:#FCEFE2; --sev-high-line:#F2D4B6;
   --sev-medium:#A06A00; --sev-medium-bg:#F8F1DC; --sev-medium-line:#EAD8A6;
   --sev-low:#5A5A63; --sev-low-bg:#ECECF0; --sev-low-line:#D8D8DE;
-  --ok:#157F35; --ok-bg:#E6F2E9; --ok-line:#BFE0C8;
+
+  /* glass + ambient (theme-aware) */
+  --glass-1:rgba(255,255,255,0.86); --glass-2:rgba(248,248,252,0.70); --glass-inset:rgba(255,255,255,0.9);
+  --glass-chrome:rgba(255,255,255,0.78); --glass-modal-1:rgba(255,255,255,0.985); --glass-modal-2:rgba(250,250,253,0.975);
+  --aurora-1:rgba(255,230,0,0.12); --aurora-2:rgba(46,197,192,0.06); --aurora-3:rgba(255,208,0,0.06);
+  --dot:rgba(0,0,0,0.04);
+  --blur:14px;
 }
+
+/* ===== Design tokens — DARK (primary AEGIS experience) ===================== */
 [data-theme="dark"] {
   color-scheme: dark;
-  --bg:#0F0F14; --surface:#17171F; --surface-2:#1C1C26; --surface-hover:#23232E; --surface-sunk:#121218;
-  --border:#2A2A34; --border-strong:#3A3A46; --hair:#23232E;
-  --text:#ECECF1; --text-2:#9A9AA6; --text-3:#6A6A76;
-  --accent:#FFE600; --accent-press:#FFEF4D; --accent-ink:#1A1A24; --accent-soft:#2A2810;
-  --sev-critical:#FF6257; --sev-critical-bg:#2A1512; --sev-critical-line:#52221C;
+  --bg:#0B0B0F; --surface:#16161D; --surface-2:#1C1C25; --surface-hover:#23232E; --surface-sunk:#101016;
+  --elevated:#23232E;
+  --border:#2A2A34; --border-strong:#3A3A47; --hair:#22222B;
+  --text:#F7F7F8; --text-2:#A7A7B2; --text-3:#6C6C78;
+  --accent:#FFE600; --accent-2:#FFD000; --accent-press:#FFEF4D; --accent-ink:#1A1A24; --accent-soft:#2A2810;
+  --accent-fg:#FFE600; /* bright accent reads fine as text on the dark canvas */
+  --accent-glow:rgba(255,230,0,0.16);
+  --info:#2EC5C0; --info-bg:#0E2422; --info-line:#1C463F;
+  --ok:#39D98A; --ok-bg:#11241A; --ok-line:#1E4030;
+  --sev-critical:#FF5263; --sev-critical-bg:#2A1318; --sev-critical-line:#52222B;
   --sev-high:#FF9A4D; --sev-high-bg:#271C10; --sev-high-line:#4D3415;
   --sev-medium:#E8B43A; --sev-medium-bg:#23200F; --sev-medium-line:#473C18;
   --sev-low:#9A9AA6; --sev-low-bg:#20202A; --sev-low-line:#34343F;
-  --ok:#46C46E; --ok-bg:#11241A; --ok-line:#1E4030;
+
+  --glass-1:rgba(28,28,37,0.72); --glass-2:rgba(16,16,22,0.55); --glass-inset:rgba(255,255,255,0.05);
+  --glass-chrome:rgba(18,18,24,0.62); --glass-modal-1:rgba(30,30,40,0.975); --glass-modal-2:rgba(20,20,28,0.965);
+  --aurora-1:rgba(255,230,0,0.10); --aurora-2:rgba(46,197,192,0.07); --aurora-3:rgba(255,208,0,0.06);
+  --dot:rgba(255,255,255,0.04);
+  --blur:16px;
 }
 
+/* ===== Base ================================================================ */
 * { box-sizing: border-box; border-color: var(--border); }
-html, body { margin: 0; padding: 0; }
+html, body { margin: 0; padding: 0; height: 100%; }
 body {
   background: var(--bg);
   color: var(--text);
@@ -39,16 +77,16 @@ body {
   letter-spacing: -0.006em;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 
 .mono {
   font-family: "SFMono-Regular", "SF Mono", Menlo, Consolas, "Liberation Mono", "Roboto Mono", monospace;
   font-feature-settings: "tnum" 1;
 }
+.tnum { font-variant-numeric: tabular-nums; }
 
-/* Chrome paints autofilled inputs with its own near-white background + dark
-   text, which reads as white-on-white once our dark theme sets a light text
-   colour. Force autofill to keep the themed surface + text. */
+/* Force autofill to keep the themed surface + text (Chrome paints its own). */
 input:-webkit-autofill,
 input:-webkit-autofill:hover,
 input:-webkit-autofill:focus {
@@ -58,76 +96,230 @@ input:-webkit-autofill:focus {
 }
 ::selection { background: var(--accent); color: #1A1A24; }
 
-/* scrollbars */
-.zt-scroll::-webkit-scrollbar, body::-webkit-scrollbar { width: 10px; height: 10px; }
-.zt-scroll::-webkit-scrollbar-thumb, body::-webkit-scrollbar-thumb { background: var(--border-strong); }
-.zt-scroll::-webkit-scrollbar-track { background: transparent; }
+/* Thin, dim instrument scrollbars. */
+.zt-scroll::-webkit-scrollbar, body::-webkit-scrollbar { width: 9px; height: 9px; }
+.zt-scroll::-webkit-scrollbar-thumb, body::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 999px; }
+.zt-scroll::-webkit-scrollbar-track, body::-webkit-scrollbar-track { background: transparent; }
+.zt-scroll::-webkit-scrollbar-thumb:hover, body::-webkit-scrollbar-thumb:hover { background: var(--text-3); }
+.zt-scroll { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
 
+/* ===== Keyframes =========================================================== */
 @keyframes ztpulse { 0%,100%{opacity:1;} 50%{opacity:.35;} }
 @keyframes ztdash { to { stroke-dashoffset: -16; } }
-@keyframes ztshimmer { 0%{background-position:-400px 0;} 100%{background-position:400px 0;} }
-.zt-skel { background: linear-gradient(90deg, var(--surface-hover) 0px, var(--surface-2) 200px, var(--surface-hover) 400px); background-size: 800px 100%; animation: ztshimmer 1.3s linear infinite; }
-.zt-trace-line { animation: ztdash 0.6s linear infinite; }
+@keyframes zt-shimmer { 100% { transform: translateX(100%); } }
+@keyframes pulse-accent {
+  0%,100% { opacity: 1; box-shadow: 0 0 0 0 var(--accent-glow); }
+  50% { opacity: .55; box-shadow: 0 0 0 5px transparent; }
+}
+@keyframes card-in { from { opacity: 0; transform: translateY(-8px) scale(.99); } to { opacity: 1; transform: translateY(0) scale(1); } }
+@keyframes row-in { from { opacity: 0; transform: translateX(-6px); } to { opacity: 1; transform: translateX(0); } }
+@keyframes fade-rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
+@keyframes aurora {
+  0%,100% { transform: translate3d(0,0,0) scale(1); }
+  33% { transform: translate3d(4%,-3%,0) scale(1.08); }
+  66% { transform: translate3d(-3%,4%,0) scale(.96); }
+}
+@keyframes float { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-14px); } }
+@keyframes sweep { 0% { transform: translateX(-120%); } 100% { transform: translateX(420%); } }
 
+.animate-pulse-accent { animation: pulse-accent 1.6s ease-in-out infinite; }
+.animate-card-in { animation: card-in .34s cubic-bezier(.16,1,.3,1); }
+.animate-row-in { animation: row-in .3s ease-out; }
+.animate-fade-rise { animation: fade-rise .35s ease-out both; }
+.animate-float { animation: float 9s ease-in-out infinite; }
+.animate-sweep { animation: sweep 2.4s ease-in-out infinite; }
+.zt-trace-line { animation: ztdash .6s linear infinite; }
+
+/* Landing-page motifs — hero network, diagram trace, critical pulse, scroll cue. */
+html { scroll-behavior: smooth; }
+@keyframes ztpa-pulse { 0%,100% { opacity: .12; } 50% { opacity: .42; } }
+@keyframes ztpa-dot { 0%,100% { opacity: .35; transform: scale(1); } 50% { opacity: .85; transform: scale(1.35); } }
+@keyframes ztpa-flow { to { stroke-dashoffset: -160; } }
+@keyframes ztpa-crit { 0% { box-shadow: 0 0 0 0 rgba(255,82,99,.55); } 70% { box-shadow: 0 0 0 14px rgba(255,82,99,0); } 100% { box-shadow: 0 0 0 0 rgba(255,82,99,0); } }
+@keyframes ztpa-mouse { 0% { opacity: 0; transform: translateY(0); } 30% { opacity: 1; } 100% { opacity: 0; transform: translateY(9px); } }
+.animate-ztpa-flow { animation: ztpa-flow 1.5s linear infinite; }
+
+/* ===== Signature visual primitives ========================================= */
+
+/* Ambient gradient canvas — the standard page background (shell + auth). */
+.bg-aurora {
+  background:
+    radial-gradient(1200px 600px at 12% -8%, var(--aurora-1), transparent 60%),
+    radial-gradient(900px 500px at 92% 4%, var(--aurora-2), transparent 55%),
+    radial-gradient(1000px 700px at 50% 120%, var(--aurora-3), transparent 60%),
+    var(--bg);
+}
+/* Faint dotted texture (subtle, not a checkerboard). */
+.bg-dotted, .grid-bg {
+  background-image: radial-gradient(var(--dot) 1px, transparent 1px);
+  background-size: 26px 26px;
+}
+
+/* Yellow→amber gradient headline text. */
+.text-gradient-gold {
+  background: linear-gradient(100deg, var(--accent-press) 0%, var(--accent) 42%, var(--accent-2) 100%);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+
+/* Frosted glass surface (used by .panel). Reads over the aurora wash. */
+.glass {
+  background: linear-gradient(180deg, var(--glass-1), var(--glass-2));
+  backdrop-filter: blur(var(--blur)) saturate(118%);
+  -webkit-backdrop-filter: blur(var(--blur)) saturate(118%);
+  box-shadow: inset 0 1px 0 0 var(--glass-inset);
+}
+/* Chrome (top bar / sidebar) — denser frosted glass. */
+.glass-chrome {
+  background: var(--glass-chrome);
+  backdrop-filter: blur(18px) saturate(120%);
+  -webkit-backdrop-filter: blur(18px) saturate(120%);
+}
+/* Modal / drawer surface — far more opaque so detail reads over a busy scrim. */
+.glass-modal {
+  background: linear-gradient(180deg, var(--glass-modal-1), var(--glass-modal-2));
+  backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+}
+
+/* Gradient hairline border via mask trick (feature panels). */
+.ring-grad { position: relative; }
+.ring-grad::before {
+  content: ""; position: absolute; inset: 0; padding: 1px; pointer-events: none;
+  background: linear-gradient(135deg, rgba(255,230,0,0.55), rgba(255,230,0,0.04) 45%, rgba(46,197,192,0.18));
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor; mask-composite: exclude;
+}
+/* Soft accent glow halo behind feature elements. */
+.glow-accent { box-shadow: 0 0 0 1px var(--accent-glow), 0 18px 60px -22px rgba(255,230,0,0.40); }
+
+/* Eyebrow — the signature yellow square + uppercase micro-label. */
+.eyebrow {
+  display: inline-flex; align-items: center; gap: 9px;
+  font-size: 11px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--text-3);
+}
+.eyebrow::before { content: ""; width: 11px; height: 11px; flex: none; background: var(--accent); }
+.eyebrow.accent { color: var(--accent); }
+
+/* Spectrum keyline — a thin gradient rule (border/line role only). */
+.spectrum-line { height: 3px; width: 100%; background: linear-gradient(90deg, #FFE600, #FF32FF, #32FFFF); }
+.spectrum-line.thin { height: 2px; }
+.spectrum-line.warm { background: linear-gradient(90deg, #FFE600, #FF7D1E, #FF32FF); }
+
+/* ===== Component classes =================================================== */
 @layer components {
-  /* flat, sharp panels — the enterprise look, no rounded corners */
-  .panel { background: var(--surface); border: 1px solid var(--border); }
+  /* Frosted, squared, hairline panel — the workhorse surface. */
+  .panel {
+    background: linear-gradient(180deg, var(--glass-1), var(--glass-2));
+    border: 1px solid var(--border);
+    backdrop-filter: blur(var(--blur)) saturate(118%);
+    -webkit-backdrop-filter: blur(var(--blur)) saturate(118%);
+    box-shadow: inset 0 1px 0 0 var(--glass-inset), 0 18px 50px -34px rgba(0,0,0,0.5);
+  }
+  /* Eyebrow header bar for a panel. */
+  .panel-head {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 11px 16px; border-bottom: 1px solid var(--hair);
+  }
+  /* Inset / recessed surface (no glass). */
   .sunk { background: var(--surface-sunk); border: 1px solid var(--border); }
 
-  /* each variant is self-contained so `btn-ghost`/`btn-primary` alone render fully */
-  .btn, .btn-primary, .btn-ghost {
+  /* Opaque floating surface for menus / popovers that sit over arbitrary page
+     content. Unlike .panel (frosted glass), this is fully opaque so nothing
+     behind it bleeds through; elevation comes from the shadow. */
+  .popover { background: var(--surface-2); border: 1px solid var(--border); box-shadow: 0 16px 40px -16px rgba(0,0,0,0.55); }
+
+  /* Interactive card: hairline that lights to the accent on hover. */
+  .card {
+    background: linear-gradient(180deg, var(--glass-1), var(--glass-2));
+    border: 1px solid var(--border);
+    backdrop-filter: blur(12px) saturate(115%); -webkit-backdrop-filter: blur(12px) saturate(115%);
+    transition: border-color .2s var(--ease, cubic-bezier(.2,0,0,1)), box-shadow .2s ease;
+  }
+  .card:hover { border-color: var(--accent); }
+  .rowlink { transition: background .15s ease; }
+  .rowlink:hover { background: var(--surface-hover); }
+
+  /* Buttons — squared, bold. Primary inverts to a yellow keyline on hover. */
+  .btn, .btn-primary, .btn-ghost, .btn-danger {
     display: inline-flex; align-items: center; justify-content: center; gap: 7px;
     height: 32px; padding: 0 13px; font-family: inherit; font-size: 12.5px; font-weight: 700;
     letter-spacing: -0.006em; line-height: 1; white-space: nowrap; cursor: pointer;
-    border: 1px solid transparent;
+    border: 1px solid transparent; transition: background .18s ease, color .18s ease, border-color .18s ease, opacity .18s ease;
   }
-  .btn:disabled, .btn-primary:disabled, .btn-ghost:disabled { opacity: .5; cursor: default; }
-  .btn-primary { background: var(--accent); color: var(--accent-ink); }
-  .btn-primary:hover:not(:disabled) { background: var(--accent-press); }
+  .btn:disabled, .btn-primary:disabled, .btn-ghost:disabled, .btn-danger:disabled { opacity: .5; cursor: default; }
+  .btn-primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  .btn-primary:hover:not(:disabled) { background: transparent; color: var(--accent-fg); }
   .btn-ghost { background: var(--surface-2); border-color: var(--border); color: var(--text); }
-  .btn-ghost:hover:not(:disabled) { background: var(--surface-hover); }
+  .btn-ghost:hover:not(:disabled) { border-color: var(--accent); color: var(--accent-fg); background: var(--accent-soft); }
+  .btn-danger { background: transparent; border-color: var(--sev-critical-line); color: var(--sev-critical); }
+  .btn-danger:hover:not(:disabled) { background: var(--sev-critical-bg); border-color: var(--sev-critical); }
 
-  .chip { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px;
-    background: var(--surface-sunk); border: 1px solid var(--border); font-size: 11px; color: var(--text-2); }
+  /* Squared, hairline chip / tag. */
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px;
+    background: var(--surface-sunk); border: 1px solid var(--border);
+    font-size: 11px; font-weight: 600; color: var(--text-2); white-space: nowrap; line-height: 1;
+  }
 
-  .navitem { width: 100%; display: flex; align-items: center; gap: 10px; padding: 8px; border: none;
-    background: transparent; color: var(--text-2); cursor: pointer; text-align: left; font-size: 13px;
-    font-family: inherit; letter-spacing: -0.006em; border-left: 2px solid transparent; }
-  .navitem:hover { background: var(--surface-hover); }
-  .navitem[data-active="true"] { background: var(--surface-hover); color: var(--text); border-left-color: var(--accent); font-weight: 700; }
+  /* Vertical nav item — glass hover + yellow keyline when active. */
+  .navitem {
+    width: 100%; display: flex; align-items: center; gap: 10px; padding: 8px;
+    border: none; background: transparent; color: var(--text-2); cursor: pointer; text-align: left;
+    font-size: 13px; font-family: inherit; letter-spacing: -0.006em;
+    border-left: 2px solid transparent; transition: background .15s ease, color .15s ease;
+  }
+  .navitem:hover { background: var(--surface-hover); color: var(--text); }
+  .navitem[data-active="true"] {
+    background: var(--surface-hover); color: var(--text); border-left-color: var(--accent); font-weight: 700;
+  }
 
+  .row { transition: background .12s ease; }
   .row:hover { background: var(--surface-hover); }
-  .field { width: 100%; height: 34px; padding: 0 11px; background: var(--surface-sunk); border: 1px solid var(--border);
-    color: var(--text); font-family: inherit; font-size: 13px; outline: none; }
-  .field:focus { border-color: var(--border-strong); }
-  .label { font-size: 11px; font-weight: 700; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.06em; }
+
+  /* Inputs — hairline that focuses to the accent. */
+  .field {
+    width: 100%; height: 34px; padding: 0 11px; background: var(--surface-sunk); border: 1px solid var(--border);
+    color: var(--text); font-family: inherit; font-size: 13px; outline: none; transition: border-color .15s ease;
+  }
+  .field::placeholder { color: var(--text-3); }
+  .field:focus { border-color: var(--accent); }
+
+  /* Section label (plain uppercase eyebrow without the square). */
+  .label { font-size: 11px; font-weight: 700; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.08em; }
 }
 
-/* React Flow controls + attribution, themed for dark/light.
-   !important because @xyflow/react/dist/style.css loads after this file. */
-.react-flow__attribution { display: none !important; }
-.react-flow__controls { box-shadow: none !important; border: 1px solid var(--border) !important; }
-.react-flow__controls-button {
-  background: var(--surface-2) !important;
-  border-bottom: 1px solid var(--border) !important;
-  width: 28px !important; height: 28px !important;
-}
-.react-flow__controls-button:hover { background: var(--surface-hover) !important; }
-.react-flow__controls-button svg,
-.react-flow__controls-button svg path { fill: var(--text) !important; }
-
-/* Skeleton loaders: a sheen sweeps across a sunk surface. Theme-aware via tokens. */
-@keyframes zt-shimmer { 100% { transform: translateX(100%); } }
+/* ===== Skeleton loaders ==================================================== */
 .skeleton { position: relative; overflow: hidden; background: var(--surface-sunk); border: 1px solid var(--border); }
 .skeleton::after {
   content: ""; position: absolute; inset: 0; transform: translateX(-100%);
   background: linear-gradient(90deg, transparent, var(--surface-hover) 55%, transparent);
   animation: zt-shimmer 1.5s infinite;
 }
-@media (prefers-reduced-motion: reduce) { .skeleton::after { animation: none; } }
+.zt-skel { background: linear-gradient(90deg, var(--surface-hover) 0px, var(--surface-2) 200px, var(--surface-hover) 400px); background-size: 800px 100%; animation: shimmer 1.3s linear infinite; }
 
-/* Print: isolate the posture report (#report) and force a clean LIGHT palette so
-   the PDF is readable regardless of the on-screen theme, with real colours. */
+/* ===== React Flow theming (loads after this file → !important) ============= */
+.react-flow__attribution { display: none !important; }
+.react-flow__edge-path { stroke-width: 1.4px; }
+.react-flow__handle { border: none; background: var(--text-3); width: 6px; height: 6px; opacity: .5; }
+.react-flow__controls { box-shadow: none !important; border: 1px solid var(--border) !important; overflow: hidden; }
+.react-flow__controls-button {
+  background: var(--surface-2) !important; border-bottom: 1px solid var(--border) !important;
+  width: 28px !important; height: 28px !important; color: var(--text-2);
+}
+.react-flow__controls-button:hover { background: var(--surface-hover) !important; }
+.react-flow__controls-button svg, .react-flow__controls-button svg path { fill: var(--text) !important; }
+
+/* ===== Motion preference =================================================== */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; }
+  .skeleton::after { animation: none; }
+}
+
+/* ============================================================================ *
+ * Print — isolate the posture report (#report) and force a clean LIGHT palette
+ * so the PDF is readable regardless of the on-screen theme, with real colours.
+ * ============================================================================ */
 @page { margin: 14mm; }
 @media print {
   html, body { height: auto !important; overflow: visible !important; background: #fff !important; }
@@ -135,18 +327,18 @@ input:-webkit-autofill:focus {
   /* Hide the app chrome + interactive bits. */
   nav, header, .print\:hidden, .skeleton { display: none !important; }
 
-  /* Neutralise the flex/scroll shell so the report flows from the top and
-     PAGINATES across pages (position:absolute would clip it to page 1). */
+  /* Neutralise the flex/scroll shell so the report flows + paginates. */
   #app-shell, #app-col, #app-main, #app-content {
     display: block !important; height: auto !important; max-height: none !important;
     overflow: visible !important; flex: none !important; margin: 0 !important; padding: 0 !important;
+    background: #fff !important;
   }
 
-  /* Isolate the report subtree; visibility (not position) keeps it in normal flow. */
+  /* Isolate the report subtree (visibility keeps it in normal flow). */
   body * { visibility: hidden !important; }
   #report, #report * { visibility: visible !important; print-color-adjust: exact !important; -webkit-print-color-adjust: exact !important; }
 
-  /* Re-skin the report with the light tokens (independent of the on-screen theme). */
+  /* Re-skin the report with light tokens (independent of the on-screen theme). */
   #report {
     position: static !important; width: 100% !important; max-width: none !important;
     margin: 0 !important; padding: 0 !important; box-shadow: none !important; border: none !important;
@@ -154,16 +346,19 @@ input:-webkit-autofill:focus {
     --bg:#FFFFFF; --surface:#FFFFFF; --surface-2:#FAFAFC; --surface-hover:#F1F1F5; --surface-sunk:#F7F7FA;
     --border:#D7D7DE; --border-strong:#BFBFC8; --hair:#E4E4EA;
     --text:#15151C; --text-2:#44444C; --text-3:#70707A;
-    --accent:#C9A800; --accent-ink:#15151C; --accent-soft:#FBF6CC;
+    --accent:#C9A800; --accent-ink:#15151C; --accent-soft:#FBF6CC; --accent-fg:#8A7400;
+    --glass-1:#FFFFFF; --glass-2:#FFFFFF; --glass-inset:transparent;
     --sev-critical:#C0241A; --sev-critical-bg:#FBE9E7; --sev-critical-line:#E7B6AF;
     --sev-high:#C2560A; --sev-high-bg:#FCEFE2; --sev-high-line:#E7C39B;
     --sev-medium:#8A5C00; --sev-medium-bg:#F8F1DC; --sev-medium-line:#DEC893;
     --sev-low:#55555E; --sev-low-bg:#ECECF0; --sev-low-line:#CFCFD8;
     --ok:#157F35; --ok-bg:#E6F2E9; --ok-line:#BFE0C8;
   }
-  /* don't split a card/section across a page break */
-  #report .panel, #report .sunk { box-shadow: none !important; break-inside: avoid; background: #fff; }
+  /* Flatten glass for print — solid white, no blur/shadow. */
+  #report .panel, #report .sunk, #report .card {
+    background: #fff !important; backdrop-filter: none !important; box-shadow: none !important; break-inside: avoid;
+  }
   #report > div { break-inside: avoid-page; }
   #report [style*="background"] { print-color-adjust: exact !important; -webkit-print-color-adjust: exact !important; }
-  #report h1, #report h2, #report h3, #report .label { break-after: avoid; }
+  #report h1, #report h2, #report h3, #report .label, #report .eyebrow { break-after: avoid; }
 }

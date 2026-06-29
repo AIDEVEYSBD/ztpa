@@ -27,7 +27,7 @@ export function ForgotForm() {
       ) : (
         <form onSubmit={submit} className="space-y-3">
           <AuthInput label="Email" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" />
-          <button className="btn-primary w-full" disabled={loading}>{loading ? <Spinner /> : "Send reset link"}</button>
+          <button className="btn-primary w-full" disabled={loading}>{loading ? <Spinner label="Sending…" /> : "Send reset link"}</button>
           <Link href="/login" className="block text-center text-xs text-muted underline">Back to sign in</Link>
         </form>
       )}

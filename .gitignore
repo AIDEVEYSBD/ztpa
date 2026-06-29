@@ -17,6 +17,7 @@ out/
 dist/
 npm-debug.log*
 .DS_Store
+*.tsbuildinfo
 
 # Generated engine output is committed-by-default for demo reproducibility,
 # but ignore local scratch

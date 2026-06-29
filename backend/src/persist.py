@@ -14,7 +14,7 @@ import json
 import psycopg
 
 from .analyzers.run_all import EngineResult
-from .db import audit, delete_snapshot_children, upsert
+from .db import audit, delete_snapshot_children, upsert, upsert_many
 from .graph.build import node_db_kind
 from .ids import det_id
 from .models import ChangeDecision, ChangeRequest, RankedActions
@@ -34,10 +34,10 @@ def _value(val: str, kind: str) -> dict:
     return {"cidrs": [val]} if kind == "cidr" else {"identity": val}
 
 
-def _ports(protocol: str, port: int | None) -> list[dict]:
+def _ports(protocol: str, port: int | None, port_end: int | None = None) -> list[dict]:
     if protocol == "any" or port is None:
         return []
-    return [{"proto": protocol, "port_start": port, "port_end": port}]
+    return [{"proto": protocol, "port_start": port, "port_end": port_end if port_end is not None else port}]
 
 
 def persist_engine_result(cur: psycopg.Cursor, r: EngineResult) -> dict:
@@ -50,78 +50,67 @@ def persist_engine_result(cur: psycopg.Cursor, r: EngineResult) -> dict:
     }, ["snapshot_id"])
 
     tools = sorted({rec.source_tool for rec in r.records})
-    for tool in tools:
-        upsert(cur, "sources", {
-            "source_id": det_id("src", tool), "tool": tool,   # global connector, not per-snapshot
-            "device": _DEVICE.get(tool, tool), "config": {"mode": "simulated_export"},
-        }, ["source_id"])
+    upsert_many(cur, "sources", [{
+        "source_id": det_id("src", tool), "tool": tool,   # global connector, not per-snapshot
+        "device": _DEVICE.get(tool, tool), "config": {"mode": "simulated_export"},
+    } for tool in tools], ["source_id"])
 
-    for ro in r.resolved:
-        upsert(cur, "resolved_objects", {
-            "id": det_id("ro", sid, ro.source_tool, ro.source_device or "", ro.object_name, ro.object_kind),
-            "snapshot_id": sid, "source_tool": ro.source_tool, "source_device": ro.source_device,
-            "object_name": ro.object_name, "object_kind": ro.object_kind,
-            "resolved": ro.resolved, "is_dynamic": ro.is_dynamic,
-        }, ["id"])
+    upsert_many(cur, "resolved_objects", [{
+        "id": det_id("ro", sid, ro.source_tool, ro.source_device or "", ro.object_name, ro.object_kind),
+        "snapshot_id": sid, "source_tool": ro.source_tool, "source_device": ro.source_device,
+        "object_name": ro.object_name, "object_kind": ro.object_kind,
+        "resolved": ro.resolved, "is_dynamic": ro.is_dynamic,
+    } for ro in r.resolved], ["id"])
 
-    for a in r.assets:
-        upsert(cur, "assets", {
-            "asset_id": _asset_id(sid, a.asset_key), "snapshot_id": sid, "asset_key": a.asset_key,
-            "kind": a.kind, "context": a.context, "identifiers": a.identifiers,
-            "ip_set": list(a.ip_set), "tags": list(a.tags), "source_tools": list(a.source_tools),
-        }, ["asset_id"])
+    upsert_many(cur, "assets", [{
+        "asset_id": _asset_id(sid, a.asset_key), "snapshot_id": sid, "asset_key": a.asset_key,
+        "kind": a.kind, "context": a.context, "identifiers": a.identifiers,
+        "ip_set": list(a.ip_set), "tags": list(a.tags), "source_tools": list(a.source_tools),
+    } for a in r.assets], ["asset_id"])
 
-    for c in r.correlations:
-        upsert(cur, "asset_correlations", {
-            "id": det_id("corr", sid, c.asset_key, c.match_key, c.evidence),
-            "snapshot_id": sid, "asset_id": _asset_id(sid, c.asset_key),
-            "match_key": c.match_key, "confidence": c.confidence, "evidence": c.evidence,
-        }, ["id"])
+    upsert_many(cur, "asset_correlations", [{
+        "id": det_id("corr", sid, c.asset_key, c.match_key, c.evidence),
+        "snapshot_id": sid, "asset_id": _asset_id(sid, c.asset_key),
+        "match_key": c.match_key, "confidence": c.confidence, "evidence": c.evidence,
+    } for c in r.correlations], ["id"])
 
     def canon(name: str) -> str:
         return r.alias_map.get(name, name)
 
-    for rec in r.records:
-        s, d = canon(rec.source), canon(rec.destination)
-        upsert(cur, "canonical_rules", {
-            "rule_uid": _rule_uid(sid, rec.source_tool, rec.raw_ref), "snapshot_id": sid,
-            "source_tool": rec.source_tool, "source_device": _DEVICE.get(rec.source_tool),
-            "raw_rule_id": rec.raw_ref, "policy_id": None, "rule_order": rec.order, "action": rec.action,
-            "src_kind": rec.source_kind, "src_value": _value(rec.source, rec.source_kind), "src_context": None,
-            "dst_kind": rec.destination_kind, "dst_value": _value(rec.destination, rec.destination_kind), "dst_context": None,
-            "protocol": rec.protocol, "ports": _ports(rec.protocol, rec.port), "l7_app": None,
-            "nat_original": None, "nat_translated": None, "tags": list(rec.dest_tags), "enabled": True,
-            "schedule": None, "direction": None,
-            "src_asset_refs": [_asset_id(sid, s)], "dst_asset_refs": [_asset_id(sid, d)],
-        }, ["rule_uid"])
+    upsert_many(cur, "canonical_rules", [{
+        "rule_uid": _rule_uid(sid, rec.source_tool, rec.raw_ref), "snapshot_id": sid,
+        "source_tool": rec.source_tool, "source_device": _DEVICE.get(rec.source_tool),
+        "raw_rule_id": rec.raw_ref, "policy_id": None, "rule_order": rec.order, "action": rec.action,
+        "src_kind": rec.source_kind, "src_value": _value(rec.source, rec.source_kind), "src_context": None,
+        "dst_kind": rec.destination_kind, "dst_value": _value(rec.destination, rec.destination_kind), "dst_context": None,
+        "protocol": rec.protocol, "ports": _ports(rec.protocol, rec.port, rec.port_end), "l7_app": rec.l7_app,
+        "nat_original": None, "nat_translated": None, "tags": list(rec.dest_tags), "enabled": True,
+        "schedule": None, "direction": None,
+        "src_asset_refs": [_asset_id(sid, canon(rec.source))], "dst_asset_refs": [_asset_id(sid, canon(rec.destination))],
+    } for rec in r.records], ["rule_uid"])
 
-    for node_id, data in r.graph.nodes(data=True):
-        upsert(cur, "graph_nodes", {
-            "node_id": node_id, "snapshot_id": sid,
-            "kind": node_db_kind(node_id, data.get("kind", "concrete")),
-            "label": data.get("display", node_id), "context": None,
-            "asset_id": _asset_id(sid, node_id), "tags": list(data.get("tags", [])),
-            "ip_set": list(data.get("ip_set", [])),
-        }, ["snapshot_id", "node_id"])
+    upsert_many(cur, "graph_nodes", [{
+        "node_id": node_id, "snapshot_id": sid,
+        "kind": node_db_kind(node_id, data.get("kind", "concrete")),
+        "label": data.get("display", node_id), "context": None,
+        "asset_id": _asset_id(sid, node_id), "tags": list(data.get("tags", [])),
+        "ip_set": list(data.get("ip_set", [])),
+    } for node_id, data in r.graph.nodes(data=True)], ["snapshot_id", "node_id"])
 
-    for rec in r.records:
-        if rec.action != "allow":
-            continue
-        s, d = canon(rec.source), canon(rec.destination)
-        upsert(cur, "graph_edges", {
-            "edge_id": det_id("edge", sid, rec.source_tool, rec.raw_ref), "snapshot_id": sid,
-            "src_node": s, "dst_node": d, "action": rec.action, "ports": _ports(rec.protocol, rec.port),
-            "l7_app": None, "rule_uid": _rule_uid(sid, rec.source_tool, rec.raw_ref),
-            "source_tool": rec.source_tool, "enforcement_point": _DEVICE.get(rec.source_tool),
-        }, ["snapshot_id", "edge_id"])
+    upsert_many(cur, "graph_edges", [{
+        "edge_id": det_id("edge", sid, rec.source_tool, rec.raw_ref), "snapshot_id": sid,
+        "src_node": canon(rec.source), "dst_node": canon(rec.destination), "action": rec.action,
+        "ports": _ports(rec.protocol, rec.port, rec.port_end),
+        "l7_app": rec.l7_app, "rule_uid": _rule_uid(sid, rec.source_tool, rec.raw_ref),
+        "source_tool": rec.source_tool, "enforcement_point": _DEVICE.get(rec.source_tool),
+    } for rec in r.records if rec.action == "allow"], ["snapshot_id", "edge_id"])
 
-    for f in r.findings:
-        upsert(cur, "findings", {
-            "finding_id": f.id, "snapshot_id": sid, "type": f.type, "severity": f.severity,
-            "severity_band": f.severity_band, "forced_critical": f.forced_critical,
-            "signals": {**f.signals, "title": f.title}, "involved": list(f.involved),
-            "raw_refs": list(f.raw_refs), "source_tools": list(f.source_tools), "explanation": None,
-        }, ["finding_id"])
+    upsert_many(cur, "findings", [{
+        "finding_id": f.id, "snapshot_id": sid, "type": f.type, "severity": f.severity,
+        "severity_band": f.severity_band, "forced_critical": f.forced_critical,
+        "signals": {**f.signals, "title": f.title}, "involved": list(f.involved),
+        "raw_refs": list(f.raw_refs), "source_tools": list(f.source_tools), "explanation": None,
+    } for f in r.findings], ["finding_id"])
 
     audit(cur, "system", "precompute_snapshot", subject=sid, snapshot_id=sid, detail={
         "records": len(r.records), "assets": len(r.assets), "findings": len(r.findings),
@@ -244,6 +233,59 @@ def persist_staged_change(cur: psycopg.Cursor, row: dict) -> str:
     audit(cur, "user", "stage_change", subject=row.get("request_id"), snapshot_id=row.get("snapshot_id"),
           detail={"target_tool": row.get("target_tool"), "kind": row.get("kind"), "decision": row.get("decision")})
     return row["staged_id"]
+
+
+_CHANGE_STATUS_READY = False
+
+
+def ensure_change_request_status(cur: psycopg.Cursor) -> None:
+    """Widen change_requests with a lifecycle status so a request can be rejected
+    (not just approved/staged). Runtime + idempotent, like _ensure_merges."""
+    global _CHANGE_STATUS_READY
+    if _CHANGE_STATUS_READY:
+        return
+    cur.execute("ALTER TABLE ztpa.change_requests ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'open'")
+    cur.execute("ALTER TABLE ztpa.change_requests ADD COLUMN IF NOT EXISTS rejected_by text")
+    cur.execute("ALTER TABLE ztpa.change_requests ADD COLUMN IF NOT EXISTS reject_reason text")
+    _CHANGE_STATUS_READY = True
+
+
+def reject_change_request(cur: psycopg.Cursor, request_id: str, by: str, reason: str | None = None) -> int:
+    """Mark a request rejected. Returns the number of rows updated (0 = unknown id)."""
+    ensure_change_request_status(cur)
+    cur.execute("UPDATE ztpa.change_requests SET status='rejected', rejected_by=%s, reject_reason=%s "
+                "WHERE request_id=%s", [by, reason, request_id])
+    n = cur.rowcount
+    if n:
+        audit(cur, "user", "reject_change", subject=request_id, detail={"by": by, "reason": reason})
+    return n
+
+
+def load_applied_changes(cur: psycopg.Cursor) -> list[dict]:
+    """Operator-accepted changes -- staged changes that were successfully pushed.
+    The engine re-applies these to the records on every run (a durable overlay,
+    like asset merges), so a recompute reflects the applied state. Ordered for
+    deterministic application; only 'pushed' rows count (conflicts are excluded)."""
+    try:
+        cur.execute("SELECT kind, payload FROM ztpa.staged_changes WHERE status='pushed' "
+                    "ORDER BY created_at, staged_id")
+        return [dict(r) for r in cur.fetchall()]
+    except Exception:
+        return []
+
+
+def reset_change_workflow(cur: psycopg.Cursor) -> dict:
+    """Clear the change-governance working set (requests, decisions, staged
+    changes, remediation threads) so a demo can be re-run from a clean slate.
+    Leaves snapshots/findings alone -- those regenerate from the seed on recompute."""
+    counts: dict[str, int] = {}
+    for table in ("staged_changes", "change_decisions", "change_requests", "remediation_revisions"):
+        try:
+            cur.execute(f"DELETE FROM ztpa.{table}")
+            counts[table] = cur.rowcount
+        except Exception:
+            counts[table] = 0
+    return counts
 
 
 def persist_change_decision(cur: psycopg.Cursor, sid: str, request: ChangeRequest,

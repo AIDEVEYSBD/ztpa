@@ -47,6 +47,31 @@ def _valid_traversal(g: nx.DiGraph, path: list[str]) -> bool:
     return all(g.nodes[n].get("kind") == "concrete" for n in path[1:-1])
 
 
+def _grant_matches(grant: dict, port: int | None, protocol: str | None, app: str | None) -> bool:
+    """Structured match of a request against one grant (replaces fragile substring checks)."""
+    gproto = grant.get("protocol")
+    if gproto == "any":
+        return True                                   # wildcard grant matches anything
+    if app is not None:
+        return (grant.get("l7_app") or "").lower() == app.lower()
+    if protocol is not None and protocol != "any" and gproto != protocol:
+        return False
+    if port is not None:
+        start = grant.get("port")
+        if start is None:
+            return False
+        end = grant.get("port_end") if grant.get("port_end") is not None else start
+        if not (start <= port <= end):
+            return False
+    return True
+
+
+def _edge_matches(data: dict, port: int | None, protocol: str | None, app: str | None) -> bool:
+    if port is None and protocol is None and app is None:
+        return True
+    return any(_grant_matches(gr, port, protocol, app) for gr in data.get("grants", []))
+
+
 def describe_path(g: nx.DiGraph, path: list[str]) -> dict:
     edges = _path_edges(g, path)
     hops = []
@@ -57,7 +82,9 @@ def describe_path(g: nx.DiGraph, path: list[str]) -> dict:
             "src_display": g.nodes[u].get("display", u),
             "dst_display": g.nodes[v].get("display", v),
             "tool": rep["tool"], "service": rep["service"], "ref": rep["ref"],
+            "l7_app": rep.get("l7_app"), "l7_source": rep.get("l7_source"),
             "tools": data.get("tools", []), "services": data.get("services", []),
+            "apps": data.get("apps", []),
         })
     entry, terminal = path[0], path[-1]
     src_zone = g.nodes[entry].get("zone", "internal")
@@ -72,6 +99,7 @@ def describe_path(g: nx.DiGraph, path: list[str]) -> dict:
         "terminal": terminal,
         "terminal_tags": sorted(g.nodes[terminal].get("tags", [])),
         "terminal_service": hops[-1]["service"] if hops else None,
+        "terminal_apps": hops[-1]["apps"] if hops else [],
         "boundary": boundary_label(src_zone, dst_zone),
         "boundary_crossed": crosses_boundary(src_zone, dst_zone),
         "boundary_multiplier": boundary_multiplier(src_zone, dst_zone),
@@ -110,20 +138,23 @@ def cross_tool_paths(g: nx.DiGraph, sensitive_tags: set[str],
 # --- primitives the agent's deterministic tools wrap -----------------------
 
 def reachable(g: nx.DiGraph, src: str, dst: str, port: int | None = None,
-              cutoff: int = 8) -> dict:
-    """yes/no + the path(s). Honors the directed allow graph (effective policy)."""
+              protocol: str | None = None, app: str | None = None, cutoff: int = 8) -> dict:
+    """yes/no + the path(s). Honors the directed allow graph (effective policy).
+
+    An optional port/protocol/app filter is applied to the LAST hop (the grant
+    into the destination) using structured grant matching -- so "is db-prod-01
+    reachable over QUIC?" is answerable, not just "on port 443"."""
     if src not in g or dst not in g or not nx.has_path(g, src, dst):
         return {"reachable": False, "paths": []}
     paths = []
     for path in islice(nx.all_simple_paths(g, src, dst, cutoff=cutoff), _PATH_SCAN_CAP):
         if not _valid_traversal(g, path):
             continue
-        desc = describe_path(g, path)
-        if port is not None:
-            last = desc["hops"][-1] if desc["hops"] else {}
-            if f"/{port}" not in (last.get("service") or "") and "any" not in (last.get("service") or ""):
+        if (port is not None or protocol is not None or app is not None) and len(path) >= 2:
+            terminal_edge = g[path[-2]][path[-1]]
+            if not _edge_matches(terminal_edge, port, protocol, app):
                 continue
-        paths.append(desc)
+        paths.append(describe_path(g, path))
     paths.sort(key=lambda d: (d["length"], d["path"]))
     return {"reachable": bool(paths), "paths": paths}
 

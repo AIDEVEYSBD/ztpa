@@ -32,7 +32,7 @@ export function ThemeToggle({ className = "" }: { className?: string }) {
   const { theme, toggle } = useTheme();
   return (
     <button onClick={toggle} title="Toggle theme" aria-label="Toggle theme"
-      className={`grid h-[30px] w-[30px] place-items-center border border-border bg-surface2 text-text2 hover:bg-surfaceHover ${className}`}>
+      className={`grid h-[30px] w-[30px] place-items-center border border-border bg-surface2 text-text2 transition-colors hover:border-accent hover:text-accent-fg ${className}`}>
       {theme === "dark" ? <Sun size={15} /> : <Moon size={15} />}
     </button>
   );

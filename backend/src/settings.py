@@ -55,9 +55,38 @@ def has_openai() -> bool:
 
 # Probe the local Ollama server at most once per TTL so routing decisions don't
 # pay a network round-trip on every LLM call. Re-checked so a model that comes up
-# (or goes down) mid-session is picked up within the window.
-_OLLAMA_PROBE: dict = {"checked_at": 0.0, "ok": False}
-_OLLAMA_PROBE_TTL: float = 30.0  # seconds
+# (or goes down) mid-session is picked up within the window. The probe caches the
+# model list too, so the status banner reuses it instead of re-hitting Ollama.
+_OLLAMA_PROBE: dict = {"checked_at": 0.0, "ok": False, "models": []}
+_OLLAMA_PROBE_TTL: float = 30.0    # seconds
+_OLLAMA_PROBE_TIMEOUT: float = 1.5  # seconds — a down server should fail fast
+
+
+def ollama_probe() -> tuple[bool, list[str]]:
+    """(reachable_with_models, sorted_model_names), cached for the TTL.
+
+    One shared probe for both routing (`ollama_available`) and the status banner
+    (`provider_status`), so a down Ollama costs at most one short timeout per TTL
+    instead of a multi-second hang on every call."""
+    import time
+
+    now = time.monotonic()
+    if now - _OLLAMA_PROBE["checked_at"] < _OLLAMA_PROBE_TTL:
+        return _OLLAMA_PROBE["ok"], _OLLAMA_PROBE["models"]
+
+    ok, models = False, []
+    try:
+        import httpx
+
+        r = httpx.get(f"{OLLAMA_HOST}/api/tags", timeout=_OLLAMA_PROBE_TIMEOUT)
+        if r.status_code == 200:
+            models = sorted(m["name"] for m in r.json().get("models", []))
+            ok = bool(models)
+    except Exception:
+        ok, models = False, []
+
+    _OLLAMA_PROBE.update(checked_at=now, ok=ok, models=models)
+    return ok, models
 
 
 def ollama_available() -> bool:
@@ -66,23 +95,7 @@ def ollama_available() -> bool:
     'auto' uses this to decide whether a local model exists to leverage; if the
     server is down or has no models pulled, we fall back to a hosted key.
     """
-    import time
-
-    now = time.monotonic()
-    if now - _OLLAMA_PROBE["checked_at"] < _OLLAMA_PROBE_TTL:
-        return _OLLAMA_PROBE["ok"]
-
-    ok = False
-    try:
-        import httpx
-
-        r = httpx.get(f"{OLLAMA_HOST}/api/tags", timeout=2.0)
-        ok = r.status_code == 200 and bool(r.json().get("models"))
-    except Exception:
-        ok = False
-
-    _OLLAMA_PROBE.update(checked_at=now, ok=ok)
-    return ok
+    return ollama_probe()[0]
 
 
 def active_provider() -> str:

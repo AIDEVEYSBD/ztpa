@@ -30,17 +30,18 @@ def extract(text: str, request_id: str = "CR-INTAKE") -> dict:
                 "reason": "Could not extract a complete rule; route to a human.",
                 "raw": (r.text or "")[:300]}
 
-    proto, port, label = parse_service(data.get("service") or "tcp/443")
+    svc = parse_service(data.get("service") or "tcp/443", app=data.get("app"))
     src, dst = str(data["source"]), str(data["destination"])
     proposed = PolicyRecord(
         id=f"{request_id}-rule", source_tool="algosec", raw_ref=request_id,
         source=src, source_kind="cidr" if is_cidr(src) else "identity",
         destination=dst, destination_kind="cidr" if is_cidr(dst) else "identity",
-        dest_tags=[], service=label, port=port, protocol=proto,
+        dest_tags=[], service=svc.label, port=svc.port, port_end=svc.port_end,
+        protocol=svc.protocol, l7_app=svc.l7_app, l7_source=svc.l7_source,
         action=data.get("action") if data.get("action") in ("allow", "deny") else "allow",
         order=999,
     )
-    request = ChangeRequest(id=request_id, title=f"Extracted: {src} -> {dst} {label}",
+    request = ChangeRequest(id=request_id, title=f"Extracted: {src} -> {dst} {svc.label}",
                             proposed=proposed, requested_by="intake", justification=text)
     return {"ok": True, "request": json.loads(request.model_dump_json()),
             "confidence": data.get("confidence", 0.6), "notes": data.get("notes", ""),

@@ -34,7 +34,7 @@ def normalize(export: dict) -> NormalizeResult:
         ))
 
     for exp in export.get("exposures", []):
-        proto, port, label = parse_service(None, exp.get("port"), exp.get("protocol"))
+        svc = parse_service(None, exp.get("port"), exp.get("protocol"), app=exp.get("app"))
         if exp["kind"] == "internet_ingress":
             s, s_kind, d = INTERNET_CIDR, "cidr", exp["dst"]
         else:  # lateral
@@ -47,7 +47,8 @@ def normalize(export: dict) -> NormalizeResult:
         res.records.append(PolicyRecord(
             id=exp["exposure_id"], source_tool=TOOL, raw_ref=exp["exposure_id"],
             source=s, source_kind=s_kind, destination=d, destination_kind="identity",
-            dest_tags=assets.get(d, {}).get("tags", []), service=label, port=port, protocol=proto,
+            dest_tags=assets.get(d, {}).get("tags", []), service=svc.label, port=svc.port,
+            port_end=svc.port_end, protocol=svc.protocol, l7_app=svc.l7_app, l7_source=svc.l7_source,
             action="allow", order=None, note=exp.get("kind"),
             source_ip=assets.get(s, {}).get("ip") if s_kind == "identity" else None,
             dest_ip=assets.get(d, {}).get("ip"),

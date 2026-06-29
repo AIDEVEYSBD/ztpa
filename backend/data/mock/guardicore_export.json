@@ -58,14 +58,6 @@
       "tags": [
         "dev"
       ]
-    },
-    "data-segment": {
-      "role": "segment",
-      "env": "prod",
-      "tags": [
-        "prod",
-        "data-segment"
-      ]
     }
   },
   "policies": [
@@ -106,13 +98,12 @@
       "ruleset": "ci"
     },
     {
-      "policy_id": "GC-002",
-      "src_label": "app-server-08",
-      "dst_label": "data-segment",
-      "port": 8443,
-      "protocol": "tcp",
+      "policy_id": "GC-020",
+      "src_label": "web-tier",
+      "dst_label": "app-tier",
+      "app": "quic",
       "action": "allow",
-      "ruleset": "app-east-west"
+      "ruleset": "tiering-http3"
     }
   ]
 }

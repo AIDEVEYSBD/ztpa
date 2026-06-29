@@ -14,6 +14,7 @@ const BAND_VAR: Record<string, string> = {
 const TYPE_LABEL: Record<string, string> = {
   over_permissive: "Over-permissive rules", cidr_overlap: "CIDR overlaps",
   shadowed_rule: "Shadowed rules", cross_tool_path: "Cross-tool paths",
+  transport_exposure: "Transport / app-layer (QUIC)",
 };
 
 /** A path rendered as professional chips separated by arrow icons (no glyphs). */
@@ -55,7 +56,7 @@ export function ReportPanel() {
   if (!r) {
     return (
       <div className="panel mx-auto max-w-3xl p-6">
-        <div className="mb-3 flex items-center gap-2 text-[13px] font-bold"><FileText size={16} /> Executive &amp; compliance posture report</div>
+        <div className="eyebrow mb-3">Executive &amp; compliance posture report</div>
         <p className="mb-4 max-w-2xl text-[13px] text-text2">
           A board-ready report: severity breakdown, the cross-tool exposures, a prioritised remediation plan, and a
           PCI-DSS / Zero-Trust compliance read. The orchestrator returns the facts instantly; the model then
@@ -107,7 +108,7 @@ export function ReportPanel() {
 
         {/* Severity distribution bar */}
         <div>
-          <div className="label mb-1.5">Severity distribution</div>
+          <div className="eyebrow mb-2">Severity distribution</div>
           <div className="flex h-3.5 w-full overflow-hidden border border-border">
             {BANDS.map((b) => (sev[b] ? <div key={b} style={{ width: `${(sev[b] / total) * 100}%`, background: BAND_VAR[b] }} title={`${b}: ${sev[b]}`} /> : null))}
           </div>
@@ -122,7 +123,7 @@ export function ReportPanel() {
 
         {/* Finding mix by type */}
         <div>
-          <div className="label mb-2">Finding mix</div>
+          <div className="eyebrow mb-2">Finding mix</div>
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             {Object.entries(byType).map(([t, n]) => (
               <div key={t} className="sunk px-3 py-2">
@@ -136,7 +137,7 @@ export function ReportPanel() {
         {/* LLM narrative (streams in after the facts) */}
         {narrLoading && r.narrative_pending ? (
           <div className="space-y-3">
-            <div className="flex items-center gap-1.5 text-[11px] text-text3"><Sparkles size={12} className="text-accent" /> writing executive narrative with the AI model…</div>
+            <div className="flex items-center gap-1.5 text-[11px] text-text3"><Sparkles size={12} className="text-accent-fg" /> writing executive narrative with the AI model…</div>
             <Skeleton className="h-5 w-52" />
             <SkeletonText lines={4} />
             <Skeleton className="h-5 w-44" />
@@ -149,7 +150,7 @@ export function ReportPanel() {
         {/* Cross-tool attack paths */}
         {r.cross_tool_paths?.length > 0 && (
           <div>
-            <div className="label mb-2 flex items-center gap-1.5"><Route size={13} /> Cross-tool attack paths</div>
+            <div className="eyebrow mb-2"><Route size={13} className="text-text3" /> Cross-tool attack paths</div>
             <div className="space-y-2">
               {r.cross_tool_paths.map((p: any, i: number) => (
                 <div key={i} className="sunk p-3 text-[12px]">
@@ -165,7 +166,7 @@ export function ReportPanel() {
 
         {/* Prioritised remediation */}
         <div>
-          <div className="label mb-2">Prioritised remediation plan</div>
+          <div className="eyebrow mb-2">Prioritised remediation plan</div>
           <div className="space-y-2">
             {(r.actions ?? []).map((a: any) => {
               const refs: string[] = Array.from(new Set((a.findings ?? []).flatMap((f: any) => f.refs ?? [])));
@@ -192,7 +193,7 @@ export function ReportPanel() {
         {/* Regulated assets in scope */}
         {(r.sensitive_assets ?? []).length > 0 && (
           <div>
-            <div className="label mb-2 flex items-center gap-1.5"><ShieldCheck size={13} /> Regulated assets in scope</div>
+            <div className="eyebrow mb-2"><ShieldCheck size={13} className="text-text3" /> Regulated assets in scope</div>
             <div className="flex flex-wrap gap-1.5">
               {r.sensitive_assets.map((a: string) => <span key={a} className="chip mono text-[11px]">{a}</span>)}
             </div>

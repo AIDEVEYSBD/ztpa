@@ -55,23 +55,6 @@
       "tags": [
         "dev"
       ]
-    },
-    "db-prod-02": {
-      "type": "host",
-      "value": "10.50.0.30",
-      "tags": [
-        "pci",
-        "customer-data",
-        "prod"
-      ]
-    },
-    "data-segment": {
-      "type": "network",
-      "value": "10.45.0.0/16",
-      "tags": [
-        "prod",
-        "data-segment"
-      ]
     }
   },
   "rules": [
@@ -202,13 +185,22 @@
       "comment": "monitoring scrape"
     },
     {
-      "rule_id": "ALGO-031",
-      "order": 31,
-      "src": "data-segment",
-      "dst": "db-prod-02",
-      "service": "tcp/5432",
+      "rule_id": "ALGO-080",
+      "order": 80,
+      "src": "0.0.0.0/0",
+      "dst": "app-server-09",
+      "service": "udp/443",
       "action": "allow",
-      "comment": "data segment to prod db-02"
+      "comment": "HTTP/3 edge accel (UDP 443) - added for perf"
+    },
+    {
+      "rule_id": "ALGO-082",
+      "order": 82,
+      "src": "10.0.0.0/8",
+      "dst": "app-server-08",
+      "service": "quic",
+      "action": "allow",
+      "comment": "corp QUIC to app-08 (App-ID rule)"
     }
   ]
 }
