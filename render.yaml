@@ -1,0 +1,37 @@
+# Render Blueprint — ZeroTrust Policy Advisor backend (FastAPI + deterministic engine).
+#
+# Frontend lives on Vercel; the database is the existing Neon Postgres.
+# The advisory layer is routed to the hosted OpenAI key because there is no local
+# Ollama on Render. The engine's deterministic fallbacks mean the app still runs
+# end-to-end even if the AI key is ever unset.
+#
+# SECRETS: DATABASE_URL and OPENAI_API_KEY use `sync: false`, so ONLY their names
+# live in this file — the VALUES are entered in the Render dashboard (encrypted at
+# rest) and are NEVER committed to git.
+services:
+  - type: web
+    name: ztpa-backend
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      # Force the hosted OpenAI provider (no local Ollama on Render).
+      - key: ADVISORY_PROVIDER
+        value: openai
+      - key: OPENAI_MODEL
+        value: gpt-4o
+      # --- secrets: set the VALUES in the Render dashboard (never in git) ---------
+      - key: DATABASE_URL
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      # Set to the Vercel URL once the frontend is live (CORS allowlist; the normal
+      # proxied path is server-to-server so this is defense-in-depth, not required).
+      - key: FRONTEND_ORIGIN
+        sync: false
