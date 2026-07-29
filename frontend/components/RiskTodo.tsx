@@ -4,11 +4,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { ChevronRight, Sparkles, Wrench, Check, X, ArrowRight, RotateCw, Send, MessageSquarePlus } from "lucide-react";
 import { api } from "@/lib/api";
-import type { ActionItem, Band, Finding, Remediation } from "@/lib/types";
+import type { ActionItem, Band, Finding, Remediation, RemediationAttempt } from "@/lib/types";
 import type { ScreenId } from "./Sidebar";
 import { SeverityPill, ToolBadge, cn, Spinner, SkeletonRows, SkeletonText } from "./ui";
 import { Prose } from "./Markdown";
 import { RuleRef } from "./RuleRef";
+import { CampaignPanel } from "./Campaign";
 import { SearchBox } from "@/lib/tableTools";
 
 const BAND_ORDER: Record<Band, number> = { critical: 0, high: 1, medium: 2, low: 3 };
@@ -54,6 +55,8 @@ export function RiskTodo({ actions, findings, readOnly = false, loading = false,
         {findings.length} findings across three tools, grouped by root cause into{" "}
         <b className="text-ink">{actions.length} prioritized actions</b>, worst first.
       </p>
+
+      <CampaignPanel readOnly={readOnly} onNavigate={onNavigate} />
 
       <div className="flex flex-wrap items-center gap-2">
         <SearchBox value={q} onChange={setQ} placeholder="Search actions, assets, rules…" />
@@ -109,6 +112,48 @@ function L7Chip({ app, uninspectable }: { app: string; uninspectable?: boolean }
         uninspectable ? "border-sev-high-line bg-sev-high-bg text-sev-high" : "border-border text-text2")}>
       {app}
     </span>
+  );
+}
+
+/** The agent's propose -> re-simulate -> revise trace: how it converged on the fix.
+ *  Only shown when the agent actually iterated (or the engine had to step in), so a
+ *  one-shot clean fix stays visually quiet. */
+function RemediationTrace({ trace, attempts }: { trace?: RemediationAttempt[]; attempts?: number }) {
+  if (!trace || trace.length < 2) return null;
+  const verdict = (s: RemediationAttempt): { label: string; cls: string } => {
+    if (s.by === "engine_fallback") return { label: "engine fallback", cls: "border-border text-text2" };
+    if (!s.change) return { label: "no valid change", cls: "border-border text-text3" };
+    const v = s.validation || {};
+    if (v.error) return { label: "invalid change", cls: "border-sev-high-line bg-sev-high-bg text-sev-high" };
+    if (!v.resolves) return { label: "still reachable", cls: "border-sev-high-line bg-sev-high-bg text-sev-high" };
+    if (v.introduces_new_criticals?.length) return { label: "opens new critical", cls: "border-sev-medium-line bg-sev-medium-bg text-sev-medium" };
+    return { label: "resolved", cls: "border-sev-low-line bg-sev-low-bg text-sev-low" };
+  };
+  return (
+    <details className="mt-2 group">
+      <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[11px] font-medium text-muted hover:text-ink">
+        <ChevronRight size={12} className="transition-transform group-open:rotate-90" />
+        How the agent got here — {attempts ?? trace.filter((t) => t.change).length} propose/re-simulate round{(attempts ?? 0) !== 1 ? "s" : ""}
+      </summary>
+      <ol className="mt-1.5 space-y-1 border-l border-border pl-3">
+        {trace.map((s, i) => {
+          const v = verdict(s);
+          return (
+            <li key={i} className="flex flex-wrap items-center gap-1.5 text-[11px]">
+              <span className="mono text-text3">{s.attempt}.</span>
+              {s.change ? (
+                <span className="mono text-muted">{s.change.op} <span className="text-text2">{s.change.target_ref}</span>
+                  {s.change.new_source && <> → {s.change.new_source}</>}
+                  {s.change.new_service && <> → {s.change.new_service}</>}
+                </span>
+              ) : <span className="text-text3 italic">{s.note || "no change proposed"}</span>}
+              <span className={cn("chip ml-auto text-[10px]", v.cls)}>{v.label}</span>
+              {s.reasoning && <div className="w-full pl-4 text-[10px] text-text3">{s.reasoning}</div>}
+            </li>
+          );
+        })}
+      </ol>
+    </details>
   );
 }
 
@@ -264,6 +309,7 @@ function FindingRow({ f, readOnly, onNavigate }: { f: Finding; readOnly?: boolea
                   {rem.validation.engine_corrected_ai && (
                     <div className="mt-1 text-[10px] text-text2">engine corrected the AI's first proposal, then proved this one</div>
                   )}
+                  <RemediationTrace trace={rem.trace} attempts={rem.attempts} />
                 </div>
 
                 {readOnly ? null : sent ? (

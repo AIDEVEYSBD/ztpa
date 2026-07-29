@@ -1,4 +1,4 @@
--- ZeroTrust Policy Advisor -- database schema
+-- Network Policy Reviewer -- database schema
 -- Target: Postgres 15+ (Neon). Idempotent: safe to re-run.
 -- Apply (preferred):  psql "$DATABASE_URL" --single-transaction -v ON_ERROR_STOP=1 -f db/schema.sql
 -- Apply (fallback):   python db/migrate.py
@@ -311,6 +311,16 @@ CREATE TABLE IF NOT EXISTS staged_changes (
     created_by   text,
     created_at   timestamptz NOT NULL DEFAULT now(),
     pushed_at    timestamptz
+);
+
+-- ============================================================================
+-- campaign_plans -- the persisted Remediation Campaign plan, one per snapshot
+-- (advisory: a proven worst-first fix sequence the user can send to the gate).
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS campaign_plans (
+    snapshot_id  text PRIMARY KEY,
+    plan         jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at   timestamptz NOT NULL DEFAULT now()
 );
 
 -- ============================================================================

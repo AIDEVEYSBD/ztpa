@@ -110,12 +110,24 @@ export interface AskResult {
   trace: { tool: string; args: Record<string, any>; result: any }[];
 }
 
+export interface RemediationAttempt {
+  attempt: number;
+  by: string;
+  change?: Record<string, any> | null;
+  fix_text?: string | null;
+  reasoning?: string | null;
+  validation?: { resolves?: boolean; introduces_new_criticals?: string[]; error?: string } | null;
+  note?: string;
+}
+
 export interface Remediation {
   finding_id: string;
   fix_text: string;
   change: Record<string, any>;
   validation: { resolves: boolean; introduces_new_criticals?: string[]; engine_corrected_ai?: boolean };
   by: string;
+  attempts?: number;
+  trace?: RemediationAttempt[];
   thread_id?: string;
   seq?: number;
   revision_id?: string;
@@ -132,6 +144,59 @@ export interface RemediationRevision {
   validation: { resolves?: boolean; introduces_new_criticals?: string[] };
   by?: string;
   status: string;
+}
+
+/** One ReAct step the triage investigator took: a tool call + engine result, a
+ *  reasoned "done", or a recorded bad-tool-call. */
+export interface InvestigationStep {
+  thought?: string;
+  tool?: string;
+  args?: Record<string, any>;
+  result?: any;
+  done?: boolean;
+  error?: string;
+}
+
+export type BandCounts = { critical: number; high: number; medium: number; low: number };
+
+/** One step of a remediation campaign: a proven fix for one finding (applied) or a
+ *  finding the agent could not cleanly fix and handed to a human (needs_review). */
+export interface CampaignStep {
+  n: number;
+  status: "applied" | "needs_review";
+  target: { type: string; title: string; band: string; severity: number; refs: string[]; tools: string[] };
+  finding_id?: string | null;
+  change: Record<string, any>;
+  fix_text?: string | null;
+  by?: string;
+  reason?: string;
+  criticals_before?: number;
+  criticals_after?: number;
+  findings_cleared?: number;
+  band_counts_after?: BandCounts;
+  sub_attempts?: number;
+  sub_trace?: RemediationAttempt[];
+}
+
+export interface CampaignSubmitResult {
+  submitted: { n: number; finding_id: string; request_id: string; decision: string }[];
+  skipped: { n: number; title?: string; reason?: string }[];
+  auto_approved: number;
+  escalated: number;
+}
+
+export interface CampaignPlan {
+  target_bands: string[];
+  initial_counts: BandCounts;
+  final_counts: BandCounts;
+  criticals_trajectory: number[];
+  steps: CampaignStep[];
+  applied_count: number;
+  needs_review_count: number;
+  residual_findings: CampaignStep["target"][];
+  cleared_all_criticals: boolean;
+  applied_changes: Record<string, any>[];
+  by: string;
 }
 
 export interface PushStep {

@@ -1,6 +1,6 @@
 import type {
-  ActionItem, AdminMetrics, AskResult, ChangeResult, Finding, GraphData, Health, MergeSuggestion,
-  Remediation, RemediationRevision, StagedChange, ToolInfo,
+  ActionItem, AdminMetrics, AskResult, CampaignPlan, CampaignSubmitResult, ChangeResult, Finding, GraphData,
+  Health, MergeSuggestion, Remediation, RemediationRevision, StagedChange, ToolInfo,
 } from "./types";
 
 async function j<T>(url: string, init?: RequestInit): Promise<T> {
@@ -31,6 +31,9 @@ export const api = {
   remediateRefine: (id: string, comment: string, prior_change?: Record<string, any>) =>
     j<Remediation>(`/api/findings/${id}/remediate/refine`, post({ comment, prior_change })),
   remediationThread: (id: string) => j<{ revisions: RemediationRevision[] }>(`/api/findings/${id}/remediation-thread`),
+  campaignGet: () => j<{ plan: CampaignPlan | null }>("/api/campaign/plan"),
+  campaignPlan: (target_bands?: string[]) => j<CampaignPlan>("/api/campaign/plan", post(target_bands ? { target_bands } : {})),
+  campaignSubmit: (justification?: string) => j<CampaignSubmitResult>("/api/campaign/submit", post(justification ? { justification } : {})),
   changeSubmit: (body: { kind?: string; finding_id: string; change: Record<string, any>; revision_id?: string; justification?: string }) =>
     j<{ request_id: string; kind: string; decision: any; target_tool: string }>("/api/change/submit", post({ kind: "remediation", ...body })),
   changeRequests: () => j<{ requests: any[] }>("/api/change-requests"),

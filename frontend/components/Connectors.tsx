@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Check, Plug, X, Wand2, ArrowRight, Sparkles } from "lucide-react";
+import { Check, Plug, X, Wand2, ArrowRight, Sparkles, RotateCw } from "lucide-react";
 import { api } from "@/lib/api";
 import { cn, Spinner, Chip, Eyebrow, EmptyState } from "./ui";
 import { Prose } from "./Markdown";
@@ -53,12 +53,18 @@ export function Connectors() {
           </div>
         ) : res.ok ? (
           <>
-            <div className={cn("panel flex items-center gap-2 p-3 text-sm",
+            <div className={cn("panel flex flex-wrap items-center gap-2 p-3 text-sm",
               res.validation?.valid ? "border-sev-low-line" : "border-sev-high-line")}>
               {res.validation?.valid ? <Check className="text-sev-low" size={18} /> : <X className="text-sev-high" size={18} />}
               <span className="font-semibold">{res.validation?.valid ? "Validated against your sample" : "Needs review"}</span>
               <span className="ml-auto text-xs text-text2">{res.validation?.records} rows · {res.validation?.entities} entities</span>
+              {(res.validation?.unmapped ?? []).length > 0 && (
+                <span className="w-full text-[11px] text-sev-high">Unmapped: {res.validation.unmapped.join(", ")} — the field name(s) mapped for these are wrong.</span>
+              )}
             </div>
+
+            <AuthoringTrace trace={res.trace} attempts={res.attempts} />
+
             <div className="panel p-3">
               <Eyebrow className="mb-2">Proposed SourceProfile (config)</Eyebrow>
               <pre className="sunk overflow-x-auto p-3 font-mono text-[11px]">{JSON.stringify(res.profile, null, 2)}</pre>
@@ -80,6 +86,39 @@ export function Connectors() {
           <div className="panel border-sev-high-line p-3 text-sm"><Prose className="!text-sm">{res.reason ?? "Could not parse this sample."}</Prose></div>
         )}
       </div>
+    </div>
+  );
+}
+
+/** The self-correcting loop: each round the model proposed a profile, the engine
+ *  tried to normalize the sample, and the concrete failure drove the next revision.
+ *  Only shown when the agent actually iterated. */
+function AuthoringTrace({ trace, attempts }: { trace?: any[]; attempts?: number }) {
+  if (!trace || trace.length < 2) return null;
+  const verdict = (t: any): { label: string; cls: string } => {
+    if (t.error) return { label: t.error.includes("schema") ? "schema-invalid" : "error", cls: "border-sev-high-line bg-sev-high-bg text-sev-high" };
+    const v = t.validation ?? {};
+    if (v.valid) return { label: "validated", cls: "border-sev-low-line bg-sev-low-bg text-sev-low" };
+    if (!v.records) return { label: "0 records", cls: "border-sev-high-line bg-sev-high-bg text-sev-high" };
+    if ((v.unmapped ?? []).length) return { label: `unmapped: ${v.unmapped.join(", ")}`, cls: "border-sev-medium-line bg-sev-medium-bg text-sev-medium" };
+    return { label: `${v.records} rows`, cls: "border-border text-text2" };
+  };
+  return (
+    <div className="panel p-3">
+      <Eyebrow className="mb-2 flex items-center gap-1.5"><RotateCw size={12} /> How the connector was derived — {attempts ?? trace.length} attempt{(attempts ?? 0) !== 1 ? "s" : ""}</Eyebrow>
+      <ol className="space-y-1.5 border-l border-border pl-3">
+        {trace.map((t, i) => {
+          const v = verdict(t);
+          const p = t.profile ?? {};
+          return (
+            <li key={i} className="flex flex-wrap items-center gap-1.5 text-[11px]">
+              <span className="mono text-text3">{t.attempt}.</span>
+              <span className="mono text-text2">rules_path=<b>{p.rules_path ?? "?"}</b></span>
+              <span className={cn("chip ml-auto text-[10px]", v.cls)}>{v.label}</span>
+            </li>
+          );
+        })}
+      </ol>
     </div>
   );
 }

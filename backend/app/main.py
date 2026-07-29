@@ -1,4 +1,4 @@
-"""ZeroTrust Policy Advisor API.
+"""Network Policy Reviewer API.
 
 Dashboard reads come from Postgres (the precomputed snapshot, the system of
 record). Live LLM/agent calls (explain, classify, ask, remediate, report,
@@ -20,7 +20,7 @@ from psycopg.types.json import Jsonb  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
 from src import request_ctx, settings, tools_registry  # noqa: E402
-from src.advisory import authoring, classify_change, entity_suggest, explain as explain_mod  # noqa: E402
+from src.advisory import authoring, campaign as campaign_mod, classify_change, entity_suggest, explain as explain_mod  # noqa: E402
 from src.advisory import intake as intake_mod, orchestrator, rank as rank_mod, remediation, report as report_mod  # noqa: E402
 from src.advisory.client import provider_status  # noqa: E402
 from src.agent.assistant import ask as agent_ask  # noqa: E402
@@ -35,12 +35,12 @@ from src.ids import det_id  # noqa: E402
 from src.models import ChangeRequest, RankedAction, RankedActions  # noqa: E402
 from src.persist import (  # noqa: E402
     accept_remediation_revision, cache_explanation, delete_asset_merge, ensure_change_request_status,
-    load_applied_changes, load_asset_merges, load_remediation_thread, persist_asset_merge,
-    persist_change_decision, persist_engine_result, persist_ranked_actions,
+    load_applied_changes, load_asset_merges, load_campaign_plan, load_remediation_thread, persist_asset_merge,
+    persist_campaign_plan, persist_change_decision, persist_engine_result, persist_ranked_actions,
     persist_remediation_revision, persist_staged_change, reject_change_request, reset_change_workflow,
 )
 
-app = FastAPI(title="ZeroTrust Policy Advisor", version="1.0")
+app = FastAPI(title="Network Policy Reviewer", version="1.0")
 app.add_middleware(
     CORSMiddleware, allow_origins=[settings.FRONTEND_ORIGIN, "http://localhost:3000"],
     allow_methods=["*"], allow_headers=["*"],
@@ -59,7 +59,7 @@ class _ActorMiddleware:
     async def __call__(self, scope, receive, send):
         if scope.get("type") == "http":
             h = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
-            request_ctx.set_actor(h.get("x-ztpa-role"), h.get("x-ztpa-email"))
+            request_ctx.set_actor(h.get("x-npr-role"), h.get("x-npr-email"))
         await self.app(scope, receive, send)
 
 
@@ -401,6 +401,78 @@ def remediation_thread(fid: str):
         return {"revisions": load_remediation_thread(cur, sid(), fid)}
 
 
+class CampaignBody(BaseModel):
+    target_bands: list[str] | None = None    # default: critical + high
+
+
+@app.get("/api/campaign/plan")
+def campaign_get():
+    """The persisted campaign plan for the active snapshot (or {plan: null} if none
+    has been planned yet). Read on page load so navigating away and back re-uses the
+    proven plan instead of paying another planning pass."""
+    _require_capability("campaign")
+    with get_conn() as conn, conn.cursor() as cur:
+        return {"plan": load_campaign_plan(cur, sid())}
+
+
+@app.post("/api/campaign/plan")
+def campaign_plan(body: CampaignBody):
+    """Plan + PROVE a worst-first remediation campaign across the whole snapshot:
+    the agent drafts a fix for the worst open finding, the engine re-simulates on the
+    cumulative state, and it repeats until the critical count is driven to zero (or a
+    finding needs a human). Advisory only — nothing is applied to the live snapshot;
+    accepted fixes go to the Change Gate via /api/campaign/submit. The plan is
+    persisted per snapshot so it survives navigation."""
+    _require_capability("campaign")
+    e = engine()
+    bands = tuple(body.target_bands) if body.target_bands else campaign_mod.DEFAULT_TARGET_BANDS
+    result = campaign_mod.plan(e, target_bands=bands)
+    with get_conn() as conn, conn.cursor() as cur:
+        persist_campaign_plan(cur, sid(), result)
+        audit(cur, "agent", "campaign_plan", snapshot_id=sid(),
+              detail={"applied": result["applied_count"], "needs_review": result["needs_review_count"],
+                      "trajectory": result["criticals_trajectory"],
+                      "cleared_all_criticals": result["cleared_all_criticals"]})
+    return result
+
+
+class CampaignSubmitBody(BaseModel):
+    justification: str | None = None
+
+
+@app.post("/api/campaign/submit")
+def campaign_submit(body: CampaignSubmitBody):
+    """Send every proven fix in the persisted campaign to the Change Gate. Each
+    applied step becomes its own change request, re-evaluated and ruled on by the
+    gate individually (so the audit trail and staging/push flow are unchanged);
+    steps the campaign flagged needs-review, or that no longer map to a live finding,
+    are skipped and reported. Idempotent: re-submitting upserts the same requests."""
+    _require_capability("classify")
+    with get_conn() as conn, conn.cursor() as cur:
+        plan = load_campaign_plan(cur, sid())
+        if not plan:
+            raise HTTPException(400, "no campaign plan to submit; plan the campaign first")
+        submitted, skipped = [], []
+        for step in plan.get("steps", []):
+            fid, change = step.get("finding_id"), step.get("change")
+            if step.get("status") != "applied" or not fid or not change:
+                skipped.append({"n": step.get("n"), "title": step.get("target", {}).get("title"),
+                                "reason": step.get("reason") or "not an applied, live-finding fix"})
+                continue
+            if not _finding(fid):   # finding no longer exists in the live snapshot
+                skipped.append({"n": step.get("n"), "title": step.get("target", {}).get("title"),
+                                "reason": "finding not in the current snapshot"})
+                continue
+            res = _submit_remediation(cur, fid, change, justification=body.justification, origin="campaign")
+            submitted.append({"n": step.get("n"), "finding_id": fid, "request_id": res["request_id"],
+                              "decision": res["decision"]["decision"]})
+        audit(cur, "user", "campaign_submit", snapshot_id=sid(),
+              detail={"submitted": len(submitted), "skipped": len(skipped)})
+    return {"submitted": submitted, "skipped": skipped,
+            "auto_approved": sum(1 for s in submitted if s["decision"] == "auto_approve"),
+            "escalated": sum(1 for s in submitted if s["decision"] == "escalate")}
+
+
 @app.get("/api/actions")
 def actions(snapshot: str | None = None):
     t = view_sid(snapshot)
@@ -524,7 +596,7 @@ def classify(body: ClassifyBody):
     else:
         raise HTTPException(400, "provide request_id or source+destination+service")
     delta = simulate_change(e.records, e.assets, e.alias_map, req.proposed)
-    decision = classify_change.classify_change(req, delta)
+    decision = classify_change.classify_change(req, delta, ctx=e)
     with get_conn() as conn, conn.cursor() as cur:
         persist_change_decision(cur, sid(), req, decision)
     return {"request": {"id": req.id, "title": req.title, "justification": req.justification},
@@ -563,6 +635,50 @@ class SubmitBody(BaseModel):
     justification: str | None = None
 
 
+def _submit_remediation(cur, finding_id: str, change: dict, revision_id: str | None = None,
+                        justification: str | None = None, origin: str = "risk_todo") -> dict:
+    """Core of a remediation -> Change Gate submission: the engine re-simulates the
+    fix and the gate rules (auto_approve if it resolves its finding and opens no new
+    critical, else escalate). Shared by the single-fix route and the campaign batch.
+    Writes the change_request + change_decision rows and returns the response shape."""
+    f = _finding(finding_id)
+    if not f:
+        raise HTTPException(404, f"finding not found: {finding_id}")
+    validation = remediation._validate(engine(), f, change)
+    resolves = bool(validation.get("resolves"))
+    new_crit = validation.get("introduces_new_criticals") or []
+    decision = "auto_approve" if (resolves and not new_crit) else "escalate"
+    request_id = det_id("cr", finding_id, revision_id or change)
+    decision_id = det_id("dec", sid(), request_id)
+    ref = change.get("target_ref")
+    rule = next((r for r in engine().records if r.raw_ref == ref), None)
+    target_tool = rule.source_tool if rule else "algosec"
+    proposed = {**change, "finding_id": finding_id, "target_tool": target_tool,
+                "summary": f"{change.get('op')} {ref}".strip()}
+    crit = {"resolves": resolves, "no_new_criticals": not new_crit}
+    trig = ("introduces new critical findings: " + ", ".join(new_crit)) if new_crit else (
+        None if resolves else "the fix does not resolve the finding")
+    upsert(cur, "change_requests", {
+        "request_id": request_id, "snapshot_id": sid(), "proposed": proposed,
+        "requested_by": request_ctx.current().email or origin, "justification": justification,
+        "kind": "remediation", "origin": origin}, ["request_id"])
+    upsert(cur, "change_decisions", {
+        "decision_id": decision_id, "request_id": request_id, "decision": decision, "criteria": crit,
+        "triggering_reason": trig if decision == "escalate" else None, "delta_summary": validation,
+        "confidence": 1.0 if resolves else 0.5, "forced_escalate": bool(new_crit), "model": "engine"},
+        ["decision_id"])
+    if revision_id:
+        accept_remediation_revision(cur, revision_id)
+    audit(cur, "user", "submit_remediation", subject=finding_id, snapshot_id=sid(),
+          detail={"decision": decision, "request_id": request_id, "origin": origin})
+    return {"request_id": request_id, "kind": "remediation", "finding_id": finding_id,
+            "decision": {"request_id": request_id, "decision": decision, "criteria": crit,
+                         "triggering_reason": trig, "delta_summary": validation,
+                         "confidence": 1.0 if resolves else 0.5, "forced_escalate": bool(new_crit),
+                         "decided_by": "engine"},
+            "target_tool": target_tool}
+
+
 @app.post("/api/change/submit")
 def change_submit(body: SubmitBody):
     """Submit an accepted Risk-To-Do remediation to the Change Gate. The engine
@@ -573,43 +689,8 @@ def change_submit(body: SubmitBody):
         raise HTTPException(400, "unsupported submit kind")
     if not body.finding_id or not body.change:
         raise HTTPException(400, "remediation submit needs finding_id and change")
-    f = _finding(body.finding_id)
-    if not f:
-        raise HTTPException(404, "finding not found")
-    validation = remediation._validate(engine(), f, body.change)
-    resolves = bool(validation.get("resolves"))
-    new_crit = validation.get("introduces_new_criticals") or []
-    decision = "auto_approve" if (resolves and not new_crit) else "escalate"
-    request_id = det_id("cr", body.finding_id, body.revision_id or body.change)
-    decision_id = det_id("dec", sid(), request_id)
-    ref = body.change.get("target_ref")
-    rule = next((r for r in engine().records if r.raw_ref == ref), None)
-    target_tool = rule.source_tool if rule else "algosec"
-    proposed = {**body.change, "finding_id": body.finding_id, "target_tool": target_tool,
-                "summary": f"{body.change.get('op')} {ref}".strip()}
-    crit = {"resolves": resolves, "no_new_criticals": not new_crit}
-    trig = ("introduces new critical findings: " + ", ".join(new_crit)) if new_crit else (
-        None if resolves else "the fix does not resolve the finding")
     with get_conn() as conn, conn.cursor() as cur:
-        upsert(cur, "change_requests", {
-            "request_id": request_id, "snapshot_id": sid(), "proposed": proposed,
-            "requested_by": request_ctx.current().email or "risk_todo", "justification": body.justification,
-            "kind": "remediation", "origin": "risk_todo"}, ["request_id"])
-        upsert(cur, "change_decisions", {
-            "decision_id": decision_id, "request_id": request_id, "decision": decision, "criteria": crit,
-            "triggering_reason": trig if decision == "escalate" else None, "delta_summary": validation,
-            "confidence": 1.0 if resolves else 0.5, "forced_escalate": bool(new_crit), "model": "engine"},
-            ["decision_id"])
-        if body.revision_id:
-            accept_remediation_revision(cur, body.revision_id)
-        audit(cur, "user", "submit_remediation", subject=body.finding_id, snapshot_id=sid(),
-              detail={"decision": decision, "request_id": request_id})
-    return {"request_id": request_id, "kind": "remediation",
-            "decision": {"request_id": request_id, "decision": decision, "criteria": crit,
-                         "triggering_reason": trig, "delta_summary": validation,
-                         "confidence": 1.0 if resolves else 0.5, "forced_escalate": bool(new_crit),
-                         "decided_by": "engine"},
-            "target_tool": target_tool}
+        return _submit_remediation(cur, body.finding_id, body.change, body.revision_id, body.justification)
 
 
 # --- Staging area ----------------------------------------------------------

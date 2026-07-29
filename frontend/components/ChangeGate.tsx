@@ -3,9 +3,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { useSession } from "next-auth/react";
 import { motion } from "framer-motion";
-import { Check, ShieldAlert, ShieldCheck, X, Play, FlaskConical, ArrowRight, Globe, Rocket, ChevronDown, ChevronRight, Inbox, History, Wrench } from "lucide-react";
+import { Check, ShieldAlert, ShieldCheck, X, Play, FlaskConical, ArrowRight, Globe, Rocket, ChevronDown, ChevronRight, Inbox, History, Wrench, Search, CornerDownRight } from "lucide-react";
 import { api } from "@/lib/api";
-import type { ChangeResult } from "@/lib/types";
+import type { ChangeResult, InvestigationStep } from "@/lib/types";
 import type { ScreenId } from "./Sidebar";
 import { cn, Spinner, Skeleton, SkeletonText } from "./ui";
 import { Prose } from "./Markdown";
@@ -229,11 +229,73 @@ export function ChangeGate({ onNavigate }: { onNavigate?: (s: ScreenId) => void 
                 <DeltaRow label="Over-permissive patterns" items={result.delta.new_over_permissive ?? []} />
               </div>
 
+              <InvestigationTrail steps={d!.delta_summary?.investigation as InvestigationStep[] | undefined} />
+
               {d!.rationale && <div className="panel p-4"><div className="eyebrow mb-2">Rationale</div><Prose>{d!.rationale}</Prose></div>}
             </motion.div>
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/** One-line summary of a deterministic tool result, so the evidence trail reads as
+ *  facts ("internet-exposed · 3 sources") rather than raw JSON. */
+function summarizeResult(tool?: string, r?: any): string {
+  if (!r || typeof r !== "object") return "";
+  switch (tool) {
+    case "effective_policy":
+      return `${r.internet_exposed ? "internet-exposed" : "not internet-exposed"} · ${(r.sources ?? []).length} source(s)`;
+    case "find_paths":
+      return `${r.count ?? (r.paths ?? []).length} path(s)`;
+    case "reachable":
+      return r.reachable ? `reachable${(r.paths ?? []).length ? ` via ${r.paths.length} path(s)` : ""}` : "not reachable";
+    case "resolve":
+      return r.found ? `${r.asset_key}${(r.tags ?? []).length ? ` [${r.tags.join(", ")}]` : ""}` : "not a known asset";
+    case "risk_findings":
+      return `${r.count ?? (r.findings ?? []).length} finding(s)`;
+    default:
+      return JSON.stringify(r).slice(0, 120);
+  }
+}
+
+/** The triage investigator's evidence trail: the tools the agent chose to call
+ *  before the gate ruled, each with the engine's factual answer. Shown for both the
+ *  live result and the audit log so a reviewer sees the reasoning, not just the verdict. */
+function InvestigationTrail({ steps }: { steps?: InvestigationStep[] }) {
+  if (!steps?.length) return null;
+  return (
+    <div className="panel p-4">
+      <div className="eyebrow mb-2.5 flex items-center gap-1.5">
+        <Search size={12} /> Agent investigation <span className="font-normal normal-case text-text3">— evidence gathered before ruling</span>
+      </div>
+      <ol className="space-y-2 border-l border-border pl-3">
+        {steps.map((s, i) => (
+          <li key={i} className="text-[12px]">
+            {s.done ? (
+              <div className="flex items-start gap-1.5 text-ok"><Check size={13} className="mt-0.5 shrink-0" /><span className="text-text2">{s.thought || "Concluded the investigation."}</span></div>
+            ) : s.error ? (
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="chip border-sev-high-line bg-sev-high-bg text-[10px] text-sev-high">{s.error}</span>
+                <span className="mono text-text3">{s.tool ?? "?"}</span>
+                {s.thought && <span className="w-full text-[11px] italic text-text3">{s.thought}</span>}
+              </div>
+            ) : (
+              <div>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="mono chip border-accent text-[10px] text-accent-fg">{s.tool}</span>
+                  {s.args && Object.keys(s.args).length > 0 && (
+                    <span className="mono text-[11px] text-text3">({Object.entries(s.args).map(([k, v]) => `${k}=${v}`).join(", ")})</span>
+                  )}
+                </div>
+                {s.thought && <div className="mt-0.5 text-[11px] italic text-text3">{s.thought}</div>}
+                <div className="mt-0.5 flex items-start gap-1"><CornerDownRight size={12} className="mt-0.5 shrink-0 text-text3" /><span className="mono text-[11px] text-text2">{summarizeResult(s.tool, s.result)}</span></div>
+              </div>
+            )}
+          </li>
+        ))}
+      </ol>
     </div>
   );
 }
@@ -479,6 +541,8 @@ function DecisionDetail({ x }: { x: any }) {
           <DeltaRow label="Over-permissive patterns" items={dd.new_over_permissive ?? []} />
         </div>
       )}
+
+      <InvestigationTrail steps={dd.investigation as InvestigationStep[] | undefined} />
 
       {rationale && <div><div className="eyebrow mb-1.5">Rationale</div><Prose>{rationale}</Prose></div>}
 

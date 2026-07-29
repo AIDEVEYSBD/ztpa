@@ -134,6 +134,7 @@ _JSON_COLUMNS: dict[str, set[str]] = {
     "tool_settings": set(),
     "remediation_revisions": {"change", "validation"},
     "staged_changes": {"payload", "conflicts", "resolution", "push_steps"},
+    "campaign_plans": {"plan"},
 }
 
 

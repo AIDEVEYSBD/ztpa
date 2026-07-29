@@ -292,12 +292,52 @@ def load_applied_changes(cur: psycopg.Cursor) -> list[dict]:
         return []
 
 
+# --- remediation campaign (persisted, one plan per snapshot) ----------------
+
+_CAMPAIGN_READY = False
+
+
+def ensure_campaign_plans(cur: psycopg.Cursor) -> None:
+    """Create the campaign_plans table at runtime if absent -- idempotent, so an
+    already-provisioned DB (that predates this table) gets it without a migration,
+    exactly like `ensure_change_request_status`."""
+    global _CAMPAIGN_READY
+    if _CAMPAIGN_READY:
+        return
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS ztpa.campaign_plans (
+            snapshot_id  text PRIMARY KEY,
+            plan         jsonb NOT NULL DEFAULT '{}'::jsonb,
+            created_at   timestamptz NOT NULL DEFAULT now()
+        )
+    """)
+    _CAMPAIGN_READY = True
+
+
+def persist_campaign_plan(cur: psycopg.Cursor, sid: str, plan: dict) -> None:
+    """Cache the campaign plan for a snapshot so navigating away and back re-reads
+    it instead of paying another (LLM) planning pass. Re-planning overwrites it."""
+    ensure_campaign_plans(cur)
+    upsert(cur, "campaign_plans", {"snapshot_id": sid, "plan": plan}, ["snapshot_id"])
+
+
+def load_campaign_plan(cur: psycopg.Cursor, sid: str) -> dict | None:
+    """The cached plan for a snapshot, or None if it was never planned (or the
+    snapshot changed -- a recompute yields a new id, so the plan is naturally stale)."""
+    ensure_campaign_plans(cur)
+    row = cur.execute("SELECT plan FROM ztpa.campaign_plans WHERE snapshot_id=%s", [sid]).fetchone()
+    if not row:
+        return None
+    return row["plan"] if isinstance(row["plan"], dict) else None
+
+
 def reset_change_workflow(cur: psycopg.Cursor) -> dict:
     """Clear the change-governance working set (requests, decisions, staged
-    changes, remediation threads) so a demo can be re-run from a clean slate.
-    Leaves snapshots/findings alone -- those regenerate from the seed on recompute."""
+    changes, remediation threads, campaign plans) so a demo can be re-run from a
+    clean slate. Leaves snapshots/findings alone -- those regenerate on recompute."""
     counts: dict[str, int] = {}
-    for table in ("staged_changes", "change_decisions", "change_requests", "remediation_revisions"):
+    for table in ("staged_changes", "change_decisions", "change_requests",
+                  "remediation_revisions", "campaign_plans"):
         try:
             cur.execute(f"DELETE FROM ztpa.{table}")
             counts[table] = cur.rowcount
