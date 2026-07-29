@@ -1,7 +1,7 @@
 "use client";
 
 // ───────────────────────────────────────────────────────────────────────────
-// Public marketing landing — implements "ZTPA Landing.dc.html" (Claude Design)
+// Public marketing landing — implements "NPR Landing.dc.html" (Claude Design)
 // in the AEGIS theme: electric-yellow accent on a warm near-black canvas,
 // squared/flat/hairline structure, eyebrow titles, spectrum keylines. Forced to
 // the dark palette (data-theme="dark") so the marketing page always reads as
@@ -16,12 +16,14 @@ import { motion } from "framer-motion";
 import {
   ArrowRight, ShieldCheck, Search, FileText, BarChart3, Code2, ClipboardCheck,
   Braces, GitMerge, Table2, Share2, Cloud, Ticket, Cpu, Sparkles, Check, X, Minus, RotateCw,
+  Layers, Fingerprint, Network, Route, Gauge,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
 
 const EASE = [0.2, 0, 0, 1] as const;
 const NAV = [
   { href: "#problem", label: "The problem" },
+  { href: "#flow", label: "The flow" },
   { href: "#map", label: "One map" },
   { href: "#capabilities", label: "Capabilities" },
   { href: "#gate", label: "Change gate" },
@@ -142,8 +144,8 @@ export function Landing() {
         <Link href="#top" className="flex items-center gap-3">
           <span className="h-[22px] w-[22px] bg-accent" />
           <span className="flex flex-col leading-none">
-            <span className="text-[18px] font-bold tracking-[-0.02em]">ZTPA</span>
-            <span className="mt-[3px] text-[11px] tracking-[0.02em] text-text3">ZeroTrust Policy Advisor</span>
+            <span className="text-[18px] font-bold tracking-[-0.02em]">NPR</span>
+            <span className="mt-[3px] text-[11px] tracking-[0.02em] text-text3">Network Policy Reviewer</span>
           </span>
         </Link>
         <nav className="flex items-center gap-7">
@@ -163,15 +165,15 @@ export function Landing() {
         {/* ambient network overlay (thin yellow lines + nodes) */}
         <svg viewBox="0 0 1440 900" preserveAspectRatio="xMidYMid slice" aria-hidden className="pointer-events-none absolute inset-0 h-full w-full">
           <g stroke="var(--accent)" strokeWidth="1" fill="none">
-            <path d="M120 200 L420 320 L760 180 L1080 360 L1340 240" style={{ animation: "ztpa-pulse 7s ease-in-out infinite" }} />
-            <path d="M80 640 L380 540 L700 700 L1010 520 L1360 660" style={{ animation: "ztpa-pulse 9s ease-in-out infinite 1.5s" }} />
-            <path d="M420 320 L380 540" style={{ animation: "ztpa-pulse 8s ease-in-out infinite .8s" }} />
-            <path d="M760 180 L700 700" style={{ animation: "ztpa-pulse 10s ease-in-out infinite 2.2s" }} />
-            <path d="M1080 360 L1010 520" style={{ animation: "ztpa-pulse 8.5s ease-in-out infinite 1.1s" }} />
+            <path d="M120 200 L420 320 L760 180 L1080 360 L1340 240" style={{ animation: "npr-pulse 7s ease-in-out infinite" }} />
+            <path d="M80 640 L380 540 L700 700 L1010 520 L1360 660" style={{ animation: "npr-pulse 9s ease-in-out infinite 1.5s" }} />
+            <path d="M420 320 L380 540" style={{ animation: "npr-pulse 8s ease-in-out infinite .8s" }} />
+            <path d="M760 180 L700 700" style={{ animation: "npr-pulse 10s ease-in-out infinite 2.2s" }} />
+            <path d="M1080 360 L1010 520" style={{ animation: "npr-pulse 8.5s ease-in-out infinite 1.1s" }} />
           </g>
           <g fill="var(--accent)">
             {[[416, 316, 0], [756, 176, 1], [1076, 356, 2], [376, 536, 1.6], [1006, 516, 0.5]].map(([x, y, d], i) => (
-              <rect key={i} x={x} y={y} width="8" height="8" style={{ animation: `ztpa-dot 5s ease-in-out infinite ${d}s` }} />
+              <rect key={i} x={x} y={y} width="8" height="8" style={{ animation: `npr-dot 5s ease-in-out infinite ${d}s` }} />
             ))}
           </g>
         </svg>
@@ -184,7 +186,7 @@ export function Landing() {
               <span className="h-[9px] w-[9px] bg-text3" />
               <span className="h-[9px] w-[9px] bg-text3" />
             </span>
-            <span className="text-[13px] uppercase tracking-[0.04em] text-text2">ZeroTrust Policy Advisor</span>
+            <span className="text-[13px] uppercase tracking-[0.04em] text-text2">Network Policy Reviewer</span>
           </Reveal>
           <Reveal delay={0.05}>
             <h1 className="m-0 max-w-[1040px] text-[40px] font-bold leading-[1.04] tracking-[-0.03em] sm:text-[56px] lg:text-[72px]">
@@ -193,7 +195,7 @@ export function Landing() {
           </Reveal>
           <Reveal delay={0.12}>
             <p className="mt-7 max-w-[740px] text-[18px] leading-[1.5] text-text2 sm:text-[21px]">
-              ZTPA unifies every network-policy tool you run (firewall, segmentation and cloud) into one policy
+              NPR unifies every network-policy tool you run (firewall, segmentation and cloud) into one policy
               model, one reachability map, and one worst-first to-do list, then explains, prioritizes and gates every
               change with an agentic advisory layer.
             </p>
@@ -207,7 +209,7 @@ export function Landing() {
         <div className="absolute bottom-9 left-5 hidden sm:left-10 sm:block"><ApproachMark /></div>
         <div className="absolute bottom-10 right-6 hidden flex-col items-center gap-2 sm:flex">
           <span className="relative h-8 w-5 rounded-full border-[1.5px] border-text3/60">
-            <span className="absolute left-1/2 top-[7px] h-[7px] w-[3px] -translate-x-1/2 bg-accent" style={{ animation: "ztpa-mouse 1.8s ease-in-out infinite" }} />
+            <span className="absolute left-1/2 top-[7px] h-[7px] w-[3px] -translate-x-1/2 bg-accent" style={{ animation: "npr-mouse 1.8s ease-in-out infinite" }} />
           </span>
         </div>
       </section>
@@ -244,6 +246,58 @@ export function Landing() {
             <span className="spectrum-line warm h-px w-[60px] flex-none" />
             <span className="font-serif text-[22px] tracking-[-0.01em] text-text sm:text-[24px]">The risk lives in the gaps between them.</span>
           </Reveal>
+        </div>
+      </section>
+
+      {/* ── THE FLOW ───────────────────────────────────────────────────────── */}
+      <section id="flow" className="scroll-mt-20 border-t border-border px-5 py-28 sm:px-10">
+        <div className="mx-auto max-w-[1200px] 3xl:max-w-[1360px]">
+          <Reveal><Eyebrow>The flow</Eyebrow></Reveal>
+          <Reveal delay={0.05}>
+            <h2 className="m-0 max-w-[900px] text-[34px] font-bold leading-[1.06] tracking-[-0.03em] sm:text-[44px] lg:text-[52px]">
+              From three exports to <span className="text-accent">one gated decision.</span>
+            </h2>
+          </Reveal>
+          <Reveal delay={0.1}>
+            <p className="mb-14 mt-6 max-w-[820px] text-[18px] leading-[1.5] text-text2 sm:text-[19px]">
+              A guided pipeline — nothing hidden, every step deterministic and observable as it runs. The engine
+              computes every fact and number; the model only advises, at a single stage, grounded in the results.
+            </p>
+          </Reveal>
+        </div>
+
+        <Reveal delay={0.12} className="mx-auto max-w-[1200px] 3xl:max-w-[1360px]">
+          {/* One non-scrolling row: equal-width stations share the container, so the
+              whole pipeline always fits on one line (screenshot-friendly). */}
+          <div className="flex items-stretch">
+            <FStep icon={Layers} title="Ingest" sub={FLOW_TOOLS.map((t) => t.name).join(" · ")} />
+            <FLink label="Resolve" />
+            <FStep icon={Fingerprint} title="Identity" sub="One asset" />
+            <FLink label="Graph" />
+            <FStep icon={Network} title="Reachability" sub="Unified map" />
+            <FLink label="Analyze" />
+            <FStep icon={Route} title="Cross-tool risk" sub="Four analyzers" tone="money" />
+            <FLink label="Score" />
+            <FStep icon={Gauge} title="Severity" sub="Guardrail floor" />
+            <FLink label="Advise" />
+            <FStep icon={Sparkles} title="Advisory" sub="Explain · rank · fix" />
+            <FLink label="→ Gate" />
+            <FStep icon={ShieldCheck} title="Change gate" sub="Approve or escalate" tone="final" />
+          </div>
+        </Reveal>
+
+        <div className="mx-auto mt-10 max-w-[1200px] 3xl:max-w-[1360px]">
+          <span aria-hidden className="spectrum-line block" />
+          <div className="mt-6 flex flex-wrap items-center gap-x-7 gap-y-3 text-[13px] text-text3">
+            <span className="inline-flex items-center gap-2.5">
+              <span className="inline-flex h-5 w-5 items-center justify-center bg-accent text-accent-ink"><Route size={12} strokeWidth={2} /></span>
+              Filled = the cross-tool path, force-flagged critical
+            </span>
+            <span className="inline-flex items-center gap-2.5">
+              <span className="inline-flex h-5 w-5 items-center justify-center border border-accent text-accent"><ShieldCheck size={12} strokeWidth={2} /></span>
+              Outlined = the guardrailed change decision
+            </span>
+          </div>
         </div>
       </section>
 
@@ -293,7 +347,7 @@ export function Landing() {
                     transition={{ duration: 2, ease: EASE }}
                   />
                   <path d="M70 250 L290 120 L510 250 L730 120 L940 230" fill="none" stroke="#FFFFFF" strokeWidth="2.5"
-                    strokeDasharray="3 13" strokeLinejoin="round" opacity="0.85" className="animate-ztpa-flow" />
+                    strokeDasharray="3 13" strokeLinejoin="round" opacity="0.85" className="animate-npr-flow" />
                 </svg>
                 {/* edge labels */}
                 {([["18%", "algosec", "Wiz", TOOL.wiz], ["40%", "wiz", "Wiz", TOOL.wiz], ["62%", "gc", "Guardicore", TOOL.guardicore], ["83.5%", "as", "AlgoSec", TOOL.algosec]] as const).map(([left, k, label, color]) => (
@@ -475,7 +529,7 @@ export function Landing() {
           <div className="flex flex-col gap-2 sm:text-right">
             <div className="flex items-center gap-2.5 sm:justify-end">
               <span className="h-[18px] w-[18px] bg-accent" />
-              <span className="text-[16px] font-bold">ZTPA · ZeroTrust Policy Advisor</span>
+              <span className="text-[16px] font-bold">NPR · Network Policy Reviewer</span>
             </div>
             <span className="text-[12px] text-text3">Private and confidential. Simulated exports representative of each tool, not a live integration.</span>
           </div>
@@ -491,7 +545,7 @@ function DiagramNode({ left, top, label, color, sub, below, critical }: {
 }) {
   return (
     <div className="absolute flex -translate-x-1/2 -translate-y-1/2 flex-col items-center gap-[7px]" style={{ left, top, flexDirection: below ? "column" : "column-reverse" }}>
-      <span className={cn(critical ? "h-[18px] w-[18px]" : "h-3.5 w-3.5")} style={{ background: color, animation: critical ? "ztpa-crit 2s ease-out infinite" : undefined }} />
+      <span className={cn(critical ? "h-[18px] w-[18px]" : "h-3.5 w-3.5")} style={{ background: color, animation: critical ? "npr-crit 2s ease-out infinite" : undefined }} />
       <span className="whitespace-nowrap bg-bg px-1.5 py-0.5 text-[12px] font-bold" style={{ color: critical ? "var(--sev-critical)" : undefined }}>{label}</span>
       {sub && <span className="whitespace-nowrap bg-bg px-1.5 py-px text-[10px] text-text3">{sub}</span>}
     </div>
@@ -520,3 +574,44 @@ function FactsColumn({ icon: Icon, eyebrow, title, items, iconColor }: {
     </Reveal>
   );
 }
+
+/* ── flow pipeline pieces ─────────────────────────────────────────────────── */
+const FLOW_TOOLS = [
+  { icon: Table2, name: "AlgoSec", sub: "Firewall" },
+  { icon: Share2, name: "Guardicore", sub: "Segmentation" },
+  { icon: Cloud, name: "Wiz", sub: "Cloud" },
+];
+
+/* one station in the pipeline. tone: "money" fills the icon (the cross-tool path);
+   "final" outlines the whole card (the guardrailed change decision). */
+function FStep({ icon: Icon, title, sub, tone }: {
+  icon: typeof ShieldCheck; title: string; sub: string; tone?: "money" | "final";
+}) {
+  const money = tone === "money";
+  const final = tone === "final";
+  return (
+    <div className={cn("flex flex-1 basis-0 min-w-0 flex-col items-center gap-3 bg-surface px-2.5 py-5 text-center",
+      final ? "border border-accent" : "border border-border")}>
+      <span className={cn("inline-flex h-11 w-11 items-center justify-center border",
+        money ? "border-accent bg-accent text-accent-ink" : final ? "border-accent text-accent" : "border-border text-text2")}>
+        <Icon size={20} strokeWidth={1.7} />
+      </span>
+      <span className="text-[13.5px] font-bold leading-[1.2] tracking-[-0.02em]">{title}</span>
+      <span className="text-[10px] uppercase leading-[1.3] tracking-[0.07em] text-text2">{sub}</span>
+    </div>
+  );
+}
+
+/* connector between stations — a hairline with an optional label pill. */
+function FLink({ label }: { label?: string }) {
+  return (
+    <div className="flex flex-none items-center" aria-hidden>
+      <span className="h-px w-2.5 bg-borderStrong sm:w-4" />
+      {label ? (
+        <span className="whitespace-nowrap border border-border bg-bg px-1.5 py-1 text-[9px] font-bold uppercase tracking-[0.08em] text-text2">{label}</span>
+      ) : null}
+      <span className="h-px w-2.5 bg-borderStrong sm:w-4" />
+    </div>
+  );
+}
+
