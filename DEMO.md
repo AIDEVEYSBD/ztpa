@@ -1,4 +1,4 @@
-# Demo script — ZeroTrust Policy Advisor
+# Demo script — Network Policy Reviewer
 
 ~7 minutes, fully local (no internet needed). Cold start: `python tasks.py db && python tasks.py demo && python tasks.py dev`, open **http://localhost:3000**. Everything below reads the precomputed snapshot from Postgres; only the AI calls run live (on Ollama).
 

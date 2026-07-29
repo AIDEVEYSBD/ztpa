@@ -1,4 +1,4 @@
-# ZeroTrust Policy Advisor — orchestration
+# Network Policy Reviewer — orchestration
 # Cold start:  make setup  ->  edit .env  ->  make db  ->  make demo  ->  make backend (+ make frontend)
 SHELL := /bin/bash
 PY    := backend/.venv/bin/python
@@ -68,8 +68,8 @@ frontend:
 
 dev:
 	@echo "starting backend (:8000) + frontend (:3000) — Ctrl-C to stop both"
-	@( cd backend && .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 & echo $$! > /tmp/ztpa-api.pid ); \
-	trap 'kill $$(cat /tmp/ztpa-api.pid) 2>/dev/null' EXIT; \
+	@( cd backend && .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 & echo $$! > /tmp/npr-api.pid ); \
+	trap 'kill $$(cat /tmp/npr-api.pid) 2>/dev/null' EXIT; \
 	cd frontend && npm run dev
 
 verify:

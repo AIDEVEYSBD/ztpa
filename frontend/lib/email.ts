@@ -10,7 +10,7 @@ function template(heading: string, body: string, cta: string, url: string): stri
       <table width="480" cellpadding="0" cellspacing="0" style="background:#2E2E38;border-radius:16px;overflow:hidden">
         <tr><td style="height:6px;background:#FFE600"></td></tr>
         <tr><td style="padding:28px 32px;color:#F6F6FA">
-          <div style="font-weight:800;font-size:18px;color:#FFE600;letter-spacing:-0.5px">ZeroTrust Policy Advisor</div>
+          <div style="font-weight:800;font-size:18px;color:#FFE600;letter-spacing:-0.5px">Network Policy Reviewer</div>
           <h1 style="font-size:20px;margin:18px 0 8px">${heading}</h1>
           <p style="color:#C4C4CD;font-size:14px;line-height:1.6;margin:0 0 22px">${body}</p>
           <a href="${url}" style="display:inline-block;background:#FFE600;color:#1A1A24;font-weight:700;text-decoration:none;padding:11px 20px;border-radius:8px;font-size:14px">${cta}</a>
@@ -41,6 +41,6 @@ export const emails = {
   reset: (to: string, url: string) =>
     send(to, "Reset your password", template("Reset your password", "Click below to set a new password. This link expires in 30 minutes.", "Reset password", url), url),
   invite: (to: string, url: string, role: string) =>
-    send(to, "You're invited to ZeroTrust Policy Advisor",
+    send(to, "You're invited to Network Policy Reviewer",
       template("You've been invited", `You've been added as <b style="color:#FFE600">${role}</b>. Click below to activate your account and set a password.`, "Activate account", url), url),
 };

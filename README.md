@@ -1,4 +1,4 @@
-# ZeroTrust Policy Advisor
+# Network Policy Reviewer
 
 One unified, cross-tool view of network-policy risk — assembled from **AlgoSec**, **Guardicore**, and **Wiz**, then **explained**, **prioritized**, and **gated** by a local-first AI advisory layer. It surfaces the attack path that crosses all three tools and that no single console can show.
 

@@ -1,4 +1,4 @@
-# ZeroTrust Policy Advisor — Feature Catalog (USP)
+# Network Policy Reviewer — Feature Catalog (USP)
 
 > Living document. Update this whenever a feature is added, changed, or shipped.
 > **Status legend:** ✅ shipped · 🚧 in progress · 📋 planned
@@ -74,7 +74,7 @@ genuine engine math). Plus per-role tool enable/disable and an admin KPI/cost da
 ### 1.9 ✅ Transport- & application-layer rule decoding (QUIC / HTTP-3 / L7 App-ID)
 **Why it matters (the USP angle):** QUIC (HTTP/3) rides **UDP/443**. Most legacy firewalls
 can't inspect it, so a `udp/443` allow is an **inspection blind spot** — encrypted traffic
-that bypasses the controls teams *think* they have. ZTPA previously modelled only L4
+that bypasses the controls teams *think* they have. NPR previously modelled only L4
 (`tcp`/`udp`/`any`, single port) and dropped application identity (the `l7_app` schema column
 was never written). It now decodes the L7 layer. A policy advisor that can *decode* and
 *reason about* QUIC and transport-layer semantics flags a class of risk every single-console

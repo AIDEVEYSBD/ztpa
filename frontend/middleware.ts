@@ -29,8 +29,8 @@ export default auth((req) => {
   }
 
   const headers = new Headers(req.headers);
-  if (user?.role) headers.set("x-ztpa-role", String(user.role));
-  if (user?.email) headers.set("x-ztpa-email", String(user.email));
+  if (user?.role) headers.set("x-npr-role", String(user.role));
+  if (user?.email) headers.set("x-npr-email", String(user.email));
   return NextResponse.next({ request: { headers } });
 });
 

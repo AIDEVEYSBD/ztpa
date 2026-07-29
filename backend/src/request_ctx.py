@@ -1,7 +1,7 @@
 """Per-request actor context (role + email), carried in a ContextVar.
 
-The backend sits behind the Next.js auth proxy, which injects `x-ztpa-role` and
-`x-ztpa-email` headers (see frontend/middleware.ts). A FastAPI middleware reads
+The backend sits behind the Next.js auth proxy, which injects `x-npr-role` and
+`x-npr-email` headers (see frontend/middleware.ts). A FastAPI middleware reads
 those headers and stashes them here so deep code paths -- metric recording,
 per-role tool enforcement -- can attribute work to a role/user without threading
 the request object everywhere. Defaults to a least-privileged anonymous actor
@@ -21,7 +21,7 @@ class Actor:
     email: str | None = None
 
 
-_ctx: contextvars.ContextVar[Actor] = contextvars.ContextVar("ztpa_actor", default=Actor())
+_ctx: contextvars.ContextVar[Actor] = contextvars.ContextVar("npr_actor", default=Actor())
 
 
 def set_actor(role: str | None, email: str | None) -> None:

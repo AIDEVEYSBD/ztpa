@@ -1,4 +1,4 @@
-# Render Blueprint — ZeroTrust Policy Advisor backend (FastAPI + deterministic engine).
+# Render Blueprint — Network Policy Reviewer backend (FastAPI + deterministic engine).
 #
 # Frontend lives on Vercel; the database is the existing Neon Postgres.
 # The advisory layer is routed to the hosted OpenAI key because there is no local

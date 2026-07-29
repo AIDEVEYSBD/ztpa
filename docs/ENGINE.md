@@ -1,7 +1,7 @@
 # Core Engine — Logic, Calculations & Math
 
 This document describes the **deterministic engine**: every fact and number the
-ZeroTrust Policy Advisor computes, how it computes them, and the exact formulas
+Network Policy Reviewer computes, how it computes them, and the exact formulas
 and calibration constants involved.
 
 > **The one governing rule.** The deterministic engine owns *all facts and math*

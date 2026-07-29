@@ -10,7 +10,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [theme, setTheme] = useState<Theme>("dark");
 
   useEffect(() => {
-    const saved = (localStorage.getItem("ztpa-theme") as Theme) || "dark";
+    const saved = (localStorage.getItem("npr-theme") as Theme) || "dark";
     setTheme(saved);
     document.documentElement.setAttribute("data-theme", saved);
   }, []);
@@ -18,7 +18,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const toggle = () =>
     setTheme((t) => {
       const next = t === "dark" ? "light" : "dark";
-      localStorage.setItem("ztpa-theme", next);
+      localStorage.setItem("npr-theme", next);
       document.documentElement.setAttribute("data-theme", next);
       return next;
     });

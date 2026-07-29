@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ZeroTrust Policy Advisor - task runner.
+"""Network Policy Reviewer - task runner.
 
 One uniform entrypoint that works on Windows, macOS, Linux and WSL with only a
 system Python on PATH.

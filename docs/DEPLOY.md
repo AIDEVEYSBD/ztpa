@@ -1,4 +1,4 @@
-# Deploying ZeroTrust Policy Advisor (free tier)
+# Deploying Network Policy Reviewer (free tier)
 
 Three hosts, all free:
 
@@ -94,7 +94,7 @@ calls Render cross-origin — this is defense-in-depth.
 - **First admin.** After deploy, create the first admin with
   `node frontend/scripts/create-admin.mjs` (run locally against the same Neon DB),
   or set `ADMIN_EMAIL` and follow the app's invite flow.
-- **Backend is public.** It trusts `x-ztpa-role`/`x-ztpa-email` headers injected by
+- **Backend is public.** It trusts `x-npr-role`/`x-npr-email` headers injected by
   the Vercel middleware. Anyone hitting the Render URL directly could forge these.
   Fine for a demo; before anything real, add a shared secret the backend requires
   (reject requests from clients that don't present it).

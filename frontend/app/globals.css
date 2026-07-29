@@ -3,7 +3,7 @@
 @tailwind utilities;
 
 /* ============================================================================ *
- * ZeroTrust Policy Advisor — design system
+ * Network Policy Reviewer — design system
  * ----------------------------------------------------------------------------
  * Confident/enterprise doctrine + AEGIS glass: electric-yellow (#FFE600) accent on a
  * warm near-black canvas. Squared, flat, hairline structure; depth comes from
@@ -133,12 +133,12 @@ input:-webkit-autofill:focus {
 
 /* Landing-page motifs — hero network, diagram trace, critical pulse, scroll cue. */
 html { scroll-behavior: smooth; }
-@keyframes ztpa-pulse { 0%,100% { opacity: .12; } 50% { opacity: .42; } }
-@keyframes ztpa-dot { 0%,100% { opacity: .35; transform: scale(1); } 50% { opacity: .85; transform: scale(1.35); } }
-@keyframes ztpa-flow { to { stroke-dashoffset: -160; } }
-@keyframes ztpa-crit { 0% { box-shadow: 0 0 0 0 rgba(255,82,99,.55); } 70% { box-shadow: 0 0 0 14px rgba(255,82,99,0); } 100% { box-shadow: 0 0 0 0 rgba(255,82,99,0); } }
-@keyframes ztpa-mouse { 0% { opacity: 0; transform: translateY(0); } 30% { opacity: 1; } 100% { opacity: 0; transform: translateY(9px); } }
-.animate-ztpa-flow { animation: ztpa-flow 1.5s linear infinite; }
+@keyframes npr-pulse { 0%,100% { opacity: .12; } 50% { opacity: .42; } }
+@keyframes npr-dot { 0%,100% { opacity: .35; transform: scale(1); } 50% { opacity: .85; transform: scale(1.35); } }
+@keyframes npr-flow { to { stroke-dashoffset: -160; } }
+@keyframes npr-crit { 0% { box-shadow: 0 0 0 0 rgba(255,82,99,.55); } 70% { box-shadow: 0 0 0 14px rgba(255,82,99,0); } 100% { box-shadow: 0 0 0 0 rgba(255,82,99,0); } }
+@keyframes npr-mouse { 0% { opacity: 0; transform: translateY(0); } 30% { opacity: 1; } 100% { opacity: 0; transform: translateY(9px); } }
+.animate-npr-flow { animation: npr-flow 1.5s linear infinite; }
 
 /* ===== Signature visual primitives ========================================= */
 

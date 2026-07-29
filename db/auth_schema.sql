@@ -1,4 +1,4 @@
--- ZeroTrust Policy Advisor -- auth schema (in the project's `ztpa` schema).
+-- Network Policy Reviewer -- auth schema (in the project's `ztpa` schema).
 -- NB: these live in `ztpa`, NOT `public`, because the target database may be
 -- shared with other projects that already own a public.app_users table.
 -- Apply:  psql "$DATABASE_URL" --single-transaction -v ON_ERROR_STOP=1 -f db/auth_schema.sql

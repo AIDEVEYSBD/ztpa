@@ -17,7 +17,7 @@ from ..metrics import record_metric
 from . import tools as T
 
 _SYSTEM = (
-    "You are the ZeroTrust Policy Advisor assistant. Answer questions about the network "
+    "You are the Network Policy Reviewer assistant. Answer questions about the network "
     "policy by CALLING TOOLS -- never compute reachability, subnet math, or paths yourself. "
     "Ground every statement in tool results and cite the concrete path when something is "
     "reachable. If unsure which asset the user means, call resolve or risk_findings first. "
