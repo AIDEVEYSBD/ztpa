@@ -40,9 +40,9 @@ const main = async () => {
   if (env.RESEND_API_KEY) {
     try {
       const r = await new Resend(env.RESEND_API_KEY).emails.send({
-        from: env.EMAIL_FROM || "ZeroTrust Advisor <onboarding@resend.dev>",
+        from: env.EMAIL_FROM || "Network Policy Reviewer <onboarding@resend.dev>",
         to: email,
-        subject: "Set your ZeroTrust Advisor password",
+        subject: "Set your Network Policy Reviewer password",
         html: `<p>Click to set your password (expires in 30 minutes):</p><p><a href="${url}">${url}</a></p>`,
       });
       if (r.error) console.log("Resend error:", JSON.stringify(r.error));

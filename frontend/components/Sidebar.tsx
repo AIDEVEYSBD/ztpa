@@ -1,6 +1,6 @@
 "use client";
 
-import { useSession, signOut } from "next-auth/react";
+import { useSession } from "next-auth/react";
 import {
   Network, ListChecks, GitBranch, MessageSquare, FileText, Plug, Fingerprint,
   Users, LogOut, Database, History, Rocket, SlidersHorizontal, BarChart3,
@@ -32,8 +32,12 @@ const ADMIN: NavDef[] = [
   { id: "users", label: "Manage users", icon: Users },
 ];
 
-function initials(s?: string) {
-  return (s?.split("@")[0] ?? "U").slice(0, 2).toUpperCase();
+/** "Mehul Puri" -> "MP"; "purimehul2003@x.com" -> "PU". */
+function initials(name?: string | null, email?: string | null) {
+  const words = (name ?? "").trim().split(/\s+/).filter(Boolean);
+  if (words.length >= 2) return (words[0][0] + words[words.length - 1][0]).toUpperCase();
+  const base = words[0] || email?.split("@")[0] || "U";
+  return base.slice(0, 2).toUpperCase();
 }
 
 export function Sidebar({ active, onSelect, counts }: {
@@ -42,8 +46,13 @@ export function Sidebar({ active, onSelect, counts }: {
   counts: { findings: number; critical: number };
 }) {
   const { data } = useSession();
-  const user = data?.user as { email?: string; role?: string } | undefined;
-  const role = user?.role ?? "analyst";
+  const user = data?.user as { email?: string; name?: string | null; role?: string | null } | undefined;
+  // Prefer the AutoX `name` claim (falls back to preferred_username at the
+  // provider), then the email local part.
+  const displayName = user?.name?.trim() || user?.email?.split("@")[0] || "User";
+  // No implicit role: an unentitled session is routed to /no-access by the
+  // middleware, so anything rendered here already carries a real role.
+  const role = user?.role ?? "viewer";
 
   const navItem = (it: NavDef, count?: number, critical?: boolean) => {
     const Icon = it.icon;
@@ -88,13 +97,15 @@ export function Sidebar({ active, onSelect, counts }: {
 
       <div className="flex shrink-0 items-center gap-2.5 border-t border-border p-3">
         <div className="grid h-[26px] w-[26px] shrink-0 place-items-center border border-border bg-sunk text-[11px] font-bold text-text2">
-          {initials(user?.email)}
+          {initials(user?.name, user?.email)}
         </div>
         <div className="min-w-0 flex-1 leading-tight">
-          <div className="truncate text-[12px] font-bold">{user?.email?.split("@")[0] ?? "User"}</div>
+          <div className="truncate text-[12px] font-bold" title={user?.email ?? undefined}>{displayName}</div>
           <div className="text-[11px] capitalize text-text3">{role}</div>
         </div>
-        <button onClick={() => signOut({ callbackUrl: "/login" })} title="Sign out"
+        {/* Route through /sso/logout so the AutoX session ends too (RP-initiated
+            logout with id_token_hint), not just our cookie. */}
+        <button onClick={() => { window.location.href = "/sso/logout"; }} title="Sign out"
           className="grid h-[30px] w-[30px] place-items-center border border-border bg-surface2 text-text2 transition-colors hover:border-accent hover:text-accent-fg">
           <LogOut size={15} />
         </button>

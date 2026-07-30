@@ -91,7 +91,7 @@ export function ReportPanel() {
         <div className="flex items-center gap-3 border-b border-border pb-4">
           <div className="grid h-10 w-10 shrink-0 place-items-center bg-accent-ink"><ShieldCheck size={20} className="text-accent" /></div>
           <div className="min-w-0">
-            <div className="text-[17px] font-bold leading-tight sm:text-[19px]">ZeroTrust Posture Report</div>
+            <div className="text-[17px] font-bold leading-tight sm:text-[19px]">Zero-Trust Posture Report</div>
             <div className="text-[11px] text-text3 sm:text-[12px]">
               Cross-tool network-policy risk · {s.total_findings ?? 0} findings · {r.cross_tool_paths?.length ?? 0} cross-tool paths · {(r.sensitive_assets ?? []).length} regulated assets
             </div>

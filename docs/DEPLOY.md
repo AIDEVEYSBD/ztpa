@@ -67,6 +67,16 @@ Uses the committed `render.yaml` blueprint.
    | `ADMIN_EMAIL` | your admin email |
    | `RESEND_API_KEY` | *(optional — magic/reset links print to logs without it)* |
    | `EMAIL_FROM` | *(optional, if Resend is set)* |
+   | `SSO_CLIENT_ID` | from the AutoX SSO admin — **setting this turns SSO on and local password login off** |
+   | `SSO_CLIENT_SECRET` | from the AutoX SSO admin |
+   | `SSO_SESSION_MAX_AGE` | `3600` (absolute session seconds = role-change pickup interval) |
+
+   > **SSO.** Register `https://<app>.vercel.app/api/auth/callback/autox` as a
+   > redirect URI and `https://<app>.vercel.app/login` as a post-logout redirect URI
+   > *before* setting `SSO_CLIENT_ID` — they must match byte-for-byte. Preview
+   > deployments have different hostnames and will not work unless also registered.
+   > Full setup, including the `npr_admin` / `npr_analyst` / `npr_viewer` app roles,
+   > is in [SSO.md](SSO.md).
 
    > Use the Neon **pooled** endpoint for the frontend: Auth.js opens `pg` pools
    > inside serverless functions, and the pooled endpoint prevents connection

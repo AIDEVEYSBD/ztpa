@@ -83,7 +83,8 @@ export function UsersAdmin() {
                   <tr key={u.id} className="border-b border-hair transition-colors last:border-0 hover:bg-surfaceHover">
                     <td className="break-all py-2.5 pr-3 font-medium">{u.email}</td>
                     <td className="pr-3 text-text2">{u.name || "no name"}</td>
-                    <td className="pr-3"><Chip variant={ROLE_VARIANT[u.role] ?? "neutral"}>{u.role}</Chip></td>
+                    {/* role is null for an SSO user holding no app role in this app */}
+                    <td className="pr-3"><Chip variant={(u.role && ROLE_VARIANT[u.role]) || "neutral"}>{u.role ?? "no role"}</Chip></td>
                     <td className="pr-3"><Chip variant={u.status === "active" ? "ok" : "info"}>{u.status}</Chip></td>
                   </tr>
                 ))}

@@ -40,8 +40,10 @@ export function Brand({ size = "md", showSub = true, className }: { size?: "sm" 
         <ShieldHalf size={glyph} className="text-accent-ink" />
       </span>
       <div className="leading-[1.15]">
-        <div className={cn("font-bold tracking-[-0.01em]", size === "sm" ? "text-[13px]" : "text-[14px]")}>ZeroTrust</div>
-        {showSub && <div className="text-[10px] uppercase tracking-[0.14em] text-text3">Policy Advisor</div>}
+        <div className={cn("font-bold tracking-[-0.01em]", size === "sm" ? "text-[13px]" : "text-[14px]")}>
+          {showSub ? "Network Policy" : "Network Policy Reviewer"}
+        </div>
+        {showSub && <div className="text-[10px] uppercase tracking-[0.14em] text-text3">Reviewer</div>}
       </div>
     </div>
   );

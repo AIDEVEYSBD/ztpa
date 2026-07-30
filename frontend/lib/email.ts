@@ -1,6 +1,6 @@
 import { Resend } from "resend";
 
-const FROM = process.env.EMAIL_FROM || "ZeroTrust Advisor <onboarding@resend.dev>";
+const FROM = process.env.EMAIL_FROM || "Network Policy Reviewer <onboarding@resend.dev>";
 const KEY = process.env.RESEND_API_KEY;
 
 function template(heading: string, body: string, cta: string, url: string): string {

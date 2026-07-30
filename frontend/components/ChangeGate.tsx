@@ -6,6 +6,7 @@ import { motion } from "framer-motion";
 import { Check, ShieldAlert, ShieldCheck, X, Play, FlaskConical, ArrowRight, Globe, Rocket, ChevronDown, ChevronRight, Inbox, History, Wrench, Search, CornerDownRight } from "lucide-react";
 import { api } from "@/lib/api";
 import type { ChangeResult, InvestigationStep } from "@/lib/types";
+import { canApprove as canApproveChanges, type AppRole } from "@/lib/roles";
 import type { ScreenId } from "./Sidebar";
 import { cn, Spinner, Skeleton, SkeletonText } from "./ui";
 import { Prose } from "./Markdown";
@@ -33,8 +34,8 @@ const TONE: Record<string, string> = { ok: "text-ok", neutral: "text-text3", war
 
 export function ChangeGate({ onNavigate }: { onNavigate?: (s: ScreenId) => void }) {
   const { data: session } = useSession();
-  const role = (session?.user as any)?.role ?? "viewer";
-  const canApprove = role === "admin" || role === "analyst";
+  const role = ((session?.user as any)?.role ?? null) as AppRole | null;
+  const canApprove = canApproveChanges(role);
   const [requests, setRequests] = useState<any[]>([]);
   const [reqLoading, setReqLoading] = useState(true);
   const [sel, setSel] = useState<string>();           // a preset id, or "custom"

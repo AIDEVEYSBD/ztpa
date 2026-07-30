@@ -59,7 +59,7 @@ class _ActorMiddleware:
     async def __call__(self, scope, receive, send):
         if scope.get("type") == "http":
             h = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
-            request_ctx.set_actor(h.get("x-npr-role"), h.get("x-npr-email"))
+            request_ctx.set_actor(h.get("x-npr-role"), h.get("x-npr-email"), h.get("x-npr-sub"))
         await self.app(scope, receive, send)
 
 
