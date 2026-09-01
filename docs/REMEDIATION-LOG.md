@@ -16,7 +16,7 @@ Claims that could **not** be verified in this environment are called out explici
 |---|---|---|
 | **0** — Stop the bleeding | Crash, authz, audit-trail wipe, silent failures, CI | ✅ Complete |
 | **1** — Engine math defensible | Resolved CIDRs, port ranges, internet classification, identity scoping, content-hash snapshot id | ✅ Complete |
-| **2** — System of record | Governance survival, audit identity, migrations, logging, transaction boundaries | ⬜ Not started |
+| **2** — System of record | Governance survival, audit identity, migrations, logging, transaction boundaries | ⬜ Next |
 | **3** — Pilot-ready | Real ingestion path, bounded algorithms, analyzer coverage | ⬜ Not started |
 | **4** — Production hardening | Provider parity, cost/latency limits, full coverage, reproducible builds | ⬜ Not started |
 
@@ -219,3 +219,51 @@ each with a named fix. Worst: deleting the `protocol == "any"` reason in `over_p
 
 ### Verified state
 `pytest` **1107 passed in 2.21s** · `verify_engine.py` ALL CHECKS PASSED · `npx tsc --noEmit` clean.
+
+---
+
+## Interlude — frontend proven, and a critical CVE found ✅
+
+**2026-09-01.** 29 agents: 1 frontend proof, 5 security-review lenses, 22 adversarial judges, 1 report.
+
+### The frontend actually runs — verified in headless Chrome, not inferred
+
+`npm run build` passed **first attempt, zero code edits**. Backend run against the live Postgres, Next app
+under `next start`, signed in as admin / analyst / viewer through the real Auth.js flow, driven over CDP.
+**All 14 console screens render**, zero page exceptions, zero console errors across 201 CDP events.
+Eight screenshots in [`docs/screenshots/`](screenshots/).
+
+| Check | Result |
+|---|---|
+| Console renders | ✅ 30 findings (3 critical / 1 high / 8 medium / 18 low), 26-asset graph |
+| Flagship "Simulate a custom change" as analyst | ✅ **HTTP 200** with a decision — the card that 500'd on every call since the initial commit |
+| Same call as viewer | ✅ **403** `approver role required`, rendered as a permissions message, not an outage |
+| Baseline crash confirmed real | ✅ `TypeError: cannot unpack non-iterable DecodedService object` reproduced at `c0789d6` |
+| **Backend killed → error states** | ✅ six explicit panels + *"6 of 6 console feeds failed. Treat every number on this screen as unknown until they load."* Risk To-Do badge **blank**, not `0`. No `0 findings` anywhere in the DOM |
+| **Backend up, no database → degraded** | ✅ yellow banner, real numbers attributed to the running engine, timeline named *"unknown, not empty"* |
+
+### 🔴 CVE-2025-29927 — Next.js middleware bypass. Found and fixed.
+
+`next` was pinned to **14.2.15** at baseline *and* HEAD, and the vulnerable handler was physically present
+in the installed tree (`sandbox.js` reads `x-middleware-subrequest` and skips middleware).
+
+This matters more here than in a typical app: **`frontend/middleware.ts` IS the auth model.** Its matcher
+covers every path, it gates every page, and it strips client-supplied `x-npr-*` headers before setting its
+own from the session. One header skips it entirely — so gated pages render with no session *and* forged
+`x-npr-*` headers pass through the rewrite straight to FastAPI. With `render.yaml` shipping the backend
+public and `NPR_PROXY_SECRET` unset, **the default shipped configuration was an unauthenticated admin
+takeover of the API.**
+
+Pre-existing, not introduced by the remediation — but it undermined the entire premise of the Phase 0
+authz work. Fixed in `507a5fb`: `next` → **14.2.35**, pinned exactly. Handler confirmed gone from the
+installed tree; build, typecheck, lint and 1107 tests all green.
+
+### Security theatre the review named
+- **`NPR_PROXY_SECRET` authenticates the identity *claim*, not the *request*.** With the secret configured, a header-less anonymous request from the open internet still reaches the backend as the default viewer.
+- **`test_no_mutating_route_is_unguarded`** subtracts `{GET,HEAD,OPTIONS}` *before* inspecting routes — structurally incapable of catching what it claims to.
+- **`_require_capability`**, documented "fail-closed", **fails open** on a cold start with the DB unreachable; disabling `rank` provably does not stop the spend.
+
+### Still outstanding — not fixed here, deliberately
+- **`next-auth` / `@auth/core` critical advisory** — config errors can make existence-based auth checks *fail open*. The fix is a beta-to-beta bump on the auth path and needs the login/SSO flows re-verified, so it is queued rather than slipped in.
+- `next >= 16` advisories (Image Optimizer DoS, RSC deserialization) require a major upgrade.
+- Three frontend honesty defects: `classify` 500s with no DB (unguarded `get_conn()`); the degraded banner claims *"Every panel below loaded"* above two 500 panels; a dead backend is misreported as an API error because the Next rewrite turns ECONNREFUSED into a 500.
