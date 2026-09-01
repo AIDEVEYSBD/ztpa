@@ -10,7 +10,9 @@ from __future__ import annotations
 
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from .netaddr import ANY_V4, is_any, parse_net
 
 Tag = str  # e.g. "pci", "customer-data", "crown-jewel", "prod", "dev", "dmz"
 
@@ -18,8 +20,12 @@ SourceTool = Literal["algosec", "guardicore", "wiz", "sd_wan", "sd_lan"]
 FindingType = Literal[
     "over_permissive", "cidr_overlap", "shadowed_rule", "cross_tool_path", "transport_exposure",
 ]
-# L4 transport protocols we decode. "any" = every protocol/port (a wildcard rule).
-Protocol = Literal["tcp", "udp", "icmp", "sctp", "any"]
+# L4 transport protocols we decode. "any" = every protocol/port (a wildcard rule)
+# and is what the Palo/ASA keywords `ip` and `all` decode to -- they used to
+# become plain "tcp", so a genuine any/any rule never tripped the guardrail.
+# gre/esp/ah are carried as themselves rather than being rewritten to tcp: a
+# VPN/tunnel grant reported as TCP is a false statement about the network.
+Protocol = Literal["tcp", "udp", "icmp", "sctp", "gre", "esp", "ah", "any"]
 L7Source = Literal["declared", "inferred"]
 SeverityBand = Literal["low", "medium", "high", "critical"]
 
@@ -38,6 +44,22 @@ class PolicyRecord(BaseModel):
     source_kind: Literal["cidr", "identity"]
     destination: str
     destination_kind: Literal["cidr", "identity"]
+    # The RESOLVED address space behind `source` / `destination`, canonical and
+    # sorted. A named object ("ANY-EXTERNAL", "DC-SUBNETS") keeps its label in
+    # `source`/`destination` -- that is what the operator sees in their console
+    # and what raw_ref ties back to -- while the address space it dereferences to
+    # lives here, so the analyzers can do subnet math on a named object instead
+    # of scoring the string. An address group resolves to several entries.
+    #
+    # EMPTY MEANS GENUINELY UNRESOLVABLE, NOT "not looked up". This distinction
+    # is load-bearing: `exposure_score` falls back to E_IDENTITY (0.1, the score
+    # of a single host) ONLY on an empty list, so a normalizer that forgets to
+    # populate these does not merely lose detail -- it silently reports a /0 as
+    # a host. Every normalizer must fill them from the object catalog, and leave
+    # them empty only for a token that names no address space at all (a user, a
+    # tag, an application group, an object missing from the export's catalog).
+    source_cidrs: list[str] = Field(default_factory=list)
+    dest_cidrs: list[str] = Field(default_factory=list)
     dest_tags: list[Tag] = Field(default_factory=list)
     service: str                                      # e.g. "tcp/3389", "quic", "tcp/8000-8100"
     port: Optional[int] = None                        # single port, or range start
@@ -51,6 +73,35 @@ class PolicyRecord(BaseModel):
     source_ip: Optional[str] = None                   # concrete IP for named hosts
     dest_ip: Optional[str] = None
     note: Optional[str] = None                        # human label from the source export
+
+    @field_validator("source_cidrs", "dest_cidrs", mode="after")
+    @classmethod
+    def _canonicalize_cidrs(cls, values: list[str]) -> list[str]:
+        """Canonicalize + sort the resolved address space.
+
+        Two normalizers spelling one network differently ("10.0.0.1/24" and
+        "10.0.0.0/24") must produce one string, or the snapshot fingerprint --
+        and every equality check downstream -- would depend on which export was
+        read. So every entry goes through `ip_network(x, strict=False)`, the
+        wildcard vocabulary collapses onto 0.0.0.0/0, duplicates are dropped and
+        the result is sorted numerically (version, address, prefix). No sets
+        reach the output: the sort is explicit and total.
+
+        A token that names no address space is dropped rather than stored --
+        garbage in this field would be scored as if it were a network. Dropping
+        is safe precisely because empty is meaningful (see the field comment):
+        an all-garbage list degrades to E_IDENTITY, never to a silent /0.
+        """
+        nets = []
+        for raw in values:
+            net = parse_net(raw)
+            if net is None and is_any(raw):
+                net = parse_net(ANY_V4)   # "any" / "all" / "*" -> the internet
+            if net is not None:
+                nets.append(net)
+        ordered = sorted({(n.version, int(n.network_address), n.prefixlen): n
+                          for n in nets}.items())
+        return [str(net) for _key, net in ordered]
 
 
 class Finding(BaseModel):

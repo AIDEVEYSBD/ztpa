@@ -7,9 +7,12 @@ import authConfig, { isPublicPath, isRoleExempt } from "./auth.config";
 // response. So we gate explicitly here:
 //   1. no session          -> /login (which starts the AutoX authorization request)
 //   2. session, no role    -> /no-access (a real retry page, not a dead end)
-//   3. otherwise           -> forward sub/role/email to the FastAPI backend
+//   3. otherwise           -> forward sub/role/email to the FastAPI backend,
+//                             signed with the shared x-npr-proxy-secret
 // The forwarded headers are what the backend's request_ctx reads for per-role
-// tool access and usage attribution.
+// tool access and usage attribution — which is exactly why they must be
+// unforgeable: anything a client sent under x-npr-* is dropped, and the secret
+// is what lets the backend tell our headers from a direct call to its own URL.
 const { auth } = NextAuth(authConfig);
 
 type SessionUser = { id?: string; role?: string | null; email?: string | null };
@@ -18,6 +21,10 @@ export default auth((req) => {
   const { pathname, search } = req.nextUrl;
   const user = (req.auth as { user?: SessionUser } | null)?.user;
 
+  // Public paths pass through unmodified, headers and all. That is safe only
+  // because no public path proxies to FastAPI (auth.config's PUBLIC list is
+  // /login, /forgot, /reset, /sso, "/" and /api/auth — Auth.js, not the backend).
+  // Anything added to that list that DOES reach /api must strip x-npr-* here too.
   if (isPublicPath(pathname)) return NextResponse.next();
 
   if (!user) {
@@ -33,13 +40,27 @@ export default auth((req) => {
   }
 
   const headers = new Headers(req.headers);
-  // Defence in depth: strip any client-supplied actor headers before we set ours.
-  headers.delete("x-npr-role");
-  headers.delete("x-npr-email");
-  headers.delete("x-npr-sub");
+  // Defence in depth: strip EVERY client-supplied x-npr-* header before we set
+  // ours. Deleting only the three known names would leave x-npr-proxy-secret —
+  // the header that proves a request came through this middleware — forgeable by
+  // anyone who can reach this app, which is the whole point of the check.
+  for (const key of Array.from(headers.keys())) {
+    if (key.toLowerCase().startsWith("x-npr-")) headers.delete(key);
+  }
   if (user.role) headers.set("x-npr-role", String(user.role));
   if (user.email) headers.set("x-npr-email", String(user.email));
   if (user.id) headers.set("x-npr-sub", String(user.id)); // AutoX `sub` — the stable key
+  // Shared secret proving the actor headers above were set here and not by a
+  // client talking to the API directly (the FastAPI side compares it with
+  // hmac.compare_digest). Read per-request rather than at module scope so a
+  // rotated value takes effect on restart of the app only, not on rebuild. The
+  // backend enforces only when its own NPR_PROXY_SECRET is set, so leaving this
+  // unset keeps local dev working exactly as before.
+  // Trimmed to match the backend, which reads `(os.environ.get(...) or "").strip()`
+  // — an untrimmed copy of the same value would fail compare_digest and 401 the
+  // whole app over a trailing newline in a dashboard secret.
+  const proxySecret = process.env.NPR_PROXY_SECRET?.trim();
+  if (proxySecret) headers.set("x-npr-proxy-secret", proxySecret);
   return NextResponse.next({ request: { headers } });
 });
 

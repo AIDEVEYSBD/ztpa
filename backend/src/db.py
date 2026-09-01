@@ -219,9 +219,83 @@ def fetch_one(cur: psycopg.Cursor, sql: str, params: Sequence[Any] | None = None
     return cur.fetchone()
 
 
+# --- snapshot lifecycle ----------------------------------------------------
+# Which tables a snapshot OWNS versus which merely POINT AT it. Drawing that line
+# wrong is what made a recompute destroy the governance record: the previous
+# implementation cleared "children" by deleting the PARENT `snapshots` row and
+# letting `ON DELETE CASCADE` do the rest — which also took every
+# `change_request` (and, through it, every `change_decision`) with it, on a
+# recompute of *unchanged* data, because the engine is deterministic and
+# re-derives the same snapshot_id.
+#
+# Engine-owned: fully re-derived from the sources on every run, so a row left
+# over from a previous shape is a bug and must be cleared before a re-persist.
+# `ranked_actions` and `campaign_plans` are AI-derived caches keyed on
+# snapshot_id whose only input (findings) is being regenerated underneath them,
+# so they belong here too — `campaign_plans` has no FK at all and was silently
+# surviving every recompute with a plan computed against the old posture.
+#
+# Ordered children-before-parents so each DELETE stands on its own instead of
+# leaning on cascade semantics this function does not control:
+# `asset_correlations.asset_id` and `graph_nodes.asset_id` both reference
+# `assets`, so `assets` is cleared last.
+ENGINE_OWNED_TABLES: tuple[str, ...] = (
+    "asset_correlations",
+    "graph_edges",
+    "graph_nodes",
+    "canonical_rules",
+    "findings",
+    "ranked_actions",
+    "resolved_objects",
+    "campaign_plans",
+    "assets",
+)
+
+# Governance / durable record. A recompute must NEVER clear these: they are the
+# compliance artifact, and their snapshot_id (where they carry one) is a
+# "baseline evaluated against" pointer, not ownership. Listed explicitly rather
+# than left implied by absence, so the intent is assertable — see
+# backend/tests/test_persist_snapshot.py, which fails if a table with a
+# snapshot_id column is added to db/schema.sql and classified in neither set.
+GOVERNANCE_TABLES: frozenset[str] = frozenset({
+    "change_requests",        # the requested change + who asked and why
+    "change_decisions",       # how the gate ruled (child of change_requests)
+    "staged_changes",         # approved work item, may already be pushed
+    "audit_log",              # append-only; persist appends to it, never clears
+    "remediation_revisions",  # human comment thread on a finding
+    "asset_merges",           # human-confirmed identity merges, cross-snapshot
+    "ai_metrics",             # token spend / cost record
+})
+
+
 def delete_snapshot_children(cur: psycopg.Cursor, snapshot_id: str) -> None:
-    """ON DELETE CASCADE from snapshots clears all child rows; deleting the
-    snapshot row and re-inserting guarantees no stale rows from a prior shape."""
+    """Clear every engine-derived row for `snapshot_id`, one explicit DELETE per
+    table, leaving the `snapshots` row — and every governance row pointing at it
+    — intact.
+
+    Re-persisting is UPSERT-based, so this only exists to drop rows the new run
+    no longer produces (a rule that disappeared, a finding that stopped firing).
+    That is a statement about engine output, not about governance, which is why
+    the parent row is not the lever: deleting it cascades far past the cache.
+
+    Name and signature are unchanged from the cascade-based version so existing
+    call sites keep working. Callers that genuinely want the snapshot GONE (the
+    admin delete-snapshot endpoint) want `delete_snapshot` below.
+    """
+    for table in ENGINE_OWNED_TABLES:
+        cur.execute(f"DELETE FROM {DB_SCHEMA}.{table} WHERE snapshot_id = %s", [snapshot_id])
+
+
+def delete_snapshot(cur: psycopg.Cursor, snapshot_id: str) -> None:
+    """Drop a snapshot entirely: its engine-derived rows, then the row itself.
+
+    Safe for governance now that `change_requests.snapshot_id` is
+    `ON DELETE SET NULL` (db/migrations/0001_governance_fk.sql): the request and
+    its decision survive, having lost only the pointer to a baseline that no
+    longer exists — which is the truth. `audit_log.snapshot_id` already behaved
+    this way.
+    """
+    delete_snapshot_children(cur, snapshot_id)
     cur.execute(f"DELETE FROM {DB_SCHEMA}.snapshots WHERE snapshot_id = %s", [snapshot_id])
 
 

@@ -12,6 +12,18 @@ Two deterministic checks, both over decoded L7 facts (PolicyRecord.l7_app):
                             silently win, so inspection cannot be forced.
 
 No model, no randomness -- pure lookups over the canonical records + graph.
+
+What Phase 1 changed here
+-------------------------
+The fallback-pair match was `(r.protocol, r.port) in (a, b)`: an exact match on
+one scalar port. A rule written `tcp/443-8443` -- or `tcp/80,443`, the most
+common AlgoSec service encoding -- opens 443 without ever being equal to
+`("tcp", 443)`, so the pair went undetected and a destination reachable on both
+transports read as clean. The match is now interval containment over the whole
+service, which is the same arithmetic `severity.port_score` uses. Scoring gained
+the resolved source space and the full interval set for the same reason it did
+in `over_permissive`: a QUIC allow from a named object that dereferences to
+0.0.0.0/0 must score like one written `0.0.0.0/0`.
 """
 
 from __future__ import annotations
@@ -21,7 +33,9 @@ import networkx as nx
 from ..config import INSPECTION_BLIND_APPS, TRANSPORT_CONFIG
 from ..graph.zones import crosses_boundary, zone_of
 from ..models import Finding, PolicyRecord
-from .severity import band, exposure_score, score_transport_exposure
+from ..netaddr import is_any
+from ..normalizers.common import parse_service
+from .severity import band, score_transport_exposure
 
 
 def _zones(rec: PolicyRecord, g: nx.DiGraph, alias_map: dict[str, str]) -> tuple[str, str, str, str]:
@@ -32,8 +46,40 @@ def _zones(rec: PolicyRecord, g: nx.DiGraph, alias_map: dict[str, str]) -> tuple
     return s, d, src_zone, dst_zone
 
 
+def _service_ports(rec: PolicyRecord) -> list[tuple[int, int]] | None:
+    """Every interval a comma-separated service opens, or None for a single one.
+
+    `PolicyRecord` is scalar until Phase 3, so the second interval of
+    `tcp/80,443` survives only in the service label. See the identical helper in
+    `over_permissive` -- both re-decode with `parse_service`, the decoder the
+    normalizer itself used, so neither can disagree with the stored pair.
+    """
+    if rec.service and "," in rec.service:
+        return parse_service(rec.service).ports
+    return None
+
+
 def _src_label(rec: PolicyRecord) -> str:
-    return "the internet" if exposure_score(rec.source, rec.source_kind) >= 1.0 else rec.source
+    """Display only: a source that denotes the whole address space reads as "the
+    internet", however the export spelled it (`0.0.0.0/0`, `any`, or a named
+    object resolving to one). Deliberately narrower than the guardrail's
+    `is_internet_source` -- see `over_permissive._is_wildcard_source`."""
+    return "the internet" if is_any(rec.source) or any(is_any(c) for c in rec.source_cidrs) \
+        else rec.source
+
+
+def _opens(rec: PolicyRecord, protocol: str, port: int) -> bool:
+    """Does this rule actually grant (protocol, port)?
+
+    Interval containment, not scalar equality: `tcp/443`, `tcp/443-8443` and
+    `tcp/80,443` all open tcp/443 and all must trip the fallback pair. A rule
+    whose protocol is `any` opens the port on every transport.
+    """
+    if rec.port is None or (rec.protocol != protocol and rec.protocol != "any"):
+        return False
+    intervals = _service_ports(rec) or \
+        [(rec.port, rec.port_end if rec.port_end is not None else rec.port)]
+    return any(lo <= port <= hi for lo, hi in intervals)
 
 
 def analyze(records: list[PolicyRecord], g: nx.DiGraph, alias_map: dict[str, str]) -> list[Finding]:
@@ -44,10 +90,12 @@ def analyze(records: list[PolicyRecord], g: nx.DiGraph, alias_map: dict[str, str
         if rec.action != "allow" or (rec.l7_app or "") not in INSPECTION_BLIND_APPS:
             continue
         s, d, src_zone, dst_zone = _zones(rec, g, alias_map)
+        ports = _service_ports(rec)
         sc = score_transport_exposure(
             subtype="quic_blind_spot", source=rec.source, source_kind=rec.source_kind,
             protocol=rec.protocol, port=rec.port, l7_app=rec.l7_app, dest_tags=rec.dest_tags,
             src_zone=src_zone, dst_zone=dst_zone,
+            port_end=rec.port_end, ports=ports, source_cidrs=rec.source_cidrs,
         )
         dest_display = g.nodes[d]["display"] if d in g else d
         app = (rec.l7_app or "").upper()
@@ -60,8 +108,10 @@ def analyze(records: list[PolicyRecord], g: nx.DiGraph, alias_map: dict[str, str
             forced_critical=sc["forced_critical"],
             signals={
                 "subtype": "quic_blind_spot", "l7_app": rec.l7_app, "l7_source": rec.l7_source,
-                "protocol": rec.protocol, "exposed_port": rec.port, "service": rec.service,
-                "source": rec.source, "source_kind": rec.source_kind, "dest": d,
+                "protocol": rec.protocol, "exposed_port": rec.port,
+                "exposed_port_end": rec.port_end, "service": rec.service,
+                "source": rec.source, "source_kind": rec.source_kind,
+                "source_cidrs": list(rec.source_cidrs), "dest": d,
                 "dest_display": dest_display, "dest_tags": sorted(rec.dest_tags),
                 "src_zone": src_zone, "dst_zone": dst_zone,
                 "boundary_crossed": crosses_boundary(src_zone, dst_zone),
@@ -79,11 +129,10 @@ def analyze(records: list[PolicyRecord], g: nx.DiGraph, alias_map: dict[str, str
     for (a, b) in TRANSPORT_CONFIG["fallback_pairs"]:
         by_dest: dict[str, dict[tuple[str, int], list[PolicyRecord]]] = {}
         for r in allows:
-            key = (r.protocol, r.port)
-            if key not in (a, b):
-                continue
             d = alias_map.get(r.destination, r.destination)
-            by_dest.setdefault(d, {}).setdefault(key, []).append(r)
+            for key in (a, b):
+                if _opens(r, key[0], key[1]):
+                    by_dest.setdefault(d, {}).setdefault(key, []).append(r)
         for d, hits in sorted(by_dest.items()):
             if a not in hits or b not in hits:
                 continue
@@ -95,6 +144,7 @@ def analyze(records: list[PolicyRecord], g: nx.DiGraph, alias_map: dict[str, str
                 subtype="tls_fallback_not_blocked", source=rep.source, source_kind=rep.source_kind,
                 protocol=rep.protocol, port=rep.port, l7_app=rep.l7_app, dest_tags=rep.dest_tags,
                 src_zone=src_zone, dst_zone=dst_zone,
+                port_end=rep.port_end, ports=_service_ports(rep), source_cidrs=rep.source_cidrs,
             )
             dest_display = g.nodes[d]["display"] if d in g else d
             findings.append(Finding(

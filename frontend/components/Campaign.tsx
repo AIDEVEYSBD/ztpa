@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Rocket, Wand2, Check, AlertTriangle, ArrowRight, ChevronRight, Sparkles, ShieldCheck, GitBranch, Send } from "lucide-react";
-import { api } from "@/lib/api";
+import { api, asApiError, type ApiError } from "@/lib/api";
 import type { CampaignPlan, CampaignStep, CampaignSubmitResult } from "@/lib/types";
 import type { ScreenId } from "./Sidebar";
 import { cn, Spinner } from "./ui";
+import { InlineError } from "./ui/Feedback";
 
 /** The Remediation Campaign agent: one click plans a worst-first campaign across the
  *  whole snapshot, drafting + re-simulating a fix for each finding and driving the
@@ -17,31 +18,41 @@ export function CampaignPanel({ readOnly = false, onNavigate }: { readOnly?: boo
   const [plan, setPlan] = useState<CampaignPlan>();
   const [loading, setLoading] = useState(false);
   const [initial, setInitial] = useState(true);
-  const [err, setErr] = useState<string>();
+  const [err, setErr] = useState<{ what: string; error: ApiError; retry?: () => void }>();
   const [open, setOpen] = useState<number | null>(null);
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState<CampaignSubmitResult>();
 
   // Load the persisted plan on mount so navigating away and back re-uses the proven
   // plan — only the explicit Plan/Re-plan button spends a (model-backed) planning pass.
+  const load = useCallback(() => {
+    let live = true;
+    setInitial(true); setErr(undefined);
+    api.campaignGet()
+      .then((r) => { if (live && r.plan) setPlan(r.plan); })
+      // A failed load is not "no campaign has been planned yet" — say so, or the
+      // button below silently invites the user to redo work that already exists.
+      .catch((e) => { if (live) setErr({ what: "the saved campaign plan", error: asApiError(e), retry: load }); })
+      .finally(() => { if (live) setInitial(false); });
+    return () => { live = false; };
+  }, []);
+
   useEffect(() => {
     if (readOnly) { setInitial(false); return; }
-    let live = true;
-    api.campaignGet().then((r) => { if (live && r.plan) setPlan(r.plan); }).catch(() => {}).finally(() => { if (live) setInitial(false); });
-    return () => { live = false; };
-  }, [readOnly]);
+    return load();
+  }, [readOnly, load]);
 
   const run = async () => {
     setLoading(true); setErr(undefined); setPlan(undefined); setSent(undefined); setOpen(null);
     try { setPlan(await api.campaignPlan()); }
-    catch { setErr("Could not run the campaign (the model may be loading). Try again."); }
+    catch (e) { setErr({ what: "a campaign plan", error: asApiError(e), retry: run }); }
     finally { setLoading(false); }
   };
 
   const send = async () => {
     setSending(true); setErr(undefined);
     try { setSent(await api.campaignSubmit()); }
-    catch { setErr("Could not send the fixes to the Change Gate. Try again."); }
+    catch (e) { setErr({ what: "the Change Gate submission", error: asApiError(e), retry: send }); }
     finally { setSending(false); }
   };
 
@@ -69,7 +80,11 @@ export function CampaignPanel({ readOnly = false, onNavigate }: { readOnly?: boo
         )}
       </div>
 
-      {err && <div className="border-t px-4 py-2 text-[12px] text-sev-high">{err}</div>}
+      {err && (
+        <div className="border-t px-4 py-2">
+          <InlineError resource={err.what} error={err.error} onRetry={err.retry} />
+        </div>
+      )}
 
       <AnimatePresence initial={false}>
         {plan && (

@@ -30,21 +30,66 @@ DATA_STORE_PORTS = {5432, 3306, 1433, 27017, 6379}            # P = 0.9
 INFRA_CONTROL_PORTS = {6443, 2379}                            # P = 0.85
 GENERAL_APP_PORTS = {80, 443, 8080, 8443, 53, 123}            # P = 0.4
 
-P_ANY_PORT = 1.0          # protocol "any"
+P_ANY_PORT = 1.0          # protocol "any", or a span so wide it is "any" in practice
 P_ADMIN = 1.0             # admin / lateral-movement
 P_DATA_STORE = 0.9
 P_INFRA_CONTROL = 0.85
 P_GENERAL_APP = 0.4
 P_UNKNOWN = 0.5           # unmatched / ephemeral
 
-PORT_CLASS_LABEL = {
-    P_ANY_PORT: "any-port",
-    P_ADMIN: "admin / lateral-movement",
-    P_DATA_STORE: "data store",
-    P_INFRA_CONTROL: "infra control plane",
-    P_GENERAL_APP: "general app / web",
-    P_UNKNOWN: "unknown / ephemeral",
+# A port class is identified by its LABEL, never by its P value.
+#
+# This used to be `PORT_CLASS_LABEL = {P_value: label}`. P_ANY_PORT and P_ADMIN
+# are both 1.0, so the "any-port" row was overwritten by the "admin" row at
+# import time: `PORT_CLASS_LABEL[P_ANY_PORT]` returned "admin / lateral-movement"
+# and every any/any finding in the product shipped a port_class naming a set of
+# ports the rule does not mention. The "any-port" label was unreachable. Keyed by
+# label the table is lossless, and each class stays an independently published
+# row an auditor can check against ENGINE.md section 5.1.
+PORT_CLASS_ANY_PORT = "any-port"
+PORT_CLASS_ADMIN = "admin / lateral-movement"
+PORT_CLASS_DATA_STORE = "data store"
+PORT_CLASS_INFRA_CONTROL = "infra control plane"
+PORT_CLASS_GENERAL_APP = "general app / web"
+PORT_CLASS_UNKNOWN = "unknown / ephemeral"
+
+# class label -> P, declared STRICTLY most-severe-first. The order is
+# load-bearing, not cosmetic: `severity.port_score` walks this table in order and
+# returns the first class that applies, which is what makes "the max class over
+# a port range" a single deterministic pass. It also fixes the 1.0 tie
+# (any-port vs admin) to one answer for all time -- a range like tcp/1-65535 is
+# BOTH, and which label it reports must not depend on dict iteration luck.
+# Note P_UNKNOWN (0.5) deliberately outranks P_GENERAL_APP (0.4): a range that
+# opens port 443 *and* 8000 unclassified ports is not a "general app" grant.
+PORT_CLASS_P: dict[str, float] = {
+    PORT_CLASS_ANY_PORT: P_ANY_PORT,
+    PORT_CLASS_ADMIN: P_ADMIN,
+    PORT_CLASS_DATA_STORE: P_DATA_STORE,
+    PORT_CLASS_INFRA_CONTROL: P_INFRA_CONTROL,
+    PORT_CLASS_UNKNOWN: P_UNKNOWN,
+    PORT_CLASS_GENERAL_APP: P_GENERAL_APP,
 }
+
+# A service that grants MORE than this many distinct ports is scored
+# P_ANY_PORT, whatever those ports happen to be.
+#
+# Why 1024, and why this is a published constant rather than a tuned one: it is
+# the size of the IANA System ("well-known") port range 0-1023, RFC 6335 s6. A
+# single grant wider than the entire registry of privileged service ports cannot
+# be an enumeration of services -- nobody deliberately allows more ports than
+# exist below 1024 -- so it is unrestricted access to the destination and is
+# scored as such. The number is externally citable, so an auditor can check the
+# threshold against the RFC instead of taking our word for it.
+#
+# The count is a TOTAL over every interval the service names, because the
+# question is how much of the destination's port space the rule opens, not how
+# the vendor happened to punctuate it: "tcp/1-1000,2000-3000" (2001 ports) is
+# any-port even though neither interval alone crosses the line.
+#
+# Below the threshold a range is still scored by the max class of the ports it
+# actually contains (see severity.port_score), so tcp/8000-8100 does not become
+# "any port" -- widening a range can only ever raise P, never lower it.
+PORT_SPAN_ANY = 1024
 
 # --------------------------------------------------------------------------
 # L7 application identity (App-ID) decoding -- categorical, never computed.
@@ -138,6 +183,40 @@ EXPOSURE_BANDS: list[tuple[int, float]] = [
     (27, 0.3),   # /24 .. /27
     (32, 0.1),   # /28 .. /32
 ]
+
+# The same table for IPv6. A prefix length means a completely different amount
+# of address space in the two families, so running v6 through the v4 table is
+# not a rounding error, it is a category error: `2001:db8::/32` holds 2**96
+# addresses and the v4 table scores it 0.1 — the score of a single host. Any
+# real export from the last decade contains v6, and `source_cidrs` now carries
+# resolved networks of both families into `exposure_score`, so the engine needs
+# a v6 row set of its own.
+#
+# The boundaries are the ones the address plan itself uses (RFC 6177 / current
+# RIR allocation practice), so each row names a real operational unit and the
+# two tables line up class-for-class with the v4 one:
+#
+#   /0            the whole space                     <-> v4 /0     1.0
+#   /1 .. /16     larger than any single RIR block    <-> v4 /1-/8  0.9
+#   /17 .. /32    an ISP / large enterprise block     <-> v4 /9-/16 0.7
+#   /33 .. /48    one site                            <-> v4 /17-23 0.5
+#   /49 .. /64    one subnet (a single LAN)           <-> v4 /24-27 0.3
+#   /65 .. /128   an interface / single host          <-> v4 /28-32 0.1
+EXPOSURE_BANDS_V6: list[tuple[int, float]] = [
+    (0, 1.0),    # ::/0 -> 1.0 (also "any")
+    (16, 0.9),   # /1 .. /16
+    (32, 0.7),   # /17 .. /32
+    (48, 0.5),   # /33 .. /48
+    (64, 0.3),   # /49 .. /64
+    (128, 0.1),  # /65 .. /128
+]
+
+# ip_version -> band table. `exposure_score` picks the table from the network's
+# own `.version`, so no caller has to know which family it is holding.
+EXPOSURE_BANDS_BY_VERSION: dict[int, list[tuple[int, float]]] = {
+    4: EXPOSURE_BANDS,
+    6: EXPOSURE_BANDS_V6,
+}
 E_IDENTITY = 0.1          # single identity / label source
 
 # --------------------------------------------------------------------------

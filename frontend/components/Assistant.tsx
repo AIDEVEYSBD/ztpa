@@ -3,9 +3,10 @@
 import { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { Send, Terminal, User, Bot } from "lucide-react";
-import { api } from "@/lib/api";
+import { api, asApiError, type ApiError } from "@/lib/api";
 import type { AskResult } from "@/lib/types";
 import { Spinner, SkeletonText, Skeleton, cn } from "./ui";
+import { ErrorState, InlineError } from "./ui/Feedback";
 import { Prose } from "./Markdown";
 
 // Fallback only if the snapshot-derived suggestions endpoint is unavailable.
@@ -15,18 +16,25 @@ const FALLBACK_SUGGESTED = [
   "Summarize the riskiest exposure in this snapshot.",
 ];
 
-type Turn = { q: string; a?: AskResult; loading?: boolean };
+type Turn = { q: string; a?: AskResult; loading?: boolean; error?: ApiError };
 
 export function Assistant() {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [suggested, setSuggested] = useState<string[]>();
+  const [suggErr, setSuggErr] = useState<ApiError>();
   const busyRef = useRef(false);          // synchronous guard against spam-clicks
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // Suggestions are derived from THIS snapshot's facts (assets, paths, findings).
-  useEffect(() => { api.askSuggestions().then((r) => setSuggested(r.suggestions?.length ? r.suggestions : FALLBACK_SUGGESTED)).catch(() => setSuggested(FALLBACK_SUGGESTED)); }, []);
+  // The generic fallback is fine to show, but the "from this snapshot" caption
+  // beside it is then false — so record the failure and re-caption the list.
+  useEffect(() => {
+    api.askSuggestions()
+      .then((r) => { setSuggested(r.suggestions?.length ? r.suggestions : FALLBACK_SUGGESTED); setSuggErr(undefined); })
+      .catch((e) => { setSuggested(FALLBACK_SUGGESTED); setSuggErr(asApiError(e)); });
+  }, []);
 
   // Auto-scroll to the newest activity whenever a turn is added or answered.
   useEffect(() => {
@@ -43,8 +51,10 @@ export function Assistant() {
     try {
       const a = await api.ask(q);
       setTurns((t) => t.map((x, i) => (i === idx ? { q, a } : x)));
-    } catch {
-      setTurns((t) => t.map((x, i) => (i === idx ? { q, a: { answer: "Request failed.", by: "error", trace: [] } } : x)));
+    } catch (e) {
+      // "Request failed." told the user nothing — not whether the agent is
+      // unavailable, their role cannot ask, or the backend is simply down.
+      setTurns((t) => t.map((x, i) => (i === idx ? { q, error: asApiError(e) } : x)));
     } finally {
       busyRef.current = false; setBusy(false);
     }
@@ -76,6 +86,8 @@ export function Assistant() {
                       <Spinner label="Calling deterministic tools…" />
                       <SkeletonText lines={3} className="pt-1" />
                     </div>
+                  ) : t.error ? (
+                    <ErrorState resource="an answer" error={t.error} onRetry={() => ask(t.q)} />
                   ) : (
                     <>
                       <Prose>{t.a?.answer ?? ""}</Prose>
@@ -105,7 +117,13 @@ export function Assistant() {
         </form>
       </div>
       <div className="space-y-2">
-        <div className="label flex items-center gap-1.5">Try asking <span className="font-normal normal-case tracking-normal text-text3">· from this snapshot</span></div>
+        <div className="label flex items-center gap-1.5">
+          Try asking
+          <span className="font-normal normal-case tracking-normal text-text3">
+            {suggErr ? "· generic examples (see below)" : "· from this snapshot"}
+          </span>
+        </div>
+        {suggErr && <InlineError resource="snapshot-derived suggestions" error={suggErr} />}
         {suggested === undefined
           ? Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-12 w-full" />)
           : suggested.map((s) => (

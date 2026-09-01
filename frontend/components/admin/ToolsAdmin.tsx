@@ -2,9 +2,10 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { ChevronRight, Wrench, Sparkles, AlertTriangle } from "lucide-react";
-import { api } from "@/lib/api";
+import { api, asApiError, type ApiError } from "@/lib/api";
 import type { ToolInfo } from "@/lib/types";
 import { cn, Skeleton } from "../ui";
+import { ErrorState, InlineError } from "../ui/Feedback";
 
 const fmtCost = (n: number) => (n >= 0.01 ? `$${n.toFixed(2)}` : n > 0 ? `$${n.toFixed(4)}` : "$0");
 const fmtNum = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
@@ -14,8 +15,19 @@ export function ToolsAdmin() {
   const [roles, setRoles] = useState<string[]>(["admin", "analyst", "viewer"]);
   const [open, setOpen] = useState<string | null>(null);
   const [saving, setSaving] = useState<string>();
+  const [err, setErr] = useState<ApiError>();
+  const [roleErr, setRoleErr] = useState<{ tool: string; error: ApiError; retry: () => void }>();
 
-  const load = () => api.adminTools().then((r) => { setTools(r.tools); setRoles(r.roles); }).catch(() => setTools([]));
+  // The old fallback was `setTools([])`, and the loading guard below only tests
+  // for `undefined` — so a 500, a 403 or a dead backend fell straight through to
+  // the KPI row and painted "Tools 0 · 0 invocations · 0 tokens · $0". That is a
+  // statement about the registry made out of a fetch that never answered.
+  const load = () => {
+    setErr(undefined);
+    return api.adminTools()
+      .then((r) => { setTools(r.tools); setRoles(r.roles); })
+      .catch((e) => { setTools(undefined); setErr(asApiError(e)); });
+  };
   useEffect(() => { load(); }, []);
 
   const totals = useMemo(() => {
@@ -24,14 +36,24 @@ export function ToolsAdmin() {
     return t;
   }, [tools]);
 
-  const toggle = async (tool: ToolInfo, role: string) => {
+  const toggle = async (tool: ToolInfo, role: string): Promise<void> => {
     const next = tool.enabled_roles.includes(role)
       ? tool.enabled_roles.filter((r) => r !== role)
       : [...tool.enabled_roles, role];
-    setSaving(tool.key);
+    setSaving(tool.key); setRoleErr(undefined);
     setTools((cur) => cur?.map((t) => (t.key === tool.key ? { ...t, enabled_roles: next } : t)));
-    try { await api.setToolRoles(tool.key, next); } catch { load(); } finally { setSaving(undefined); }
+    try { await api.setToolRoles(tool.key, next); }
+    // A bare `load()` rolled the optimistic toggle back with no reason given, so
+    // "your role may not do this" (403), "the API fell over" (500) and "the
+    // backend is down" looked like a switch that bounced for fun. Name the
+    // failure, then reload so the switches match the server again.
+    catch (e) { setRoleErr({ tool: tool.key, error: asApiError(e), retry: () => toggle(tool, role) }); load(); }
+    finally { setSaving(undefined); }
   };
+
+  // Errored before loading: while the registry is unknown, nothing that counts
+  // it may render.
+  if (err) return <ErrorState resource="the tool registry" error={err} onRetry={load} />;
 
   if (tools === undefined) {
     return <div className="space-y-2">{Array.from({ length: 6 }).map((_, i) => (
@@ -84,6 +106,10 @@ export function ToolsAdmin() {
                     })}
                   </div>
                 </div>
+                {roleErr?.tool === t.key && (
+                  <InlineError resource={`the role change for ${t.key}`} error={roleErr.error} onRetry={roleErr.retry}
+                    className="border-t border-hair px-3 py-2" />
+                )}
                 <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-hair px-3 py-2 text-[11px] text-text3">
                   <Metric label="uses" value={fmtNum(t.metrics.uses)} />
                   <Metric label="avg latency" value={`${t.metrics.avg_latency_ms} ms`} />

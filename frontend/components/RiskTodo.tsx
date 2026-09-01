@@ -3,10 +3,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { ChevronRight, Sparkles, Wrench, Check, X, ArrowRight, RotateCw, Send, MessageSquarePlus } from "lucide-react";
-import { api } from "@/lib/api";
+import { api, asApiError, type ApiError } from "@/lib/api";
 import type { ActionItem, Band, Finding, Remediation, RemediationAttempt } from "@/lib/types";
 import type { ScreenId } from "./Sidebar";
 import { SeverityPill, ToolBadge, cn, Spinner, SkeletonRows, SkeletonText } from "./ui";
+import { ErrorState, InlineError } from "./ui/Feedback";
 import { Prose } from "./Markdown";
 import { RuleRef } from "./RuleRef";
 import { CampaignPanel } from "./Campaign";
@@ -15,7 +16,9 @@ import { SearchBox } from "@/lib/tableTools";
 const BAND_ORDER: Record<Band, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 const BANDS: Band[] = ["critical", "high", "medium", "low"];
 
-export function RiskTodo({ actions, findings, readOnly = false, loading = false, onNavigate }: { actions: ActionItem[]; findings: Finding[]; readOnly?: boolean; loading?: boolean; onNavigate?: (s: ScreenId) => void }) {
+export function RiskTodo({ actions, findings, readOnly = false, loading = false, actionsError, findingsError, onRetry, onNavigate }:
+  { actions: ActionItem[]; findings: Finding[]; readOnly?: boolean; loading?: boolean;
+    actionsError?: ApiError; findingsError?: ApiError; onRetry?: () => void; onNavigate?: (s: ScreenId) => void }) {
   const byId = useMemo(() => Object.fromEntries(findings.map((f) => [f.finding_id, f])), [findings]);
 
   const enriched = useMemo(() => actions.map((a) => {
@@ -39,6 +42,24 @@ export function RiskTodo({ actions, findings, readOnly = false, loading = false,
     const needle = q.trim().toLowerCase();
     return enriched.filter((e) => (band === "all" || e.worst === band) && (!needle || e.haystack.includes(needle)));
   }, [enriched, band, q]);
+
+  // Checked BEFORE the loading and empty paths, because an error is definitive:
+  // with no findings and no actions this screen would otherwise print
+  // "0 findings across three tools, grouped into 0 prioritized actions", which
+  // is indistinguishable from a clean estate. An unanswered question is not a
+  // clean bill of health, and the user has no way to tell the two apart.
+  if (findingsError || actionsError) {
+    return (
+      <div className="grid gap-3">
+        {findingsError && <ErrorState resource="findings" error={findingsError} onRetry={onRetry} />}
+        {actionsError && <ErrorState resource="prioritized actions" error={actionsError} onRetry={onRetry} />}
+        <p className="text-[12px] leading-relaxed text-text3">
+          No risk list is shown on purpose. Nothing here has been assessed as clean — the data behind this screen
+          did not load, so the estate&apos;s posture is unknown.
+        </p>
+      </div>
+    );
+  }
 
   if (loading && actions.length === 0) {
     return (
@@ -168,7 +189,7 @@ function BandChip({ band, label, n, active, onClick }: { band?: Band; label: str
   );
 }
 
-type Expl = { explanation: string; by: string; pending?: boolean; error?: boolean; provider?: string };
+type Expl = { explanation: string; by: string; pending?: boolean; error?: ApiError; provider?: string };
 
 // Truthfully name the provider doing the work — the engine routes to a local
 // Ollama model when one is up, else a hosted one (OpenAI/Anthropic).
@@ -184,12 +205,12 @@ function FindingRow({ f, readOnly, onNavigate }: { f: Finding; readOnly?: boolea
   const [exLoading, setExLoading] = useState(false);
   const [rem, setRem] = useState<Remediation>();
   const [remLoading, setRemLoading] = useState(false);
-  const [remErr, setRemErr] = useState(false);
+  const [remErr, setRemErr] = useState<ApiError>();
   const [comment, setComment] = useState("");
   const [refining, setRefining] = useState(false);
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
-  const [actErr, setActErr] = useState<string>();
+  const [actErr, setActErr] = useState<{ what: string; error: ApiError }>();
   const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => () => { if (pollRef.current) clearTimeout(pollRef.current); }, []);
@@ -209,9 +230,11 @@ function FindingRow({ f, readOnly, onNavigate }: { f: Finding; readOnly?: boolea
         const wait = Math.min(800 * 1.5 ** attempt, 6000);
         pollRef.current = setTimeout(() => fetchExplain(attempt + 1), wait);
       }
-    } catch {
+    } catch (e) {
+      // Name the failure: a 403 on the explain endpoint is a capability the
+      // role does not have, not "the model is warming up".
       setExLoading(false);
-      setExplain({ explanation: "Could not reach the explanation service. Try again.", by: "error", error: true });
+      setExplain({ explanation: "", by: "error", error: asApiError(e) });
     }
   };
 
@@ -227,8 +250,10 @@ function FindingRow({ f, readOnly, onNavigate }: { f: Finding; readOnly?: boolea
   const retryExplain = () => { if (pollRef.current) clearTimeout(pollRef.current); setExplain(undefined); setExLoading(true); fetchExplain(0); };
 
   const remediate = async () => {
-    setRemLoading(true); setRemErr(false); setSent(false); setActErr(undefined);
-    try { setRem(await api.remediate(f.finding_id)); } catch { setRemErr(true); } finally { setRemLoading(false); }
+    setRemLoading(true); setRemErr(undefined); setSent(false); setActErr(undefined);
+    try { setRem(await api.remediate(f.finding_id)); }
+    catch (e) { setRemErr(asApiError(e)); }
+    finally { setRemLoading(false); }
   };
 
   const refine = async () => {
@@ -237,7 +262,7 @@ function FindingRow({ f, readOnly, onNavigate }: { f: Finding; readOnly?: boolea
     try {
       const next = await api.remediateRefine(f.finding_id, comment.trim(), rem.change);
       setRem(next); setComment("");
-    } catch { setActErr("Could not re-iterate right now. Try again."); } finally { setRefining(false); }
+    } catch (e) { setActErr({ what: "the refined fix", error: asApiError(e) }); } finally { setRefining(false); }
   };
 
   const sendToGate = async () => {
@@ -246,7 +271,7 @@ function FindingRow({ f, readOnly, onNavigate }: { f: Finding; readOnly?: boolea
     try {
       await api.changeSubmit({ finding_id: f.finding_id, change: rem.change, revision_id: rem.revision_id });
       setSent(true);
-    } catch { setActErr("Could not send to the Change Gate. Try again."); } finally { setSending(false); }
+    } catch (e) { setActErr({ what: "the Change Gate submission", error: asApiError(e) }); } finally { setSending(false); }
   };
 
   return (
@@ -270,6 +295,7 @@ function FindingRow({ f, readOnly, onNavigate }: { f: Finding; readOnly?: boolea
                 <Sparkles size={12} className="text-text2" /> Why this matters
               </div>
               {exLoading && !explain ? <SkeletonText lines={3} /> :
+                explain?.error ? <InlineError resource="the explanation" error={explain.error} onRetry={retryExplain} /> :
                 explain ? <Prose>{explain.explanation}</Prose> : null}
               {explain?.pending && (
                 <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-text3">
@@ -277,9 +303,7 @@ function FindingRow({ f, readOnly, onNavigate }: { f: Finding; readOnly?: boolea
                   Refining with {providerLabel(explain.provider)}…
                 </div>
               )}
-              {explain?.error ? (
-                <button onClick={retryExplain} className="btn-ghost mt-1.5 text-xs"><RotateCw size={12} /> Retry</button>
-              ) : explain && !explain.pending && <div className="mt-1 text-[10px] text-muted">via {explain.by}</div>}
+              {explain && !explain.error && !explain.pending && <div className="mt-1 text-[10px] text-muted">via {explain.by}</div>}
             </div>
 
             {!rem ? (readOnly ? null : (
@@ -287,7 +311,7 @@ function FindingRow({ f, readOnly, onNavigate }: { f: Finding; readOnly?: boolea
                 <button onClick={remediate} disabled={remLoading} className="btn-ghost text-xs">
                   {remLoading ? <Spinner label="Drafting + re-simulating…" /> : <><Wrench size={13} /> Draft &amp; validate a fix</>}
                 </button>
-                {remErr && <div className="text-[11px] text-sev-high">Could not draft a fix right now (the model may be loading). Try again.</div>}
+                {remErr && <InlineError resource="a drafted fix" error={remErr} onRetry={remediate} />}
               </div>
             )) : (
               <div className="space-y-2.5">
@@ -307,7 +331,7 @@ function FindingRow({ f, readOnly, onNavigate }: { f: Finding; readOnly?: boolea
                     {rem.change.new_service && <><ArrowRight size={11} className="shrink-0" /><span>{rem.change.new_service}</span></>}
                   </div>
                   {rem.validation.engine_corrected_ai && (
-                    <div className="mt-1 text-[10px] text-text2">engine corrected the AI's first proposal, then proved this one</div>
+                    <div className="mt-1 text-[10px] text-text2">engine corrected the AI&apos;s first proposal, then proved this one</div>
                   )}
                   <RemediationTrace trace={rem.trace} attempts={rem.attempts} />
                 </div>
@@ -341,7 +365,7 @@ function FindingRow({ f, readOnly, onNavigate }: { f: Finding; readOnly?: boolea
                     {!rem.validation.resolves && (
                       <div className="text-[11px] text-text3">Refine with a comment until the fix re-simulates as resolving, then you can send it to the gate.</div>
                     )}
-                    {actErr && <div className="text-[11px] text-sev-high">{actErr}</div>}
+                    {actErr && <InlineError resource={actErr.what} error={actErr.error} />}
                   </div>
                 )}
               </div>

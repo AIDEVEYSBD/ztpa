@@ -2,23 +2,55 @@
 
 import { useEffect, useState } from "react";
 import { Trash2, Eye, History } from "lucide-react";
-import { api } from "@/lib/api";
+import { api, asApiError, type ApiError } from "@/lib/api";
 import { Skeleton, cn, Chip, EmptyState } from "../ui";
+import { ErrorState, InlineError, UnavailableState } from "../ui/Feedback";
 import { useFilterSort, SearchBox, SortSelect } from "@/lib/tableTools";
 
 export function SnapshotsAdmin({ onView }: { onView: (id: string) => void }) {
   const [snaps, setSnaps] = useState<any[]>();
   const [active, setActive] = useState("");
+  // The backend's reason when it answered 200 with an empty timeline because it
+  // could not read the store. `[]` alone cannot distinguish that from a tenant
+  // that has never run the engine, and this panel is where that distinction is
+  // the whole point.
+  const [unknown, setUnknown] = useState<string>();
   const [confirm, setConfirm] = useState<string>();
   const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<ApiError>();
+  const [delErr, setDelErr] = useState<{ id: string; error: ApiError }>();
 
-  const load = () => api.snapshots().then((s) => { setSnaps(s.snapshots); setActive(s.active); }).catch(() => setSnaps([]));
+  // `setSnaps([])` rendered "0 snapshots" and "No snapshots found — run an
+  // analysis to create one": a dead database was pixel-identical to a tenant
+  // that has never run the engine. The list stays unknown on failure instead.
+  const load = () => {
+    setErr(undefined);
+    return api.snapshots()
+      .then((s) => {
+        setSnaps(s.snapshots);
+        setActive(s.active);
+        setUnknown(s.served_from === "database" ? undefined : s.degraded_reason);
+      })
+      .catch((e) => { setSnaps(undefined); setErr(asApiError(e)); });
+  };
   useEffect(() => { load(); }, []);
 
   const del = async (id: string) => {
-    setBusy(true);
-    try { await api.deleteSnapshot(id); } catch { /* ignore */ } finally { setBusy(false); setConfirm(undefined); load(); }
+    setBusy(true); setDelErr(undefined);
+    try { await api.deleteSnapshot(id); setConfirm(undefined); load(); }
+    // Swallowing this and reloading anyway meant a refused delete (409 on the
+    // active snapshot, 403 for a non-admin) looked exactly like a delete that
+    // worked. Keep the confirm row open and say what the API answered.
+    catch (e) { setDelErr({ id, error: asApiError(e) }); }
+    finally { setBusy(false); }
   };
+
+  if (err) return <ErrorState resource="the snapshot history" error={err} onRetry={load} />;
+
+  // A 200 carrying an empty list AND a reason is not a history of zero runs.
+  if (unknown && !snaps?.length) {
+    return <UnavailableState resource="The snapshot history" reason={unknown} onRetry={load} />;
+  }
 
   if (!snaps) {
     return (
@@ -37,11 +69,12 @@ export function SnapshotsAdmin({ onView }: { onView: (id: string) => void }) {
     );
   }
 
-  return <SnapshotTimeline snaps={snaps} active={active} onView={onView} confirm={confirm} setConfirm={setConfirm} busy={busy} del={del} />;
+  return <SnapshotTimeline snaps={snaps} active={active} onView={onView} confirm={confirm} setConfirm={setConfirm} busy={busy} del={del} delErr={delErr} />;
 }
 
-function SnapshotTimeline({ snaps, active, onView, confirm, setConfirm, busy, del }: {
-  snaps: any[]; active: string; onView: (id: string) => void; confirm?: string; setConfirm: (v?: string) => void; busy: boolean; del: (id: string) => void;
+function SnapshotTimeline({ snaps, active, onView, confirm, setConfirm, busy, del, delErr }: {
+  snaps: any[]; active: string; onView: (id: string) => void; confirm?: string; setConfirm: (v?: string) => void; busy: boolean;
+  del: (id: string) => void; delErr?: { id: string; error: ApiError };
 }) {
   const t = useFilterSort(snaps, {
     search: (s) => `${s.snapshot_id} ${s.label ?? ""}`,
@@ -73,6 +106,7 @@ function SnapshotTimeline({ snaps, active, onView, confirm, setConfirm, busy, de
         <div className="absolute bottom-2 left-[7px] top-2 w-px bg-border" />
         {t.rows.map((s) => {
           const isActive = s.snapshot_id === active;
+          const rowDelErr = delErr && delErr.id === s.snapshot_id ? delErr.error : undefined;
           return (
             <div key={s.snapshot_id} className="relative mb-3">
               <span className={cn("absolute -left-[14px] top-3 h-2.5 w-2.5 border-2",
@@ -106,6 +140,10 @@ function SnapshotTimeline({ snaps, active, onView, confirm, setConfirm, busy, de
                     </button>
                   )}
                 </div>
+                {rowDelErr && (
+                  <InlineError resource={`the deletion of ${s.snapshot_id}`} error={rowDelErr}
+                    onRetry={() => del(s.snapshot_id)} className="mt-2" />
+                )}
               </div>
             </div>
           );

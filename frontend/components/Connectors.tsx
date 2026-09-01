@@ -2,8 +2,9 @@
 
 import { useState } from "react";
 import { Check, Plug, X, Wand2, ArrowRight, Sparkles, RotateCw } from "lucide-react";
-import { api } from "@/lib/api";
+import { api, asApiError, type ApiError } from "@/lib/api";
 import { cn, Spinner, Chip, Eyebrow, EmptyState } from "./ui";
+import { ErrorState } from "./ui/Feedback";
 import { Prose } from "./Markdown";
 
 const SAMPLE = JSON.stringify({
@@ -19,12 +20,20 @@ export function Connectors() {
   const [hint, setHint] = useState("sd_wan");
   const [res, setRes] = useState<any>();
   const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState<string>();
+  const [err, setErr] = useState<ApiError>();
+  const [inputErr, setInputErr] = useState<string>();
 
   const propose = async () => {
-    setErr(undefined); setRes(undefined); setLoading(true);
-    try { setRes(await api.propose(JSON.parse(text), hint)); }
-    catch (e) { setErr(String(e)); } finally { setLoading(false); }
+    setErr(undefined); setInputErr(undefined); setRes(undefined);
+    // Parse before the call so a typo in the pasted sample is reported as a
+    // typo, not as an API failure — the old `String(e)` blurred the two.
+    let sample: unknown;
+    try { sample = JSON.parse(text); }
+    catch (e) { setInputErr(e instanceof Error ? e.message : "The sample is not valid JSON."); return; }
+    setLoading(true);
+    try { setRes(await api.propose(sample, hint)); }
+    catch (e) { setErr(asApiError(e)); }
+    finally { setLoading(false); }
   };
 
   return (
@@ -43,7 +52,10 @@ export function Connectors() {
         <button onClick={propose} disabled={loading} className="btn-primary mt-2 w-full">
           {loading ? <Spinner label="Authoring + validating…" /> : <><Wand2 size={15} /> Propose connector</>}
         </button>
-        {err && <div className="mt-2 text-xs text-sev-critical">{err}</div>}
+        {inputErr && (
+          <div className="mt-2 text-xs text-sev-critical">That sample is not valid JSON: <span className="mono">{inputErr}</span></div>
+        )}
+        {err && <ErrorState resource="the proposed connector" error={err} onRetry={propose} className="mt-2" />}
       </div>
 
       <div className="space-y-3">

@@ -3,9 +3,11 @@
 import { useEffect, useState } from "react";
 import { UserPlus, Users as UsersIcon } from "lucide-react";
 import { adminCreateUser, adminListUsers } from "@/app/actions";
+import { ApiError, asApiError } from "@/lib/api";
 import type { AppUser, Role } from "@/lib/users";
 import { Spinner, Skeleton, Chip, Eyebrow, EmptyState } from "../ui";
 import type { ChipVariant } from "../ui";
+import { ErrorState } from "../ui/Feedback";
 import { DevLink } from "../auth/AuthShell";
 
 const ROLE_VARIANT: Record<string, ChipVariant> = {
@@ -22,8 +24,23 @@ export function UsersAdmin() {
   const [role, setRole] = useState<Role>("analyst");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; error?: string; devLink?: string }>();
+  const [err, setErr] = useState<ApiError>();
 
-  const refresh = () => adminListUsers().then((u) => { setUsers(u as AppUser[]); setLoaded(true); }).catch(() => setLoaded(true));
+  // The old `.catch(() => setLoaded(true))` left `users` at [] and flipped the
+  // panel to its loaded state, so a failed server action rendered "Users (0)"
+  // and "No users yet" — indistinguishable from an empty tenant. Both the
+  // refusal the action reports and anything thrown on the way now land in a
+  // rendered panel instead.
+  const refresh = () => {
+    setErr(undefined);
+    return adminListUsers()
+      .then((r) => {
+        if (r.ok) setUsers(r.users);
+        else { setUsers([]); setErr(new ApiError(r.status, r.error, "adminListUsers")); }
+        setLoaded(true);
+      })
+      .catch((e) => { setUsers([]); setErr(asApiError(e)); setLoaded(true); });
+  };
   useEffect(() => { refresh(); }, []);
 
   const invite = async (e: React.FormEvent) => {
@@ -62,8 +79,12 @@ export function UsersAdmin() {
       </div>
 
       <div className="panel p-5">
-        <div className="mb-4 flex items-center gap-2"><Eyebrow>Users</Eyebrow><span className="text-[12px] text-text3">({users.length})</span></div>
-        {!loaded ? (
+        {/* "(0)" beside "Users" is a headcount. While the directory failed to
+            load the headcount is unknown, so it is not printed. */}
+        <div className="mb-4 flex items-center gap-2"><Eyebrow>Users</Eyebrow><span className="text-[12px] text-text3">{err ? "(unknown)" : `(${users.length})`}</span></div>
+        {err ? (
+          <ErrorState resource="the user directory" error={err} onRetry={refresh} />
+        ) : !loaded ? (
           <div className="space-y-2">
             {Array.from({ length: 3 }).map((_, i) => (
               <div key={i} className="flex items-center gap-3 border-b border-hair py-2.5 last:border-0">

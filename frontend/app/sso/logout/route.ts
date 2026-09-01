@@ -31,6 +31,10 @@ async function handle(req: NextRequest) {
     });
     idToken = token?.idToken as string | undefined;
     provider = token?.provider as string | undefined;
+    // Deliberate discard: there is no data here to be wrong about. No session,
+    // or one we cannot decrypt, carries the same instruction as a valid one —
+    // clear the cookies and bounce to /login.
+    // eslint-disable-next-line no-restricted-syntax
   } catch {
     /* no / unreadable session — still clear cookies and bounce to /login */
   }

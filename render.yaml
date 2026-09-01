@@ -5,9 +5,9 @@
 # Ollama on Render. The engine's deterministic fallbacks mean the app still runs
 # end-to-end even if the AI key is ever unset.
 #
-# SECRETS: DATABASE_URL and OPENAI_API_KEY use `sync: false`, so ONLY their names
-# live in this file — the VALUES are entered in the Render dashboard (encrypted at
-# rest) and are NEVER committed to git.
+# SECRETS: DATABASE_URL, OPENAI_API_KEY and NPR_PROXY_SECRET use `sync: false`, so
+# ONLY their names live in this file — the VALUES are entered in the Render
+# dashboard (encrypted at rest) and are NEVER committed to git.
 services:
   - type: web
     name: ztpa-backend
@@ -16,7 +16,12 @@ services:
     rootDir: backend
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
-    healthCheckPath: /api/health
+    # Liveness, NOT readiness. /api/health reports degraded (503) when a
+    # dependency such as the database is unreachable — correct for a status
+    # page, wrong for Render's health check, which would restart-loop a
+    # process whose only problem is that Neon is asleep. /api/live answers
+    # 'this process is up' and nothing more.
+    healthCheckPath: /api/live
     autoDeploy: true
     envVars:
       - key: PYTHON_VERSION
@@ -30,6 +35,13 @@ services:
       - key: DATABASE_URL
         sync: false
       - key: OPENAI_API_KEY
+        sync: false
+      # Shared secret between the Next.js proxy and FastAPI: the proxy injects it
+      # alongside the x-npr-* actor headers, and the backend rejects any request
+      # carrying those headers without it. Without this, anyone who can reach the
+      # Render URL can set their own role by sending x-npr-role: admin. Must be
+      # set to the SAME value here and in the frontend's environment.
+      - key: NPR_PROXY_SECRET
         sync: false
       # Set to the Vercel URL once the frontend is live (CORS allowlist; the normal
       # proxied path is server-to-server so this is defense-in-depth, not required).

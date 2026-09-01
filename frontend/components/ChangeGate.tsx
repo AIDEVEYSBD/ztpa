@@ -1,14 +1,15 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSession } from "next-auth/react";
 import { motion } from "framer-motion";
 import { Check, ShieldAlert, ShieldCheck, X, Play, FlaskConical, ArrowRight, Globe, Rocket, ChevronDown, ChevronRight, Inbox, History, Wrench, Search, CornerDownRight } from "lucide-react";
-import { api } from "@/lib/api";
+import { api, asApiError, type ApiError } from "@/lib/api";
 import type { ChangeResult, InvestigationStep } from "@/lib/types";
 import { canApprove as canApproveChanges, type AppRole } from "@/lib/roles";
 import type { ScreenId } from "./Sidebar";
 import { cn, Spinner, Skeleton, SkeletonText } from "./ui";
+import { ErrorState, InlineError } from "./ui/Feedback";
 import { Prose } from "./Markdown";
 
 const CRITERIA_LABELS: Record<string, string> = {
@@ -46,29 +47,53 @@ export function ChangeGate({ onNavigate }: { onNavigate?: (s: ScreenId) => void 
   const [decisions, setDecisions] = useState<any[]>();
   const [staging, setStaging] = useState<string>();   // request_id currently being staged
   const [rejecting, setRejecting] = useState<string>();   // request_id currently being rejected
+  const [decisionsErr, setDecisionsErr] = useState<ApiError>();
+  const [reqErr, setReqErr] = useState<ApiError>();
+  const [assetsErr, setAssetsErr] = useState<ApiError>();
+  // The failure of the last thing the user PRESSED, kept separate from the
+  // background loads so a dead Simulate button can never look like a no-op.
+  const [actionErr, setActionErr] = useState<{ what: string; error: ApiError; retry: () => void }>();
 
   const assetSet = useMemo(() => new Set(assets), [assets]);
-  const loadDecisions = () => api.changeDecisions().then((r) => setDecisions(r.decisions)).catch(() => setDecisions([]));
+  const loadDecisions = useCallback(() =>
+    api.changeDecisions()
+      .then((r) => { setDecisions(r.decisions); setDecisionsErr(undefined); })
+      // Never fall back to [] here: an empty decision log means "this estate has
+      // no governance history", which is a claim we cannot make from a failure.
+      .catch((e) => { setDecisions(undefined); setDecisionsErr(asApiError(e)); }), []);
 
   const stage = async (requestId: string, escalated: boolean) => {
-    setStaging(requestId);
+    setStaging(requestId); setActionErr(undefined);
     try {
       await api.sendToStaging({ request_id: requestId, manual_approve: escalated });
       await loadDecisions();
       onNavigate?.("staging");
-    } catch { /* surfaced via reload */ } finally { setStaging(undefined); }
+    } catch (e) {
+      // A 403 here is the governance boundary doing its job; show it as that.
+      setActionErr({ what: "the staging request", error: asApiError(e), retry: () => stage(requestId, escalated) });
+    } finally { setStaging(undefined); }
   };
 
   const reject = async (requestId: string) => {
-    setRejecting(requestId);
+    setRejecting(requestId); setActionErr(undefined);
     try {
       await api.rejectChange({ request_id: requestId });
       await loadDecisions();
-    } catch { /* surfaced via reload */ } finally { setRejecting(undefined); }
+    } catch (e) {
+      setActionErr({ what: "the rejection", error: asApiError(e), retry: () => reject(requestId) });
+    } finally { setRejecting(undefined); }
   };
 
-  useEffect(() => { api.changeRequests().then((r) => { setRequests(r.requests); setSel(r.requests[0]?.id); }).catch(() => {}).finally(() => setReqLoading(false)); }, []);
-  useEffect(() => {
+  const loadRequests = useCallback(() => {
+    setReqLoading(true); setReqErr(undefined);
+    api.changeRequests()
+      .then((r) => { setRequests(r.requests); setSel(r.requests[0]?.id); })
+      .catch((e) => setReqErr(asApiError(e)))
+      .finally(() => setReqLoading(false));
+  }, []);
+
+  const loadAssets = useCallback(() => {
+    setAssetsErr(undefined);
     api.assets().then((a) => {
       const list = a.assets ?? [];
       setAssets(list.map((x: any) => x.asset_key));
@@ -77,17 +102,27 @@ export function ChangeGate({ onNavigate }: { onNavigate?: (s: ScreenId) => void 
       const SENS = ["pci", "customer-data", "crown-jewel", "phi"];
       const pick = (list.find((x: any) => (x.tags ?? []).some((t: string) => SENS.includes(t))) ?? list[0])?.asset_key;
       if (pick) setCustom((c) => (list.some((x: any) => x.asset_key === c.destination) ? c : { ...c, destination: pick }));
-    }).catch(() => {});
+    // Without assets the endpoint validator downgrades every known asset to
+    // "not a known asset or CIDR", so the user must be told why.
+    }).catch((e) => setAssetsErr(asApiError(e)));
   }, []);
-  useEffect(() => { loadDecisions(); }, []);
+
+  useEffect(() => { loadRequests(); }, [loadRequests]);
+  useEffect(() => { loadAssets(); }, [loadAssets]);
+  useEffect(() => { loadDecisions(); }, [loadDecisions]);
 
   const evaluate = async () => {
-    setLoading(true); setResult(undefined);
+    setLoading(true); setResult(undefined); setActionErr(undefined);
     try {
       const body = sel === "custom" ? custom : { request_id: sel };
       setResult(await api.classify(body));
       loadDecisions();   // refresh the audit trail
-    } catch { /* ignore */ } finally { setLoading(false); }
+    } catch (e) {
+      // This is the path that made "Simulate a custom change" look like a
+      // button that does nothing: it has 500'd since the first commit and the
+      // failure was swallowed here.
+      setActionErr({ what: "the simulated decision", error: asApiError(e), retry: evaluate });
+    } finally { setLoading(false); }
   };
 
   const d = result?.decision;
@@ -103,6 +138,7 @@ export function ChangeGate({ onNavigate }: { onNavigate?: (s: ScreenId) => void 
 
       <div className="grid gap-4 lg:grid-cols-[380px_1fr]">
         <div className="space-y-3">
+          {reqErr && <ErrorState resource="the pending change requests" error={reqErr} onRetry={loadRequests} />}
           {reqLoading && requests.length === 0
             ? Array.from({ length: 3 }).map((_, i) => (
                 <div key={i} className="panel space-y-2 p-3"><Skeleton className="h-3.5 w-2/3" /><Skeleton className="h-3 w-full" /></div>
@@ -151,6 +187,7 @@ export function ChangeGate({ onNavigate }: { onNavigate?: (s: ScreenId) => void 
                   placeholder="e.g. urgent, pre-approved" className="field" />
                 <span className="mt-1 block text-[11px] text-text3">Free text. The gate ignores this and rules on the computed delta.</span>
               </label>
+              {assetsErr && <InlineError resource={"this snapshot's assets"} error={assetsErr} onRetry={loadAssets} />}
             </div>
           )}
 
@@ -159,7 +196,8 @@ export function ChangeGate({ onNavigate }: { onNavigate?: (s: ScreenId) => void 
           </button>
         </div>
 
-        <div>
+        <div className="space-y-4">
+          {actionErr && <ErrorState resource={actionErr.what} error={actionErr.error} onRetry={actionErr.retry} />}
           {loading ? (
             <div className="space-y-4">
               <div className="panel flex items-center gap-3 p-4"><Skeleton className="h-7 w-7 shrink-0" /><div className="flex-1 space-y-2"><Skeleton className="h-4 w-40" /><Skeleton className="h-3 w-56" /></div></div>
@@ -167,7 +205,7 @@ export function ChangeGate({ onNavigate }: { onNavigate?: (s: ScreenId) => void 
               <div className="panel space-y-2 p-4"><Skeleton className="h-3.5 w-36" /><SkeletonText lines={3} /></div>
             </div>
           ) : !result ? (
-            <DecisionLog decisions={decisions} onStage={stage} staging={staging} onReject={reject} rejecting={rejecting} canApprove={canApprove} onNavigate={onNavigate} />
+            <DecisionLog decisions={decisions} error={decisionsErr} onRetry={loadDecisions} onStage={stage} staging={staging} onReject={reject} rejecting={rejecting} canApprove={canApprove} onNavigate={onNavigate} />
           ) : (
             <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
               <div className={cn("panel flex items-center gap-3 p-4", approve ? "border-ok-line" : "border-sev-critical-line")}>
@@ -343,8 +381,10 @@ function DeltaPathRow({ label, paths }: { label: string; paths: string[][] }) {
  *    - "Decision log" — changes already staged (i.e. done) — the audit trail.
  *  The panel is a fixed height with its own scroll, and each row expands into a
  *  detailed card explaining the criteria, computed delta and rationale. */
-function DecisionLog({ decisions, onStage, staging, onReject, rejecting, canApprove, onNavigate }: {
+function DecisionLog({ decisions, error, onRetry, onStage, staging, onReject, rejecting, canApprove, onNavigate }: {
   decisions?: any[];
+  error?: ApiError;
+  onRetry?: () => void;
   onStage?: (requestId: string, escalated: boolean) => void;
   staging?: string;
   onReject?: (requestId: string) => void;
@@ -367,10 +407,12 @@ function DecisionLog({ decisions, onStage, staging, onReject, rejecting, canAppr
     if (decisions && pending.length === 0 && done.length > 0) setTab("log");
   }, [decisions]);  // eslint-disable-line react-hooks/exhaustive-deps
 
+  // While the log is in error the tab counters must not read 0 — that is the
+  // same "clean estate" lie in miniature.
   const TABS = [
-    { id: "actions" as const, label: "Actions", icon: Inbox, count: pending.length,
+    { id: "actions" as const, label: "Actions", icon: Inbox, count: error ? "—" : pending.length,
       hint: "Evaluated changes not yet acted upon. Send approved ones to staging; an approver can clear escalations." },
-    { id: "log" as const, label: "Decision log", icon: History, count: done.length,
+    { id: "log" as const, label: "Decision log", icon: History, count: error ? "—" : done.length,
       hint: "Changes already staged — the audit trail a change board or auditor reviews." },
   ];
   const active = TABS.find((t) => t.id === tab)!;
@@ -392,7 +434,9 @@ function DecisionLog({ decisions, onStage, staging, onReject, rejecting, canAppr
       <p className="shrink-0 px-3.5 pt-2.5 text-[11px] text-text3">{active.hint}</p>
 
       <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto p-3.5">
-        {decisions === undefined ? (
+        {error ? (
+          <ErrorState resource="the change decision log" error={error} onRetry={onRetry} />
+        ) : decisions === undefined ? (
           Array.from({ length: 3 }).map((_, i) => (
             <div key={i} className="panel space-y-2 p-3"><Skeleton className="h-4 w-2/3" /><Skeleton className="h-3 w-1/2" /></div>
           ))

@@ -14,6 +14,7 @@ system Python on PATH.
     python tasks.py frontend     run the Next.js dashboard on :3000
     python tasks.py dev          run backend + frontend together (Ctrl-C stops both)
     python tasks.py verify       run the engine self-check
+    python tasks.py test         run the unit suite (offline; no DB or model needed)
     python tasks.py seed-scale N base demo + N synthetic assets
     python tasks.py admin EMAIL                  create an admin user
     python tasks.py set-password EMAIL PASSWORD  set a user's password
@@ -110,6 +111,18 @@ def cmd_precompute_ai(args):
     _backend_script("precompute_ai.py", *args)  # e.g. --explanations
 
 
+def cmd_test(args):
+    """Run the unit suite. Extra args are forwarded (`test -k classify`, `test -x`).
+
+    Deliberately run from the repo root, not from backend/, so pytest picks up
+    pyproject.toml's [tool.pytest.ini_options] — that is where pythonpath and
+    testpaths live, and it is what makes the invocation identical here and in CI.
+    backend/conftest.py keeps the run fully offline (no DB, no model), so this is
+    safe to run on a machine with nothing configured.
+    """
+    run([venv_python(), "-m", "pytest", *args], cwd=ROOT)
+
+
 def cmd_seed_scale(args):
     if not args:
         sys.exit("usage: python tasks.py seed-scale N")
@@ -178,11 +191,19 @@ def cmd_send_reset(args):
 
 def cmd_stop(_args):
     if IS_WIN:
-        # /F force, /FI filter on command line; ignore "not found" exit codes.
+        # /F force, /FI filter on window title; ignore "not found" exit codes.
+        # The filter only matches a server started in its OWN console window, so
+        # this is genuinely best-effort. It is deliberately NOT backed by
+        # `taskkill /F /IM node.exe`: that fallback force-killed every Node
+        # process on the machine — editors, language servers, unrelated projects
+        # — which is a far worse outcome than one surviving dev server. The
+        # explicit fallback is the instruction printed below.
         for pat in ("uvicorn app.main:app", "next dev"):
             subprocess.run(["taskkill", "/F", "/FI", f"WINDOWTITLE eq {pat}"], check=False)
-        subprocess.run(["taskkill", "/F", "/IM", "node.exe"], check=False)
-        print("note: on Windows, the surest stop is Ctrl-C in the `dev` window.")
+        print("note: only servers running in their own console window are matched.\n"
+              "      If one survived, stop it with Ctrl-C in the `dev` window, or find\n"
+              "      it with:  netstat -ano | findstr \":3000 :8000\"\n"
+              "      then kill just that pid:  taskkill /F /PID <pid>")
     else:
         for pat in ("uvicorn app.main:app", "next dev"):
             subprocess.run(["pkill", "-f", pat], check=False)
@@ -205,6 +226,7 @@ COMMANDS = {
     "frontend": cmd_frontend,
     "dev": cmd_dev,
     "verify": cmd_verify,
+    "test": cmd_test,
     "admin": cmd_admin,
     "set-password": cmd_set_password,
     "send-reset": cmd_send_reset,

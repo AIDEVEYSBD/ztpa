@@ -1,9 +1,19 @@
 -- Network Policy Reviewer -- database schema
 -- Target: Postgres 15+ (Neon). Idempotent: safe to re-run.
--- Apply (preferred):  psql "$DATABASE_URL" --single-transaction -v ON_ERROR_STOP=1 -f db/schema.sql
--- Apply (fallback):   python db/migrate.py
+-- Apply (preferred):  python db/migrate.py     -- this file, then db/migrations/*.sql
+-- Apply (by hand):    psql "$DATABASE_URL" --single-transaction -v ON_ERROR_STOP=1 -f db/schema.sql
+--                     followed by `python db/migrate.py --migrations-only`
 -- Apply this file AS A WHOLE / IN ORDER (it sets search_path once, then creates
 -- everything in the ztpa schema). Never create objects in `public`.
+--
+-- THIS FILE IS THE FRESH-INSTALL DDL: it describes the schema as it should be
+-- TODAY, and every CREATE is `IF NOT EXISTS`, so it can only ever ADD to a
+-- database that already exists. Converging an EXISTING database on a changed
+-- definition (a dropped CASCADE, a widened CHECK) is the job of the numbered,
+-- forward-only files in db/migrations/, applied and recorded exactly once each
+-- by db/migrate.py. When you change a definition here, add the matching
+-- migration in the same commit -- backend/tests/test_persist_snapshot.py fails
+-- if the two disagree about the governance foreign keys.
 --
 -- ID convention: every id the deterministic engine generates is a TEXT primary key
 -- and must be derived deterministically (e.g. from snapshot + content) so that
@@ -15,6 +25,20 @@ SET search_path TO ztpa;
 
 -- gen_random_uuid() is built into Postgres 13+. If you ever target < 13, run:
 --   CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+-- ============================================================================
+-- schema_migrations -- ledger of applied db/migrations/*.sql files
+-- Owned by db/migrate.py, which creates it too (so a migrations-only run works
+-- against a database that predates this file). Declared here so schema.sql
+-- remains a complete picture of the schema. Rows are written ONLY by the
+-- runner; never insert by hand, or the migration it names will be skipped.
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version     text PRIMARY KEY,                  -- leading digits of the filename, e.g. '0001'
+    filename    text NOT NULL,
+    checksum    text NOT NULL,                     -- sha256 of the file as applied
+    applied_at  timestamptz NOT NULL DEFAULT now()
+);
 
 -- ============================================================================
 -- snapshots -- every analysis run is a point-in-time snapshot; all data FKs here
@@ -80,10 +104,23 @@ CREATE TABLE IF NOT EXISTS asset_correlations (
     snapshot_id   text NOT NULL REFERENCES snapshots(snapshot_id) ON DELETE CASCADE,
     asset_id      text NOT NULL REFERENCES assets(asset_id) ON DELETE CASCADE,
     match_key     text NOT NULL
-                    CHECK (match_key IN ('cloud_id', 'hostname', 'mac', 'context_ip')),
+                    CHECK (match_key IN ('cloud_id', 'hostname', 'mac', 'context_ip', 'manual_review')),
     confidence    numeric(4,3) NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
     evidence      jsonb NOT NULL DEFAULT '{}'::jsonb,
     created_at    timestamptz NOT NULL DEFAULT now()
+);
+
+-- human-confirmed identity merges. Deliberately NOT scoped to a snapshot: an
+-- operator saying "these two names are the same host" is a durable fact about
+-- the estate, replayed by the identity layer on every subsequent run
+-- (persist.load_asset_merges). Was created at runtime by persist._ensure_merges
+-- and missing from this file entirely -- schema drift the audit called out.
+CREATE TABLE IF NOT EXISTS asset_merges (
+    merge_id      text PRIMARY KEY,                -- deterministic: det_id('merge', sorted pair)
+    name_a        text NOT NULL,
+    name_b        text NOT NULL,
+    confirmed_by  text,
+    created_at    timestamptz DEFAULT now()
 );
 
 -- ============================================================================
@@ -189,7 +226,12 @@ CREATE TABLE IF NOT EXISTS ranked_actions (
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS change_requests (
     request_id    text PRIMARY KEY,
-    snapshot_id   text NOT NULL REFERENCES snapshots(snapshot_id) ON DELETE CASCADE,  -- baseline evaluated against
+    -- The baseline this change was evaluated against -- a POINTER, never ownership.
+    -- ON DELETE SET NULL (and nullable) on purpose: a governance record must
+    -- outlive the snapshot it cites. With CASCADE here, one recompute of
+    -- unchanged data destroyed the whole approval trail. See
+    -- db/migrations/0001_governance_fk.sql and src/db.delete_snapshot_children.
+    snapshot_id   text REFERENCES snapshots(snapshot_id) ON DELETE SET NULL,
     proposed      jsonb NOT NULL,                  -- canonical-row-shaped object
     requested_by  text,
     justification text,                            -- UNTRUSTED free text; never used as evidence
@@ -304,7 +346,11 @@ CREATE TABLE IF NOT EXISTS staged_changes (
     target_tool  text,                                 -- algosec | guardicore | wiz
     payload      jsonb NOT NULL DEFAULT '{}'::jsonb,
     decision     text,                                 -- auto_approve | escalate | manual_approved
-    status       text NOT NULL DEFAULT 'staged',       -- staged | pushing | pushed | conflict | failed
+    -- staged | pushing | pushed | no_op | conflict | failed. 'no_op' is written by
+    -- change/staging.build_push_plan when every conflict resolves to "skip", i.e. the
+    -- change was already present: nothing is appended, so the row must NOT be picked up
+    -- by persist.load_applied_changes (WHERE status='pushed') on the next recompute.
+    status       text NOT NULL DEFAULT 'staged',
     conflicts    jsonb NOT NULL DEFAULT '[]'::jsonb,
     resolution   jsonb NOT NULL DEFAULT '{}'::jsonb,
     push_steps   jsonb NOT NULL DEFAULT '[]'::jsonb,

@@ -14,11 +14,20 @@ subnet math — it calls deterministic tools and reasons over their structured r
 ## 1. Core differentiators (the defensible IP)
 
 ### 1.1 ✅ Cross-tool consolidation into one policy model
-Ingests **AlgoSec** (firewall), **Guardicore** (microsegmentation), and **Wiz** (cloud
-exposure) and normalizes every rule into a single canonical `PolicyRecord` — *"source X may
-reach destination Y on service Z"* means the same thing regardless of which console it came
-from. One model, one graph, instead of four consoles and four mental models.
+Normalizes **AlgoSec**- (firewall), **Guardicore**- (microsegmentation) and **Wiz**-shaped
+(cloud exposure) exports into a single canonical `PolicyRecord` — *"source X may reach
+destination Y on service Z"* means the same thing regardless of which console it came from.
+One model, one graph, instead of four consoles and four mental models.
 - *Where:* `backend/src/normalizers/`, `backend/src/models.py:PolicyRecord`, `db/schema.sql:canonical_rules`.
+- ⚠️ *Scope of the current build:* **there is no upload path and no live API client.**
+  `normalizers/__init__.py:normalize_all()` reads three fixed files from
+  `backend/data/mock/` (`algosec_export.json`, `guardicore_export.json`,
+  `wiz_export.json`), and `tasks.py demo` regenerates them from
+  `backend/scripts/seed_demo.py` on every cold build — so an edit to those files does not
+  survive a rebuild. The adapters also assume well-formed rows; a missing or list-valued
+  field in an export currently aborts the run rather than being reported per-row. What the
+  canonical model, graph, analyzers and severity math do with those records is real and
+  tool-agnostic — swapping the mock adapters for live API clients is the remaining work.
 
 ### 1.2 ✅ Deterministic identity resolution (IP is an attribute, not a key)
 Merges the same asset seen under different names across tools — `appsrv-07` (Wiz) and
@@ -34,42 +43,104 @@ show**. Each hop is labelled with the tool that enforces it.
 - *Where:* `backend/src/graph/reachability.py`, `backend/src/analyzers/path_trace.py`.
 
 ### 1.4 ✅ Deterministic risk findings with an explicit severity vector
-Over-permissive rules, CIDR overlap/redundancy, rule shadowing, and cross-tool paths — each
-with an exact `E × P × D × B` severity vector and guardrail floors that **force critical** on
-internet+any/any, internet+admin-port, and internet→sensitive paths.
-- *Where:* `backend/src/analyzers/` (`over_permissive`, `cidr_overlap`, `shadowing`, `path_trace`, `severity`).
+**Five** detectors — over-permissive rules, CIDR overlap/redundancy, rule shadowing,
+cross-tool paths, and transport-/application-layer exposure (§1.9) — each with an exact
+`E × P × D × B` severity vector and guardrail floors that **force critical** on
+internet+any/any, internet+admin-port, internet→sensitive paths, and an uninspectable
+application reachable from the internet.
+- *Where:* `backend/src/analyzers/` (`over_permissive`, `cidr_overlap`, `shadowing`,
+  `path_trace`, `transport_exposure`, `severity`). The five names are exactly
+  `models.py:FindingType`.
+- *The formulas, constants and guardrail clauses are documented per detector in
+  [ENGINE.md §6](ENGINE.md).* Note that several detectors emit **per rule ref** rather than
+  per distinct problem — `transport_exposure`'s QUIC check most visibly — so one underlying
+  issue can produce several findings. Read ENGINE.md §6.5 before treating a finding total as
+  a count of distinct problems.
 
-### 1.5 ✅ Local-first AI advisory layer (8 capabilities, on Ollama)
-1. Change-request triage (auto-approve vs escalate) — agentic, guardrailed, fail-closed
-2. "Ask your network" assistant — agentic tool-calling over the engine
-3. Plain-English explanation of every finding
-4. Root-cause grouping + worst-first ranking
-5. Remediation **fix-as-code**, re-simulated by the engine to *prove* it resolves
-6. Executive / PCI-DSS / Zero-Trust posture report
-7. Change-intake extraction (free text → structured rule)
-8. Entity-resolution **suggestions** for human review (never auto-merge)
+### 1.5 ✅ Local-first AI advisory layer — **10 capabilities**, 5 of them agentic
 
-Data stays local; the topology never leaves the machine.
-- *Where:* `backend/src/advisory/`, `backend/src/agent/`.
+> **This subsection is the single source of truth for the capability list and count.**
+> README.md and AGENTS.md link here instead of restating it, because the count previously
+> drifted to four different values across four documents. The list below is
+> `backend/src/tools_registry.py:TOOLS` filtered to `kind == "ai_capability"` — the same
+> registry that drives the admin Tools screen and per-role enablement — so it can be checked
+> mechanically, not by reading prose.
+
+| # | `tools_registry` key | Capability | Kind |
+|---|---|---|---|
+| 1 | `classify` | Change-request triage (auto-approve vs escalate) | **agentic** — guardrailed, fail-closed |
+| 2 | `assistant` | "Ask your network" | **agentic** — tool-calling over the engine (⚠️ Ollama only, see [AGENTS.md](AGENTS.md)) |
+| 3 | `remediate` | Remediation **fix-as-code** | **agentic** — propose → re-simulate → revise |
+| 4 | `campaign` | Remediation **campaign** (worst-first, cumulative) | **agentic** — composes #3 |
+| 5 | `authoring` | Connector-authoring assist (design-time — see §1.7) | **agentic** — propose → normalize sample → revise |
+| 6 | `explain` | Plain-English explanation of every finding | language |
+| 7 | `rank` | Root-cause grouping + worst-first ranking | judgment |
+| 8 | `report` | Executive / PCI-DSS / Zero-Trust posture report | language |
+| 9 | `intake` | Change-intake extraction (free text → structured rule) | language → structure |
+| 10 | `entity_suggest` | Entity-resolution **suggestions** for human review (never auto-merge) | embeddings |
+
+`TOOLS` holds **11** `ai_capability` rows: the ten above plus `embed`, the embedding job that
+backs #10. It is infrastructure rather than a user-facing capability, which is why the
+headline number is 10. Separately, `TOOLS` holds **6** `agent_tool` rows — the deterministic
+engine functions #2 may call (`resolve`, `reachable`, `find_paths`, `effective_policy`,
+`risk_findings`, `simulate_change`). Those are engine, not AI.
+
+**On #3, precisely.** "Re-simulated by the engine" means the full analyzer suite is re-run on
+the modified record set (`run_all.reanalyze`) and the fix is accepted **only if the target
+finding disappears and no new *critical* appears**. Three honest limits: new **high/medium/low**
+findings are not checked; the proof is against the snapshot as it stood at draft time and is
+**not re-run at push time**; and the fallback used when no model fix certifies clean is
+**conservative (removal-based)** — `remediation.py:_fallback_change` deletes the offending
+rule (or reorders it, for a shadowed rule). Call it conservative, not *surgical*.
+
+**Residency.** Inference is local-first *by configuration*, not by construction — see
+[README.md](../README.md) and the residency chip in the app header. `ADVISORY_PROVIDER=auto`
+falls back to a hosted provider when no local model is reachable, the shipped Render blueprint
+pins `ADVISORY_PROVIDER=openai`, and the system of record is cloud Postgres (Neon) regardless.
+- *Where:* `backend/src/advisory/`, `backend/src/agent/`, `backend/src/tools_registry.py`.
 
 ### 1.6 ✅ Change Gate — judges the computed delta, not the requester's words
 Simulates a proposed change, computes the delta, and auto-approves **only inside an
 already-safe envelope** — it can never raise the risk tolerance, even under prompt injection.
 - *Where:* `backend/src/advisory/`, `frontend/components/ChangeGate.tsx`.
 
-### 1.7 ✅ Bring-your-own source (dynamic connector authoring)
+### 1.7 🚧 Connector-authoring assist (design-time preview)
 Paste a sample of an unknown tool's export → the model proposes a declarative
-`SourceProfile` → the engine validates it by actually normalizing the sample → a human
-approves. New source, no new Python.
-- *Where:* `backend/src/normalizers/profile.py`.
+`SourceProfile` (config, not code) → the engine checks it by **actually normalizing that
+sample** and reports which fields it could and could not map → a human reviews the result.
+The value is real and demonstrable: a proposed adapter, proven against the client's own
+export, in one round trip, with no Python written.
+- ⚠️ **Not yet shipped: registration and ingestion.** There is no endpoint that persists an
+  approved profile and no path that ingests live data through one — `/api/connectors/propose`
+  returns a proposal and a validation report, and that is where it ends. The engine still
+  reads only the three fixed mock exports (§1.1). Until that lands, describe this as a
+  **design-time preview**, not as "bring your own source" — and the `approved: false` flag in
+  the response is accurate: nothing is registered.
+- *Where:* `backend/src/advisory/authoring.py` (the loop), `backend/src/normalizers/profile.py`
+  (the deterministic profile normalizer that validates the sample).
 
 ### 1.8 ✅ Unified change pipeline (Risk → Gate → Staging) + Admin Tools & Metrics
 Iterate a remediation in Risk To-Do with comments → send to Change Gate → after a decision,
-send to a **Staging Area** → **Push to source system** runs a *simulated, stepped* push that
-detects and **resolves real conflicts in real time** (push is simulated; the conflict math is
-genuine engine math). Plus per-role tool enable/disable and an admin KPI/cost dashboard.
-- *Where:* `backend/src/change/staging.py`, `backend/src/metrics.py`, `backend/src/tools_registry.py`,
-  `frontend/components/Staging.tsx`, `frontend/components/admin/`.
+send to a **Staging Area** → **Stage for the source system** runs a *simulated, stepped* push
+that detects and resolves real conflicts in real time.
+- **What is simulated:** the push itself. There is no connector to AlgoSec / Guardicore / Wiz
+  in any build of this product, so `build_push_plan` flags the payload `simulated: true`, every
+  fabricated step is labelled *"Simulated:"* on screen, and the UI says *"Staged for {tool}
+  (simulated push — no live connector)"* rather than claiming the data source was updated.
+- **What is real:** the conflict math (genuine engine math against the current snapshot) and
+  the consequence of the final status — `pushed` is folded into the record set by
+  `change/apply.py:apply_overlay` on the next recompute (which yields a new snapshot id);
+  `no_op` (every conflict resolved to "skip") records **nothing**, so the narrated skip and the
+  overlay now agree; `conflict` blocks on a contradiction or stale target for human review.
+- **Per-role tool enable/disable** (admin Tools screen) and an admin KPI/cost dashboard.
+  ⚠️ *The toggle is a **feature flag, not an authorization boundary**.* It is **default-on and
+  best-effort**: an absent `ztpa.tool_settings` row enables the capability for **all** roles,
+  and a DB error against a cold cache also yields the default-on map
+  (`tools_registry.enabled_roles`). Write paths are gated by the `require_admin` /
+  `require_approver` / `require_operator` route dependencies in `app/main.py` — those are the
+  authorization boundary. Do not rely on a capability toggle to restrict one.
+- *Where:* `backend/src/change/staging.py`, `backend/src/change/apply.py`, `backend/src/metrics.py`,
+  `backend/src/tools_registry.py`, `frontend/components/Staging.tsx`, `frontend/components/admin/`.
 
 ### 1.9 ✅ Transport- & application-layer rule decoding (QUIC / HTTP-3 / L7 App-ID)
 **Why it matters (the USP angle):** QUIC (HTTP/3) rides **UDP/443**. Most legacy firewalls
@@ -95,9 +166,13 @@ tool misses.
   internet) to a sensitive dest → "QUIC (UDP/443) reachable — likely uninspected."
 - **Fallback-not-blocked:** `tcp/443` *and* `udp/443` both open → can't force the inspectable
   TLS path; QUIC silently wins.
-- **Broad UDP / ICMP exposure** as transport-layer hygiene findings.
+- ~~**Broad UDP / ICMP exposure** as transport-layer hygiene findings.~~ 📋 **Not built.**
+  `analyzers/transport_exposure.py` ships the two checks above and no third one; the
+  protocol set decodes `icmp`/`sctp`, but nothing scores broad UDP or ICMP as its own
+  finding. Left here as the planned extension, not as a shipped claim.
 - **Reachability by protocol + app:** replace the fragile `f"/{port}"` substring match in
-  `graph/reachability.py` with structured protocol/port-range/app matching.
+  `graph/reachability.py` with structured protocol/port-range/app matching. ✅ *Shipped —
+  `reachability.py:_grant_matches` / `_edge_matches`.*
 
 **How we demo it (fits the existing 7-min script):**
 1. Seed the three mock exports with transport/L7 rules:
@@ -135,8 +210,12 @@ tool misses.
 
 **Demo dataset (in `seed_demo.py`):** `ALGO-080` (internet→app-server-09 udp/443 → FORCED
 critical QUIC blind spot), `ALGO-082` + `GC-020` (declared `quic` App-ID rules), `WIZ-020/021`
-(QUIC at the edge + lateral). Verified: 9 transport findings, cross-tool path still singular,
-all engine self-checks green.
+(QUIC at the edge + lateral). Measured on the 27-rule seeded dataset at the time of that
+change: 9 `transport_exposure` findings, cross-tool path still singular, all engine
+self-checks green. Treat those numbers as a dated measurement of one fixture, not an
+invariant — `backend/scripts/verify_engine.py` is what actually holds the line, and it
+asserts the *properties* (P1–P7 exist, are forced where they should be, and re-run
+byte-identically) rather than a total.
 
 ---
 
@@ -150,3 +229,19 @@ all engine self-checks green.
   (declared App-IDs + deterministic inference + port ranges), `transport_exposure` analyzer
   (QUIC blind spot + TLS-fallback-not-blocked), structured reachability matching, demo seed
   rules, frontend L7 chips. Engine self-check + frontend build green; snapshot recomputed.
+- **2026-09-01** — **Documentation-accuracy pass** against `PROD-READINESS-AUDIT.md`
+  ("Documentation corrections"). No feature change; every edit is a claim brought back into
+  line with the code. §1.5 is now the **single source of truth for the AI capability list
+  and count** (10 user-facing, 5 of them agentic, from `tools_registry.TOOLS`) and README.md
+  / AGENTS.md reference it instead of restating it. §1.1 states that there is no upload path
+  and that the three mock exports are regenerated on every cold build. §1.4 now says **five**
+  detectors, not four, and points at the new [ENGINE.md §6.5](ENGINE.md) for
+  `transport_exposure` — previously absent from the formula reference despite being one of
+  the largest contributors to the demo finding count. §1.7 is demoted to 🚧 **design-time
+  preview**: registration and ingestion are not implemented. §1.8 separates what the staging
+  push simulates from the conflict math that is real, and records that the per-role
+  capability toggle is a **default-on feature flag, not an authorization boundary**. §1.9
+  marks the never-built broad-UDP/ICMP check as 📋 planned and dates its measured counts.
+  The residency claim ("data never leaves the host") is qualified everywhere it appeared:
+  `ADVISORY_PROVIDER=auto` falls back to a hosted provider silently, `render.yaml` pins
+  `openai`, and the system of record is cloud Postgres regardless.

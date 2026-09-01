@@ -1,0 +1,41 @@
+# Repo-root tooling config. Deliberately NOT a packaging manifest: the backend is
+# an application that runs from a checkout (uvicorn app.main:app with cwd=backend),
+# never a wheel, so there is no [build-system] / [project] table here on purpose.
+# The only thing this file does is make `pytest` work from the repo root.
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+
+# The suite imports the backend as top-level packages (`from src.analyzers... `,
+# `from app.main import app`), matching how uvicorn runs it with cwd=backend.
+# Putting backend/ on sys.path here means `pytest` behaves identically whether it
+# is invoked from the repo root, from CI, or via `python tasks.py test` — and the
+# presence of this file also pins rootdir to the repo root, so the paths below
+# are stable.
+pythonpath = ["backend"]
+testpaths = ["backend/tests"]
+
+# Short tracebacks and a summary of only the outcomes worth reading (errors,
+# failures, skips-with-reason). Verbosity is deliberately NOT set here: `-q` in
+# addopts is additive with the one on the command line, so the documented
+# `pytest -q` became `-qq`, which suppresses the summary line entirely -- the run
+# printed dots and exited 0 with no way to tell 452 passed from 3. Terseness is
+# now the caller's choice (`pytest -q`), and it still prints the count.
+addopts = "--strict-markers --strict-config --tb=short -r fEs"
+
+# Warnings are errors, so a deprecation lands as a red test while it is still
+# cheap to fix rather than as a surprise on the next dependency bump. Deprecations
+# raised inside third-party internals are not actionable here, so they are listed
+# explicitly (later entries win) — which keeps every suppression a decision
+# somebody made on purpose, and makes adding one a reviewable single line.
+filterwarnings = [
+    "error",
+    "ignore::DeprecationWarning:psycopg.*",
+    "ignore::DeprecationWarning:psycopg_pool.*",
+    "ignore::DeprecationWarning:pydantic.*",
+    "ignore::DeprecationWarning:httpx.*",
+    "ignore::DeprecationWarning:starlette.*",
+    "ignore::DeprecationWarning:fastapi.*",
+    "ignore::DeprecationWarning:anthropic.*",
+    "ignore::DeprecationWarning:openai.*",
+]

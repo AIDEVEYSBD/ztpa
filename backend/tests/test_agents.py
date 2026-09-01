@@ -18,14 +18,48 @@ import pytest
 
 from src.advisory import authoring, campaign, classify_change
 from src.advisory import remediation as R
+from src.analyzers import run_all
 from src.analyzers.run_all import run
 from src.change.requests import DEMO_REQUESTS
 from src.change.simulate import simulate_change
+
+# The synthetic estate lives in test_engine_invariants because that is where it
+# earns its keep (a second, differently-shaped fixture for the invariants). It is
+# imported here rather than duplicated so there is exactly one definition of the
+# estate; see `synth_eng` below for why this file needs it at all.
+from tests.test_engine_invariants import synthetic_estate
 
 
 @pytest.fixture(scope="module")
 def eng():
     return run()
+
+
+@pytest.fixture(scope="module")
+def synth_eng():
+    """A snapshot that still contains a `cross_tool_path` finding.
+
+    PHASE 1 CHANGED THE DEMO OUT FROM UNDER TWO TESTS IN THIS FILE. The seeded
+    demo's only cross-tool path pivoted through `internal-app`, an AlgoSec
+    `network` object holding 10.40.0.0/16. The normalizers now mark
+    range-denoting objects `abstract=True` (PROD-READINESS-AUDIT, the fix at
+    `reachability.py:47`, option (a)), and `_valid_traversal` refuses to pivot
+    through an abstract node -- reaching hosts inside a range does not let you
+    originate as that range. So the demo legitimately has zero cross-tool paths
+    now, and the audit predicted exactly that: "this will delete the current
+    money-shot until (b) lands", (b) being CIDR-membership expansion.
+
+    The two remediation tests below are about the AGENT LOOP, not about the demo
+    fixture, but the finding type is not incidental either: `cross_tool_path` is
+    the product's differentiator and `remediation._fallback_change` has a branch
+    dedicated to it. Rather than retarget them at some other finding and quietly
+    lose that coverage, they now run against a synthetic three-tool estate whose
+    chain pivots only through CONCRETE hosts -- an honest path, and one that does
+    not depend on which way the demo fixture moves next.
+    """
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(run_all, "normalize_all", synthetic_estate)
+        return run_all.run(label="synthetic")
 
 
 def _resp(payload, ok=True, provider="stub", model="stub"):
@@ -45,13 +79,23 @@ def _worst_cross_tool(eng):
     return next(f for f in eng.findings if f.type == "cross_tool_path")
 
 
-def test_remediation_revises_until_clean(eng, monkeypatch):
+def test_remediation_revises_until_clean(synth_eng, monkeypatch):
     """A first proposal that does not resolve -> the engine verdict is fed back ->
     the second proposal is certified. `by=llm`, two attempts, trace shows both."""
+    eng = synth_eng
     f = _worst_cross_tool(eng)
+    # The first proposal narrows the terminal grant's PORT. That is a plausible
+    # fix and a genuinely insufficient one: reachability does not filter on
+    # service, so the edge -- and therefore the path -- survives. The engine says
+    # so, and the second proposal removes the hop into the crown jewel.
+    # (Before Phase 1 this first proposal was a `scope_source` on the demo's
+    # cross-tool path. On this estate scoping the source WOULD resolve the
+    # finding on the first attempt, which would silently turn a two-attempt test
+    # into a one-attempt one and stop exercising the feedback loop at all.)
     seq = [
-        {"fix_text": "scope it", "change": {"op": "scope_source", "target_ref": f.raw_refs[0],
-                                            "new_source": "10.0.0.0/8"}},
+        {"fix_text": "narrow the port", "change": {"op": "restrict_service",
+                                                   "target_ref": f.raw_refs[-1],
+                                                   "new_service": "tcp/5433"}},
         {"fix_text": "remove the crown-jewel hop", "change": {"op": "remove", "target_ref": f.raw_refs[-1]}},
     ]
     calls = {"n": 0}
@@ -73,8 +117,9 @@ def test_remediation_revises_until_clean(eng, monkeypatch):
     assert len(res["trace"]) == 2
 
 
-def test_remediation_falls_back_when_model_dead(eng, monkeypatch):
+def test_remediation_falls_back_when_model_dead(synth_eng, monkeypatch):
     """Model unreachable -> the deterministic surgical fix is used and proven."""
+    eng = synth_eng
     f = _worst_cross_tool(eng)
     monkeypatch.setattr(R, "complete", _dead)
     res = R.draft(f, eng)

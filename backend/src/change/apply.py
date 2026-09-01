@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from ..models import PolicyRecord
 from ..normalizers.common import ObservedEntity, is_cidr, parse_service
+from ..normalizers.profile import object_is_abstract
 
 
 def apply_remediation(records: list[PolicyRecord], change: dict) -> list[PolicyRecord]:
@@ -82,19 +83,52 @@ def ensure_entities(base_entities: list[ObservedEntity], records: list[PolicyRec
     an overlay endpoint becomes a graph node with no backing asset, which fails on
     persist as a graph_nodes.asset_id FK violation. Existing entities (richer:
     tags/ip from the tool catalogs, cross-tool merges) are left untouched; we only
-    fill genuine gaps. The record's ip is carried so IP-based merges still apply."""
+    fill genuine gaps. The record's ip is carried so IP-based merges still apply.
+
+    The endpoint is built from the record's RESOLVED address space
+    ------------------------------------------------------------
+    An overlay endpoint named ``ANY-EXTERNAL`` used to become a bare identity
+    entity: no address space, `abstract` False. Both halves of that were wrong,
+    and together they made the change gate's own accepted rule score two bands
+    below the identical rule written ``0.0.0.0/0``:
+
+      * with no `cidrs`, the asset came out with ``ip_set == []``, so
+        `zones.zone_of` had nothing to classify;
+      * with `abstract` False the asset was CONCRETE, and `zone_of` short-circuits
+        a concrete node to "not the internet" by design (a host holding a public
+        address is a DMZ box, not the internet) -- so even a populated ip_set
+        would not have helped.
+
+    Both now come from `PolicyRecord.source_cidrs`/`dest_cidrs`, which the change
+    gate already resolves (`change.simulate.resolve_cidrs`), through
+    `object_is_abstract` -- the SAME rule every normalizer applies, so an endpoint
+    that arrives by overlay is classified exactly like the one that arrives by
+    export. A token that resolves to no address space is unchanged: still a
+    concrete identity, because "we could not resolve it" is not evidence of a
+    range. The host `ip` is dropped for an abstract endpoint for the reason
+    `identity` refuses to key on a shared address: a /8 that also claims a host
+    address would merge the range with the machine living in it.
+    """
     known = {e.name for e in base_entities}
     extra: list[ObservedEntity] = []
     for rec in records:
-        for name, kind, ip, tags in (
-            (rec.source, rec.source_kind, rec.source_ip, []),
-            (rec.destination, rec.destination_kind, rec.dest_ip, list(rec.dest_tags)),
+        for name, kind, ip, tags, cidrs in (
+            (rec.source, rec.source_kind, rec.source_ip, [], list(rec.source_cidrs)),
+            (rec.destination, rec.destination_kind, rec.dest_ip, list(rec.dest_tags),
+             list(rec.dest_cidrs)),
         ):
             if not name or name in known:
                 continue
             known.add(name)
             if kind == "cidr":
-                extra.append(ObservedEntity(name=name, kind="cidr", tool=rec.source_tool, cidr=name, abstract=True))
-            else:
-                extra.append(ObservedEntity(name=name, kind="identity", tool=rec.source_tool, ip=ip, tags=tags))
+                extra.append(ObservedEntity(name=name, kind="cidr", tool=rec.source_tool,
+                                            cidr=name, cidrs=[name], abstract=True))
+                continue
+            abstract = object_is_abstract(None, cidrs, [])
+            extra.append(ObservedEntity(
+                name=name, kind="identity", tool=rec.source_tool,
+                ip=None if abstract else ip, tags=tags, abstract=abstract,
+                cidr=cidrs[0] if (abstract and len(cidrs) == 1) else None,
+                cidrs=cidrs if abstract else [],
+            ))
     return list(base_entities) + extra

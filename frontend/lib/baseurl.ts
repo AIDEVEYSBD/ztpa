@@ -18,6 +18,10 @@ export function getBaseUrl(): string {
       const proto = h.get("x-forwarded-proto") || (host.startsWith("localhost") || host.startsWith("127.") ? "http" : "https");
       return `${proto}://${host}`;
     }
+    // Deliberate discard: `headers()` throws when there is no request scope (a
+    // CLI script), which is exactly the case the APP_URL/AUTH_URL fallback below
+    // exists to serve.
+    // eslint-disable-next-line no-restricted-syntax
   } catch {
     /* not in a request scope */
   }

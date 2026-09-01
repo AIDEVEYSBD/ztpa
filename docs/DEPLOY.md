@@ -35,17 +35,32 @@ Uses the committed `render.yaml` blueprint.
 2. Render dashboard → **New +** → **Blueprint** → connect the GitHub repo
    `AIDEVEYSBD/ztpa` (one-time GitHub authorization).
 3. Render reads `render.yaml` and creates the `ztpa-backend` web service. When
-   prompted, fill the two secret values:
+   prompted, fill the `sync: false` secret values:
    - `DATABASE_URL` = your Neon connection string (the one from `.env`).
    - `OPENAI_API_KEY` = your OpenAI key.
+   - `NPR_PROXY_SECRET` = a fresh random string. **Not optional in practice** — it is
+     what stops anyone who can reach the Render URL from sending `x-npr-role: admin`
+     and bypassing every role guard. Set the *same* value on Vercel (step 2).
+     Generate one with
+     `node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"`.
    - `FRONTEND_ORIGIN` = leave blank for now; set in step 3 above.
 4. Deploy. Confirm health:
    ```
-   https://ztpa-backend.onrender.com/api/health   →  {"status":"ok","db":true,...}
+   https://ztpa-backend.onrender.com/api/live     →  liveness only, always 200 while up
+   https://ztpa-backend.onrender.com/api/health   →  {"status":"ok","db":true,"proxy_auth":true,...}
    ```
+   `proxy_auth: false` means `NPR_PROXY_SECRET` is unset — fix that before the URL is
+   shared. `/api/health` is the readiness/status view and answers **503** when a
+   dependency is down; `/api/live` is what `render.yaml` uses as `healthCheckPath`, so a
+   sleeping Neon does not restart-loop the process.
 
 **Notes**
 - Native Python runtime (no Docker). Start command binds `$PORT`.
+- `render.yaml` pins **`ADVISORY_PROVIDER=openai`** (there is no Ollama on Render), so
+  **this deployment sends finding text, rule text and asset names to OpenAI**. The header's
+  AI residency chip will read *"Hosted — data leaves this host"*. That is a deliberate
+  trade for the hosted demo, but it is not the local-first configuration the README
+  describes — do not present it as one.
 - On first boot the engine builds in a background thread and self-seeds its
   snapshot into Postgres if missing — so a clean Neon DB is fine too (as long as
   the `ztpa` schema exists; run `python tasks.py db` once if it does not).
@@ -70,6 +85,7 @@ Uses the committed `render.yaml` blueprint.
    | `SSO_CLIENT_ID` | from the AutoX SSO admin — **setting this turns SSO on and local password login off** |
    | `SSO_CLIENT_SECRET` | from the AutoX SSO admin |
    | `SSO_SESSION_MAX_AGE` | `3600` (absolute session seconds = role-change pickup interval) |
+   | `NPR_PROXY_SECRET` | the **same** value set on Render — the middleware sends it alongside the `x-npr-*` actor headers, and without it the backend cannot tell a real proxy request from a forged one |
 
    > **SSO.** Register `https://<app>.vercel.app/api/auth/callback/autox` as a
    > redirect URI and `https://<app>.vercel.app/login` as a post-logout redirect URI
@@ -104,7 +120,11 @@ calls Render cross-origin — this is defense-in-depth.
 - **First admin.** After deploy, create the first admin with
   `node frontend/scripts/create-admin.mjs` (run locally against the same Neon DB),
   or set `ADMIN_EMAIL` and follow the app's invite flow.
-- **Backend is public.** It trusts `x-npr-role`/`x-npr-email` headers injected by
-  the Vercel middleware. Anyone hitting the Render URL directly could forge these.
-  Fine for a demo; before anything real, add a shared secret the backend requires
-  (reject requests from clients that don't present it).
+- **Backend is public — the shared secret is what makes that safe.** It authorizes on
+  the `x-npr-role` / `x-npr-email` / `x-npr-sub` headers the Vercel middleware injects.
+  `NPR_PROXY_SECRET` is now enforced: with it set, a request carrying those headers
+  without the secret is rejected **401**, so the Render URL cannot be used to
+  self-assign a role. **Leave it unset and the old exposure is back in full** — the
+  headers are then trusted unconditionally. Confirm `proxy_auth: true` on
+  `/api/health` after every deploy, and keep `FRONTEND_ORIGIN` set as
+  defense-in-depth on top.

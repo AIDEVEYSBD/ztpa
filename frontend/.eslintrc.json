@@ -1,0 +1,30 @@
+{
+  "root": true,
+  "extends": "next/core-web-vitals",
+  "rules": {
+    "no-empty": ["error", { "allowEmptyCatch": false }],
+
+    // `no-empty` alone does NOT hold the line on swallowed failures, and it was
+    // measured, not assumed: ESLint exempts any block containing a comment, so
+    // `catch { /* ignore */ }` passes it clean, and an empty arrow body is out
+    // of its scope entirely, so `.catch(() => {})` passes too. Both are the
+    // exact patterns this codebase bans. These selectors close both holes
+    // without the blast radius of `no-empty-function`, which would also flag
+    // legitimate no-op defaults such as a React context's placeholder setter.
+    "no-restricted-syntax": [
+      "error",
+      {
+        "selector": "CatchClause[body.body.length=0]",
+        "message": "Empty catch block. A failure that renders as a zero, an empty list or a green state is a lie about the data: surface it with ErrorState/InlineError from components/ui/Feedback. A comment inside the block does NOT exempt it (that is the hole this rule exists to close) — a genuinely correct discard takes an eslint-disable-next-line above the catch, so every one of them is a line somebody reviewed."
+      },
+      {
+        "selector": "CallExpression[callee.property.name='catch'] > ArrowFunctionExpression[body.type='BlockStatement'][body.body.length=0]",
+        "message": "Empty .catch(() => {}) handler. Route the rejection into a rendered error state (ErrorState/InlineError) instead of discarding it."
+      },
+      {
+        "selector": "CallExpression[callee.property.name='catch'] > FunctionExpression[body.body.length=0]",
+        "message": "Empty .catch(function () {}) handler. Route the rejection into a rendered error state (ErrorState/InlineError) instead of discarding it."
+      }
+    ]
+  }
+}

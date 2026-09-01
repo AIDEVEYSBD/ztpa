@@ -4,7 +4,7 @@ SHELL := /bin/bash
 PY    := backend/.venv/bin/python
 PIP   := backend/.venv/bin/pip
 
-.PHONY: help setup db auth-db seed seed-scale precompute precompute-ai demo backend frontend dev stop verify admin set-password send-reset
+.PHONY: help setup db auth-db seed seed-scale precompute precompute-ai demo backend frontend dev stop test verify admin set-password send-reset
 
 help:
 	@echo "setup         create venv + install backend & frontend deps"
@@ -16,6 +16,8 @@ help:
 	@echo "backend       run the FastAPI API on :8000"
 	@echo "frontend      run the Next.js dashboard on :3000"
 	@echo "dev           run backend + frontend together"
+	@echo "test          run the unit suite (offline; no DB or model needed)"
+	@echo "verify        run the engine self-check against the seeded demo dataset"
 	@echo "stop          kill the dev servers"
 
 setup:
@@ -71,6 +73,11 @@ dev:
 	@( cd backend && .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 & echo $$! > /tmp/npr-api.pid ); \
 	trap 'kill $$(cat /tmp/npr-api.pid) 2>/dev/null' EXIT; \
 	cd frontend && npm run dev
+
+# Run from the repo root so pyproject.toml's [tool.pytest.ini_options] applies
+# (pythonpath + testpaths live there). backend/conftest.py keeps it offline.
+test:
+	$(PY) -m pytest
 
 verify:
 	$(PY) backend/scripts/verify_engine.py

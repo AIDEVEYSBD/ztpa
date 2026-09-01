@@ -2,8 +2,9 @@
 
 import { useState } from "react";
 import { FileText, RefreshCw, Printer, Route, ShieldCheck, ArrowRight, Sparkles } from "lucide-react";
-import { api } from "@/lib/api";
+import { api, asApiError, type ApiError } from "@/lib/api";
 import { SeverityPill, Spinner, Stat, Skeleton, SkeletonText } from "./ui";
+import { ErrorState, InlineError } from "./ui/Feedback";
 import { Prose } from "./Markdown";
 import { RuleRef } from "./RuleRef";
 
@@ -35,10 +36,11 @@ export function ReportPanel() {
   const [r, setR] = useState<any>();
   const [loading, setLoading] = useState(false);
   const [narrLoading, setNarrLoading] = useState(false);
-  const [err, setErr] = useState(false);
+  const [err, setErr] = useState<ApiError>();
+  const [narrErr, setNarrErr] = useState<ApiError>();
 
   const gen = async () => {
-    setLoading(true); setErr(false);
+    setLoading(true); setErr(undefined); setNarrErr(undefined);
     try {
       const facts = await api.report();         // instant, deterministic
       setR(facts);
@@ -46,11 +48,14 @@ export function ReportPanel() {
       if (facts?.narrative_pending) {
         setNarrLoading(true);
         api.reportNarrative()
-          .then((n) => setR((cur: any) => (cur ? { ...cur, narrative_md: n.narrative_md, by: n.by, narrative_pending: false } : cur)))
-          .catch(() => { /* keep deterministic narrative */ })
+          .then((n) => { setR((cur: any) => (cur ? { ...cur, narrative_md: n.narrative_md, by: n.by, narrative_pending: false } : cur)); setNarrErr(undefined); })
+          // Degrading to the deterministic narrative is legitimate — but the
+          // report must say so, or a reader assumes they are holding the
+          // AI-written executive summary the header promises.
+          .catch((e) => setNarrErr(asApiError(e)))
           .finally(() => setNarrLoading(false));
       }
-    } catch { setErr(true); } finally { setLoading(false); }
+    } catch (e) { setErr(asApiError(e)); } finally { setLoading(false); }
   };
 
   if (!r) {
@@ -62,7 +67,7 @@ export function ReportPanel() {
           PCI-DSS / Zero-Trust compliance read. The orchestrator returns the facts instantly; the model then
           writes the narrative. Every rule reference is clickable.
         </p>
-        {err && <div className="mb-3 border border-sev-critical-line bg-sev-critical-bg px-3 py-2 text-[12px] text-sev-critical">The report service did not respond. Make sure the API is running, then try again.</div>}
+        {err && <ErrorState resource="the posture report" error={err} onRetry={gen} className="mb-3" />}
         <button onClick={gen} disabled={loading} className="btn-primary">
           {loading ? <Spinner label="Assembling report…" /> : <><FileText size={14} /> Generate report</>}
         </button>
@@ -144,7 +149,17 @@ export function ReportPanel() {
             <SkeletonText lines={3} />
           </div>
         ) : (
-          <Prose>{r.narrative_md ?? ""}</Prose>
+          <>
+            {narrErr && (
+              <div className="print:hidden">
+                <InlineError resource="the AI executive narrative" error={narrErr} onRetry={gen} />
+                <p className="mt-1 text-[11px] text-text3">
+                  The deterministic narrative below is shown instead. Every figure in it is still computed by the engine.
+                </p>
+              </div>
+            )}
+            <Prose>{r.narrative_md ?? ""}</Prose>
+          </>
         )}
 
         {/* Cross-tool attack paths */}

@@ -11,14 +11,25 @@ import time
 
 from .. import request_ctx, tools_registry
 from ..change.simulate import simulate_change
-from ..graph.reachability import find_paths as g_find_paths, reachable as g_reachable, who_can_reach
+from ..graph.reachability import reachable as g_reachable, who_can_reach
 from ..metrics import record_metric
 from ..models import PolicyRecord
 from ..normalizers.common import is_cidr, parse_service
 
 
+# effective_policy returns one witness path per source; on a real estate that list
+# is unbounded, and it goes straight into a prompt. Cap what we render, and report
+# the true total next to it so the cap can never read as "that is all there is".
+_MAX_WITNESSES = 10
+
+
 def _canon(ctx, name: str) -> str:
     return ctx.alias_map.get(name, name)
+
+
+def _display(path: dict | None) -> str | None:
+    """One described path -> the arrow string the assistant quotes."""
+    return " -> ".join(path["display_path"]) if path else None
 
 
 def resolve(ctx, name: str) -> dict:
@@ -35,21 +46,51 @@ def resolve(ctx, name: str) -> dict:
 
 
 def reachable(ctx, src: str, dst: str, port: int | None = None) -> dict:
+    """Can src reach dst? The verdict, the paths, and how complete the search was.
+
+    `truncated` is passed straight through from the engine: the path enumeration
+    is bounded (`_PATH_SCAN_CAP`), so with it true a `reachable: false` means "no
+    path in the candidates examined", not "no path". The assistant is told to say
+    that rather than assert an absence it did not establish -- and `path_count`
+    sits next to the rendered list for the same reason `effective_policy` reports
+    `source_count`: a cap that reads as "that is all there is" is a lie."""
     cs, cd = _canon(ctx, src), _canon(ctx, dst)
     res = g_reachable(ctx.graph, cs, cd, port)
     return {"src": cs, "dst": cd, "port": port, "reachable": res["reachable"],
+            "path_count": len(res["paths"]), "truncated": res["truncated"],
             "paths": [" -> ".join(p["display_path"]) for p in res["paths"][:5]]}
 
 
 def find_paths(ctx, src: str, dst: str) -> dict:
+    """Every path src -> dst. Routed through `g_reachable` rather than the
+    `find_paths` wrapper purely so the truncation flag survives: the path list is
+    identical (find_paths IS the unfiltered path list), but a list that stopped at
+    the scan cap must not be handed to a model as if it were exhaustive."""
     cs, cd = _canon(ctx, src), _canon(ctx, dst)
-    paths = g_find_paths(ctx.graph, cs, cd)
-    return {"src": cs, "dst": cd, "count": len(paths),
+    res = g_reachable(ctx.graph, cs, cd)
+    paths = res["paths"]
+    return {"src": cs, "dst": cd, "count": len(paths), "truncated": res["truncated"],
             "paths": [{"path": " -> ".join(p["display_path"]), "tools": p["tools"]} for p in paths[:8]]}
 
 
 def effective_policy(ctx, asset: str) -> dict:
-    return who_can_reach(ctx.graph, _canon(ctx, asset))
+    """What can reach `asset`, each source carrying the witness path that proves it.
+
+    Same `_bfs_witnesses` primitive as `reachable`, so a source appears here iff
+    `reachable(source, asset)` is true -- the assistant can call both in one turn
+    without contradicting itself. `witness_paths` is capped for prompt size, which
+    is why `source_count` reports the full total alongside it.
+    """
+    key = _canon(ctx, asset)
+    res = who_can_reach(ctx.graph, key)
+    return {
+        "target": key, "target_tags": res["target_tags"],
+        "internet_exposed": res["internet_exposed"],
+        "internet_path": _display(res["internet_path"]),
+        "sources": res["sources"], "source_count": len(res["sources"]),
+        "witness_paths": [{"source": w["entry"], "path": _display(w), "tools": w["tools"]}
+                          for w in res["witnesses"][:_MAX_WITNESSES]],
+    }
 
 
 def risk_findings(ctx, type: str | None = None, min_severity: int = 0) -> dict:
@@ -119,16 +160,22 @@ SCHEMAS = [
         "name": "resolve", "description": "Resolve a name or CIDR to its canonical asset (tags, ips, tools, zone).",
         "parameters": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}}},
     {"type": "function", "function": {
-        "name": "reachable", "description": "Can src reach dst (optionally on a port)? Returns yes/no + the path(s).",
+        "name": "reachable", "description": "Can src reach dst (optionally on a port)? Returns yes/no + the "
+                       "path(s). If truncated is true the path search hit its cap, so a false answer "
+                       "means 'no path was found within the search budget', not 'no path exists' -- say so.",
         "parameters": {"type": "object", "properties": {
             "src": {"type": "string"}, "dst": {"type": "string"}, "port": {"type": "integer"}},
             "required": ["src", "dst"]}}},
     {"type": "function", "function": {
-        "name": "find_paths", "description": "All paths from src to dst, with the tools each hop crosses.",
+        "name": "find_paths", "description": "All paths from src to dst, with the tools each hop crosses. "
+                       "If truncated is true the list is the first count paths found, not all of them.",
         "parameters": {"type": "object", "properties": {"src": {"type": "string"}, "dst": {"type": "string"}},
                        "required": ["src", "dst"]}}},
     {"type": "function", "function": {
-        "name": "effective_policy", "description": "What can actually reach this asset, and is it internet-exposed.",
+        "name": "effective_policy",
+        "description": "What can actually reach this asset, and is it internet-exposed. Returns every "
+                       "source with a witness path proving it, using the same reachability rule as "
+                       "`reachable`; witness_paths is capped at 10 (source_count is the true total).",
         "parameters": {"type": "object", "properties": {"asset": {"type": "string"}}, "required": ["asset"]}}},
     {"type": "function", "function": {
         "name": "risk_findings", "description": "The deterministic risk findings, optionally filtered by type/min_severity.",

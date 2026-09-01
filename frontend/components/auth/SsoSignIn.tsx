@@ -36,6 +36,10 @@ export function SsoSignIn({ callbackUrl = "/console", auto = false, label = "Con
       try {
         const r = await fetch("/sso/health", { cache: "no-store" });
         status = ((await r.json()) as { status?: string }).status ?? "waking";
+        // Deliberate discard: a probe that does not answer IS the "still waking"
+        // signal this loop polls for. `status` keeps its "waking" default and the
+        // deadline below is what ends the wait.
+        // eslint-disable-next-line no-restricted-syntax
       } catch {
         /* treat as waking */
       }

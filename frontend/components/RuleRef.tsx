@@ -1,8 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { ArrowRight } from "lucide-react";
-import { api } from "@/lib/api";
+import { AlertTriangle, ArrowRight } from "lucide-react";
+import { api, asApiError, type ApiError } from "@/lib/api";
 import { cn } from "./ui";
 
 function side(v: any): string {
@@ -21,18 +21,28 @@ function svc(r: any): string {
  *  Span-based (no <button>/<div>) so it can live inside clickable rows. */
 export function RuleRef({ refId, snapshot }: { refId: string; snapshot?: string }) {
   const [open, setOpen] = useState(false);
+  // undefined = not fetched yet, null = fetched and genuinely absent.
   const [rule, setRule] = useState<any | null>();
   const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<ApiError>();
 
-  const toggle = async (e: React.MouseEvent) => {
+  /** `catch { setRule(null) }` collapsed "the fetch failed" into `null`, and the
+   *  popover renders `null` as "Rule X is not in this snapshot." — a positive
+   *  factual claim about the snapshot's contents, printed by a request that
+   *  never learned anything about its contents. The two are kept apart. */
+  const fetchRule = async () => {
+    setLoading(true); setErr(undefined);
+    try { const r = await api.rule(refId, snapshot); setRule(r.rules?.[0] ?? null); }
+    catch (e) { setRule(undefined); setErr(asApiError(e)); }
+    finally { setLoading(false); }
+  };
+
+  const toggle = (e: React.MouseEvent) => {
     e.stopPropagation();
     const next = !open;
     setOpen(next);
-    if (next && rule === undefined) {
-      setLoading(true);
-      try { const r = await api.rule(refId, snapshot); setRule(r.rules?.[0] ?? null); }
-      catch { setRule(null); } finally { setLoading(false); }
-    }
+    // `rule === undefined` also covers a previous failure, so reopening retries.
+    if (next && rule === undefined && !loading) void fetchRule();
   };
 
   return (
@@ -47,6 +57,20 @@ export function RuleRef({ refId, snapshot }: { refId: string; snapshot?: string 
           <span className="popover absolute right-0 z-50 mt-1 block w-[300px] p-3 text-left">
             {loading ? (
               <span className="text-[12px] text-text3">loading…</span>
+            ) : err ? (
+              /* Span-based like the rest of this popover (see the component
+                 docstring): ErrorState/InlineError render a <div>, which cannot
+                 legally nest inside the <span> this component is built from. */
+              <span role="alert" className="block space-y-1">
+                <span className="flex items-center gap-1.5 text-[12px] font-bold text-sev-critical">
+                  <AlertTriangle size={12} className="shrink-0" /> Could not load rule {refId}
+                </span>
+                <span className="mono block break-words text-[11px] text-text3">
+                  {err.isNetwork ? "no response" : `HTTP ${err.status}`} · {err.detail}
+                </span>
+                <span role="button" tabIndex={0} onClick={(e) => { e.stopPropagation(); void fetchRule(); }}
+                  className="inline-block cursor-pointer text-[11px] font-bold underline">Retry</span>
+              </span>
             ) : rule ? (
               <span className="block space-y-1.5 text-[12px]">
                 <span className="flex flex-wrap items-center gap-2">

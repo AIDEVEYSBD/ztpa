@@ -8,16 +8,24 @@ memory for live reachability/simulation (identical data to the persisted snapsho
 
 from __future__ import annotations
 
+import contextlib
+import json
+import logging
+import os
 import sys
 import threading
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # backend root
 
-from fastapi import Depends, FastAPI, HTTPException  # noqa: E402
+from fastapi import Depends, FastAPI, HTTPException, Query, Request  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+from fastapi.responses import JSONResponse  # noqa: E402
 from psycopg.types.json import Jsonb  # noqa: E402
-from pydantic import BaseModel  # noqa: E402
+from pydantic import BaseModel, Field  # noqa: E402
+from starlette.exceptions import HTTPException as StarletteHTTPException  # noqa: E402
 
 from src import request_ctx, settings, tools_registry  # noqa: E402
 from src.advisory import authoring, campaign as campaign_mod, classify_change, entity_suggest, explain as explain_mod  # noqa: E402
@@ -35,35 +43,141 @@ from src.ids import det_id  # noqa: E402
 from src.models import ChangeRequest, RankedAction, RankedActions  # noqa: E402
 from src.persist import (  # noqa: E402
     accept_remediation_revision, cache_explanation, delete_asset_merge, ensure_change_request_status,
-    load_applied_changes, load_asset_merges, load_campaign_plan, load_remediation_thread, persist_asset_merge,
-    persist_campaign_plan, persist_change_decision, persist_engine_result, persist_ranked_actions,
-    persist_remediation_revision, persist_staged_change, reject_change_request, reset_change_workflow,
+    asset_rows, canonical_rule_rows, correlation_rows, finding_rows, graph_edge_rows,
+    graph_node_rows, load_applied_changes, load_asset_merges,
+    load_campaign_plan, load_remediation_thread, persist_asset_merge, persist_campaign_plan,
+    persist_change_decision, persist_engine_result, persist_ranked_actions, persist_remediation_revision,
+    persist_staged_change, reject_change_request, reset_change_workflow, resolved_object_rows,
+    snapshot_counts, snapshot_row,
 )
 
-app = FastAPI(title="Network Policy Reviewer", version="1.0")
+# --- structured logging ----------------------------------------------------
+# The audit's finding was "zero logging statements in ~6,500 LOC": every failure
+# that changed the answer was swallowed by `except Exception: pass`, so a user
+# reporting "the findings disappeared" left nothing to investigate with. One
+# stdlib JSON formatter (no new dependency) gives every line a request id, the
+# actor and the event name, which is what makes the swallowed paths below
+# observable instead of merely non-fatal.
+
+class _JsonFormatter(logging.Formatter):
+    """One JSON object per line: greppable in Render's log stream and parseable
+    by any collector, without pulling in structlog. Extra fields set via
+    `logger.warning(..., extra={...})` are merged in; the request id and actor
+    are read from request_ctx at format time (same context as the call site)."""
+
+    _SKIP = frozenset(logging.LogRecord("", 0, "", 0, "", (), None).__dict__) | {"message", "asctime", "taskName"}
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload: dict = {
+            "ts": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(timespec="milliseconds"),
+            "level": record.levelname,
+            "logger": record.name,
+            "msg": record.getMessage(),
+        }
+        rid = request_ctx.request_id()
+        if rid:
+            payload["request_id"] = rid
+        actor = request_ctx.current()
+        payload["role"] = actor.role
+        if actor.email:
+            payload["actor"] = actor.email
+        payload.update({k: v for k, v in record.__dict__.items() if k not in self._SKIP})
+        if record.exc_info:
+            payload["exc"] = self.formatException(record.exc_info)
+        return json.dumps(payload, default=str)
+
+
+log = logging.getLogger("npr.api")
+if not log.handlers:                       # idempotent: uvicorn reloads re-import this module
+    _handler = logging.StreamHandler(sys.stdout)
+    _handler.setFormatter(_JsonFormatter())
+    log.addHandler(_handler)
+    log.propagate = False                  # don't double-print through uvicorn's root handler
+log.setLevel(os.environ.get("NPR_LOG_LEVEL", "INFO").upper())
+
+
+@contextlib.asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    """Startup/shutdown. A lifespan handler rather than @app.on_event, which is
+    deprecated (and, with warnings-as-errors in pyproject.toml, fails the suite
+    on import). The body resolves _warm_engine at call time, so it can live where
+    it reads best -- next to engine()."""
+    _warm_engine()
+    yield
+
+
+app = FastAPI(title="Network Policy Reviewer", version="1.0", lifespan=_lifespan)
 app.add_middleware(
     CORSMiddleware, allow_origins=[settings.FRONTEND_ORIGIN, "http://localhost:3000"],
-    allow_methods=["*"], allow_headers=["*"],
+    allow_methods=["*"], allow_headers=["*"], expose_headers=["x-request-id"],
 )
 
 
 class _ActorMiddleware:
-    """Pure-ASGI middleware: read the proxy-injected role/email headers and stash
-    them in request_ctx so metric recording + per-role tool enforcement can
-    attribute work. Set in the async context before the (threadpooled) endpoint
-    runs, so anyio copies the value into the worker thread."""
+    """Pure-ASGI middleware: mint the request id, ENFORCE the proxy trust boundary,
+    then read the proxy-injected role/email headers and stash them in request_ctx
+    so metric recording + per-role tool enforcement can attribute work. Set in the
+    async context before the (threadpooled) endpoint runs, so anyio copies the
+    values into the worker thread.
+
+    The boundary: when NPR_PROXY_SECRET is configured, a request may only claim an
+    identity (`x-npr-*`) if it also presents the secret -- otherwise 401, and the
+    actor is never set from those headers. Unconfigured, the headers are trusted
+    exactly as before and /api/health reports `proxy_auth: false`. See
+    src/request_ctx.py for why this exists."""
 
     def __init__(self, app):
         self.app = app
 
     async def __call__(self, scope, receive, send):
-        if scope.get("type") == "http":
-            h = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
-            request_ctx.set_actor(h.get("x-npr-role"), h.get("x-npr-email"), h.get("x-npr-sub"))
-        await self.app(scope, receive, send)
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        h = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
+        # Reuse the proxy's id when it set one, so a single request has one id
+        # end to end; otherwise mint one.
+        rid = (h.get("x-request-id") or "").strip()[:64] or uuid.uuid4().hex
+        request_ctx.set_request_id(rid)
+        request_ctx.set_actor(None, None, None)   # reset: contextvars outlive a pooled worker
+
+        claims_identity = any(k.startswith(request_ctx.ACTOR_HEADER_PREFIX) for k in h)
+        if claims_identity and not request_ctx.verify_proxy_secret(h.get(request_ctx.PROXY_SECRET_HEADER)):
+            log.warning("rejected forged actor headers", extra={
+                "event": "proxy_auth_failed", "path": scope.get("path"),
+                "client": (scope.get("client") or ("-",))[0]})
+            response = JSONResponse(
+                status_code=401,
+                content={"detail": "invalid or missing proxy secret", "error": "invalid or missing proxy secret",
+                         "request_id": rid},
+                headers={"x-request-id": rid})
+            await response(scope, receive, send)
+            return
+        request_ctx.set_actor(h.get("x-npr-role"), h.get("x-npr-email"), h.get("x-npr-sub"))
+
+        async def _send(message):
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers") or [])
+                headers.append((b"x-request-id", rid.encode("latin-1")))
+                message["headers"] = headers
+            await send(message)
+
+        await self.app(scope, receive, _send)
 
 
 app.add_middleware(_ActorMiddleware)
+
+
+# --- authorization ---------------------------------------------------------
+# Three role gates, attached as FastAPI dependencies so they run BEFORE the
+# endpoint body (and before any DB work) and cannot be forgotten on a branch --
+# which is how nine mutating routes shipped with no guard at all.
+#
+#   approver (admin|analyst) -- governance: plan/submit/stage/reject a change.
+#     The same set that could already approve an escalation in stage_change.
+#   operator (admin)         -- changes the system of record itself: recompute
+#     and re-persist a snapshot, merge/unmerge identities, push to a data source.
+_APPROVER_ROLES = ("admin", "analyst")
+_OPERATOR_ROLES = ("admin",)
 
 
 def require_admin() -> None:
@@ -71,32 +185,139 @@ def require_admin() -> None:
         raise HTTPException(403, "admin only")
 
 
+def require_approver() -> None:
+    """Governance actions: proposing, approving, staging or declining a change."""
+    if request_ctx.role() not in _APPROVER_ROLES:
+        raise HTTPException(403, "approver role required (admin or analyst)")
+
+
+def require_operator() -> None:
+    """Actions that mutate the system of record or reach a data source."""
+    if request_ctx.role() not in _OPERATOR_ROLES:
+        raise HTTPException(403, "operator role required (admin)")
+
+
 def _require_capability(key: str) -> None:
-    """403 a disabled AI capability for the caller's role (fail-closed)."""
+    """403 a disabled AI capability for the caller's role (fail-closed).
+
+    NOT an authorization layer: an absent tool_settings row defaults to every
+    role, so this is a feature toggle. The require_* dependencies above are what
+    gate a mutating route."""
     if not tools_registry.is_enabled(key):
         raise HTTPException(403, f"capability '{key}' is disabled for role {request_ctx.role()}")
 
 _ENGINE: EngineResult | None = None
-_ACTIVE_SCENARIO = "demo"
+_DEFAULT_SCENARIO = "demo"
+_ACTIVE_SCENARIO = _DEFAULT_SCENARIO
+
+# What the last engine build could and could not do. Read by /api/health so a
+# degraded snapshot is reported rather than served as if it were authoritative.
+_ENGINE_STATE: dict = {
+    "inputs_ok": True,        # confirmed merges + pushed changes actually loaded
+    "inputs_error": None,     # why they didn't, if they didn't
+    "persisted": None,        # True/False/None(not attempted) for the active snapshot
+    "persist_error": None,
+    "build_error": None,      # the last engine BUILD that raised, if one did
+}
 
 
-def _load_merges() -> list[tuple[str, str]]:
-    """Human-confirmed asset merges, applied by the identity layer on every run."""
+def _run_label(scenario: str) -> str:
+    """The snapshot LABEL to run a scenario under.
+
+    `snapshot_id = snap_hash(label, content_fingerprint)`, so the label is half
+    the cache key of everything keyed on a snapshot -- the AI explanation cache
+    above all. scripts/precompute.py persists the default corpus under
+    settings.DEFAULT_SNAPSHOT_LABEL ("seed-demo") while this API used to pass the
+    raw scenario id ("demo"), so the two ends minted DIFFERENT snapshot ids over
+    byte-identical data and not one precomputed explanation was ever served.
+    Non-default scenarios keep their own label: they are a different corpus and
+    precompute never wrote them."""
+    return settings.DEFAULT_SNAPSHOT_LABEL if scenario == _DEFAULT_SCENARIO else scenario
+
+
+def _load_merges() -> tuple[list[tuple[str, str]], bool]:
+    """Human-confirmed asset merges, applied by the identity layer on every run.
+
+    Returns (merges, loaded_ok). The flag matters more than the list: `[]` used to
+    mean both "nothing confirmed" and "the DB was briefly unreachable", and the
+    caller then recomputed the whole snapshot WITHOUT the operator's merges and
+    persisted it as authoritative."""
     try:
         with get_conn() as conn, conn.cursor() as cur:
-            return load_asset_merges(cur)
-    except Exception:
-        return []
+            return load_asset_merges(cur), True
+    except Exception as exc:
+        log.warning("confirmed asset merges could not be loaded", exc_info=True,
+                    extra={"event": "load_merges_failed", "error": str(exc)})
+        return [], False
 
 
-def _load_applied() -> list[dict]:
+def _load_applied() -> tuple[list[dict], bool]:
     """Operator-accepted changes (pushed from staging), re-applied to the records
-    on every run so a recompute reflects the applied state."""
+    on every run so a recompute reflects the applied state. Returns
+    (changes, loaded_ok) for the same reason as _load_merges."""
     try:
         with get_conn() as conn, conn.cursor() as cur:
-            return load_applied_changes(cur)
-    except Exception:
-        return []
+            return load_applied_changes(cur), True
+    except Exception as exc:
+        log.warning("applied changes could not be loaded", exc_info=True,
+                    extra={"event": "load_applied_failed", "error": str(exc)})
+        return [], False
+
+
+def _run_engine(scenario: str) -> EngineResult:
+    """Run the deterministic engine for a scenario, recording on _ENGINE_STATE
+    whether its two DB-backed inputs actually loaded. Every rebuild goes through
+    here so no call site can quietly recompute on a truncated input set."""
+    merges, merges_ok = _load_merges()
+    applied, applied_ok = _load_applied()
+    missing = [n for n, ok in (("confirmed merges", merges_ok), ("applied changes", applied_ok)) if not ok]
+    _ENGINE_STATE.update(
+        inputs_ok=not missing,
+        inputs_error=("could not load " + " and ".join(missing) + " from the database") if missing else None,
+        persisted=None, persist_error=None,
+    )
+    if missing:
+        log.error("engine rebuilt on incomplete inputs", extra={
+            "event": "engine_inputs_degraded", "missing": missing, "scenario": scenario})
+    return run(label=_run_label(scenario), manual_merges=merges, applied_changes=applied)
+
+
+def _build_engine(scenario: str) -> EngineResult:
+    """`_run_engine` with a bad dataset turned into a diagnosable 4xx.
+
+    A normalizer or analyzer that raises on one malformed record used to leave two
+    marks. The request got an opaque 500 naming nothing the operator could act on;
+    and, because `switch_dataset` reassigns `_ACTIVE_SCENARIO` before it builds,
+    the FAILING scenario stayed active -- so every later lazy `engine()` rebuilt
+    the same broken dataset and 500'd forever. A permanently poisoned singleton
+    out of one bad input file.
+
+    So: the exception becomes a 422 that names the scenario and the error (the
+    dataset is caller-supplied content, not a server defect, and 'unprocessable
+    content' is exactly the claim), it is recorded on `_ENGINE_STATE` for
+    /api/health, and it is logged with the traceback -- the only place that is
+    kept. Every caller assigns the RESULT, so a failed rebuild leaves the previous
+    good `_ENGINE` in place and the app keeps serving the snapshot it has.
+    """
+    try:
+        built = _run_engine(scenario)
+    except Exception as exc:
+        detail = f"{type(exc).__name__}: {exc}"
+        _ENGINE_STATE["build_error"] = f"dataset '{scenario}' could not be analyzed ({detail})"
+        log.error("engine build failed", exc_info=True, extra={
+            "event": "engine_build_failed", "scenario": scenario, "error": detail})
+        raise HTTPException(422, f"the dataset '{scenario}' could not be analyzed: {detail}")
+    _ENGINE_STATE["build_error"] = None
+    return built
+
+
+def _require_trustworthy_inputs() -> None:
+    """Refuse to PERSIST a snapshot computed without the operator's confirmed
+    merges / pushed changes. Recomputing them away and writing that to the system
+    of record is the failure the audit called the worst one in the product:
+    identical pixels for "clean estate" and "the database blinked"."""
+    if not _ENGINE_STATE["inputs_ok"]:
+        raise HTTPException(503, f"refusing to persist a degraded snapshot: {_ENGINE_STATE['inputs_error']}")
 
 
 def engine() -> EngineResult:
@@ -105,17 +326,31 @@ def engine() -> EngineResult:
     if _ENGINE is None:
         try:
             write_scenario(_ACTIVE_SCENARIO)   # keep data/mock consistent with the active scenario
-        except Exception:
-            pass
-        _ENGINE = run(label=_ACTIVE_SCENARIO, manual_merges=_load_merges(), applied_changes=_load_applied())
+        except Exception as exc:
+            log.warning("scenario regeneration failed; using the data/mock files on disk",
+                        exc_info=True, extra={"event": "write_scenario_failed",
+                                              "scenario": _ACTIVE_SCENARIO, "error": str(exc)})
+        _ENGINE = _build_engine(_ACTIVE_SCENARIO)
+        if not _ENGINE_STATE["inputs_ok"]:
+            # Live-only degraded mode: serve the snapshot but never write it, so a
+            # transient DB error cannot overwrite the real one with a truncated
+            # recompute. /api/health reports the degradation.
+            _ENGINE_STATE.update(persisted=False, persist_error=_ENGINE_STATE["inputs_error"])
+            return _ENGINE
         try:
             with get_conn() as conn, conn.cursor() as cur:
                 row = fetch_one(cur, "SELECT snapshot_id FROM ztpa.snapshots WHERE snapshot_id=%s",
                                 [_ENGINE.snapshot_id])
                 if not row:
                     persist_engine_result(cur, _ENGINE)
-        except Exception:
-            pass  # DB optional for live-only ops
+            _ENGINE_STATE.update(persisted=True, persist_error=None)
+        except Exception as exc:
+            # DB optional for live-only ops -- but no longer SILENT: the snapshot
+            # being served is not in the system of record, and health says so.
+            _ENGINE_STATE.update(persisted=False, persist_error=str(exc))
+            log.error("snapshot could not be persisted; serving it live-only", exc_info=True,
+                      extra={"event": "persist_snapshot_failed", "snapshot_id": _ENGINE.snapshot_id,
+                             "error": str(exc)})
     return _ENGINE
 
 
@@ -132,45 +367,156 @@ def _finding(fid: str):
     return next((f for f in engine().findings if f.id == fid), None)
 
 
-@app.on_event("startup")
 def _warm_engine() -> None:
     """Build the deterministic engine in a background thread at boot, so the first
     finding a user opens doesn't pay the ~10s cold engine build on the request
     path. Daemon thread: never blocks startup, never crashes the server if the DB
-    is briefly unavailable (engine() already swallows DB errors)."""
+    is briefly unavailable (engine() degrades to live-only and records why)."""
     import threading
 
     def _go() -> None:
         try:
             engine()
-        except Exception:
-            pass  # a real request will retry the build lazily
+        except Exception as exc:
+            log.error("warm engine build failed; a real request will retry lazily",
+                      exc_info=True, extra={"event": "warm_engine_failed", "error": str(exc)})
 
     threading.Thread(target=_go, name="warm-engine", daemon=True).start()
 
 
+# --- error handling --------------------------------------------------------
+# Every error leaves the API with the request id that is also on the response
+# header and on every log line for that request, so a screenshot of a failure is
+# enough to find the trace. `detail` is preserved on HTTPException so the
+# frontend's typed ApiError keeps rendering the real message.
+
+@app.exception_handler(StarletteHTTPException)
+def _http_exception(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+    rid = request_ctx.request_id()
+    if exc.status_code >= 500:
+        log.error("request failed", extra={"event": "http_error", "status": exc.status_code,
+                                           "path": request.url.path, "detail": str(exc.detail)})
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail, "error": exc.detail, "request_id": rid},
+        headers=exc.headers,
+    )
+
+
+@app.exception_handler(Exception)
+def _unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
+    """Anything that isn't an HTTPException: log the traceback (the only place it
+    is ever recorded) and return the id, never the stack, to the caller."""
+    rid = request_ctx.request_id()
+    log.error("unhandled exception", exc_info=exc, extra={
+        "event": "unhandled_exception", "path": request.url.path, "method": request.method})
+    return JSONResponse(status_code=500,
+                        content={"detail": "internal server error", "error": "internal server error",
+                                 "request_id": rid})
+
+
 # --------------------------------------------------------------------------
+@app.get("/api/live")
+def live():
+    """Liveness ONLY: is this process running and serving? Deliberately touches
+    nothing else -- no DB, no engine -- so the platform restarts the container
+    only when the container is actually dead. /api/health is the readiness +
+    truth endpoint and returns 503 when the app cannot do its job; pointing a
+    liveness probe at that would restart-loop a healthy process whose database
+    is down."""
+    return {"status": "alive"}
+
+
 @app.get("/api/health")
-def health():
+def health() -> JSONResponse:
+    """Readiness + honesty. Returns 503 with status='degraded' when the DB is
+    unreachable, when the active snapshot is missing from the system of record,
+    or when the engine was rebuilt on inputs that failed to load -- the states in
+    which the dashboard would otherwise render a confident, empty, WRONG estate.
+
+    Payload is additive: `status`, `db`, `snapshot_id` and `ai` keep their
+    meanings for existing callers; `degraded_reasons`, `proxy_auth`, `snapshot`
+    and `request_id` are new."""
+    reasons: list[str] = []
+
     db_ok = False
     try:
         db_ok = ping()
-    except Exception:
-        pass
-    return {"status": "ok", "db": db_ok, "snapshot_id": sid(), "ai": provider_status()}
+    except Exception as exc:
+        log.warning("database ping failed", exc_info=True,
+                    extra={"event": "db_ping_failed", "error": str(exc)})
+    if not db_ok:
+        reasons.append("database unreachable")
+
+    snapshot_id: str | None = None
+    try:
+        snapshot_id = sid()
+    except Exception as exc:
+        reasons.append(f"deterministic engine unavailable: {exc}")
+        log.error("engine unavailable on health check", exc_info=True,
+                  extra={"event": "engine_unavailable", "error": str(exc)})
+
+    # Is the snapshot we are SERVING actually the one in the system of record?
+    snapshot_persisted: bool | None = None
+    if db_ok and snapshot_id:
+        try:
+            with get_conn() as conn, conn.cursor() as cur:
+                snapshot_persisted = bool(fetch_one(
+                    cur, "SELECT snapshot_id FROM ztpa.snapshots WHERE snapshot_id=%s", [snapshot_id]))
+        except Exception as exc:
+            log.warning("snapshot presence check failed", exc_info=True,
+                        extra={"event": "snapshot_check_failed", "error": str(exc)})
+        if snapshot_persisted is False:
+            reasons.append("active snapshot is not persisted in the database")
+    # A build that raised while a PREVIOUS good snapshot is still being served is
+    # otherwise invisible: sid() succeeds, every screen renders, and the estate on
+    # screen is silently stale. (When the build failure is total, sid() raised
+    # above and reported itself -- hence the snapshot_id guard, so one failure is
+    # not listed twice.)
+    if snapshot_id and _ENGINE_STATE.get("build_error"):
+        reasons.append(f"the last engine rebuild failed: {_ENGINE_STATE['build_error']}")
+    if _ENGINE_STATE["inputs_error"]:
+        reasons.append(_ENGINE_STATE["inputs_error"])
+    if _ENGINE_STATE["persist_error"]:
+        reasons.append(f"snapshot persistence failed: {_ENGINE_STATE['persist_error']}")
+
+    try:
+        ai = provider_status()
+    except Exception as exc:                                  # never let the status page 500
+        ai = {"error": str(exc)}
+        reasons.append(f"AI provider status unavailable: {exc}")
+
+    payload = {
+        "status": "ok" if not reasons else "degraded",
+        "db": db_ok,
+        "snapshot_id": snapshot_id,
+        "ai": ai,
+        "scenario": _ACTIVE_SCENARIO,
+        "snapshot": {"persisted": snapshot_persisted, "inputs_ok": _ENGINE_STATE["inputs_ok"]},
+        # False = the x-npr-* identity headers are trusted with no shared secret.
+        "proxy_auth": request_ctx.proxy_auth_enabled(),
+        "degraded_reasons": reasons,
+        "request_id": request_ctx.request_id(),
+    }
+    if reasons:
+        log.warning("health degraded", extra={"event": "health_degraded", "reasons": reasons})
+    return JSONResponse(payload, status_code=200 if not reasons else 503)
 
 
 @app.post("/api/recompute")
-def recompute():
+def recompute(_: None = Depends(require_operator)):
     """Re-run the deterministic engine LIVE and reset the AI caches, so the next
     rank/explain/classify recompute live too. Lets a demo show computation happening
     on stage. Deterministic: same seed -> same snapshot id and rows."""
     global _ENGINE
     try:
         write_scenario(_ACTIVE_SCENARIO)   # regenerate the active scenario so data/mock stays consistent
-    except Exception:
-        pass
-    _ENGINE = run(label=_ACTIVE_SCENARIO, manual_merges=_load_merges(), applied_changes=_load_applied())
+    except Exception as exc:
+        log.warning("scenario regeneration failed; recomputing from the data/mock files on disk",
+                    exc_info=True, extra={"event": "write_scenario_failed",
+                                          "scenario": _ACTIVE_SCENARIO, "error": str(exc)})
+    _ENGINE = _build_engine(_ACTIVE_SCENARIO)
+    _require_trustworthy_inputs()
     snap = _ENGINE.snapshot_id
     with get_conn() as conn, conn.cursor() as cur:
         summary = persist_engine_result(cur, _ENGINE)
@@ -189,7 +535,10 @@ def scenarios():
 
 class DatasetBody(BaseModel):
     scenario: str
-    n: int = 500
+    # Bounded: `n` drives a synchronous scenario write + full engine rebuild, so an
+    # unbounded value is a one-request denial of service for anyone who can reach
+    # the API. 2000 synthetic assets is already past what the demo needs.
+    n: int = Field(500, ge=1, le=2000)
 
 
 @app.post("/api/admin/dataset")
@@ -200,8 +549,15 @@ def switch_dataset(body: DatasetBody, _: None = Depends(require_admin)):
         write_scenario(body.scenario, body.n)
     except ValueError as e:
         raise HTTPException(400, str(e))
-    _ACTIVE_SCENARIO = body.scenario
-    _ENGINE = run(label=body.scenario, manual_merges=_load_merges(), applied_changes=_load_applied())
+    # Build FIRST, rebind after. Assigning _ACTIVE_SCENARIO up front meant a
+    # scenario that fails to analyze became the active one anyway, and every
+    # subsequent request rebuilt it: one bad dataset switch bricked the process.
+    # (data/mock on disk now holds the new scenario's files, but the next
+    # engine()/recompute calls write_scenario(_ACTIVE_SCENARIO) first, which
+    # regenerates the one still active -- so the failed switch leaves no residue.)
+    built = _build_engine(body.scenario)
+    _ACTIVE_SCENARIO, _ENGINE = body.scenario, built
+    _require_trustworthy_inputs()
     snap = _ENGINE.snapshot_id
     with get_conn() as conn, conn.cursor() as cur:
         summary = persist_engine_result(cur, _ENGINE)
@@ -213,38 +569,160 @@ def switch_dataset(body: DatasetBody, _: None = Depends(require_admin)):
     return {"ok": True, "scenario": body.scenario, "summary": summary}
 
 
+# --- degraded reads: the engine answers for its own snapshot ---------------
+# Every dashboard read below is served from Postgres, the system of record.
+# With the database unreachable -- the state this repo ships in, and the state
+# /api/health already reports as `degraded` -- each of them raised
+# `RuntimeError: DATABASE_URL is not set` out of get_conn and answered 500. Five
+# of the console's six feeds failed at once, so a backend that was running,
+# answering, and holding a fully computed snapshot rendered as five red panels:
+# DEGRADED made pixel-identical to DEAD, which is the same lie as EMPTY made
+# pixel-identical to FAILED and is filed against this codebase for the same
+# reason.
+#
+# The data is not gone. The deterministic engine holds the ACTIVE snapshot in
+# memory -- the same snapshot_id /api/health reports -- and `src.persist`
+# projects it into the exact rows these queries SELECT. So a failed persisted
+# read falls back to that projection and SAYS SO in the payload: `served_from`
+# names the source and `degraded_reason` says why. That disclosure is the whole
+# difference between this and the empty-payload lie: the caller is told which
+# source answered and is never handed a fabricated emptiness.
+#
+# Three limits, all deliberate:
+#   * only the ACTIVE snapshot is in memory. A read of a HISTORICAL one has
+#     nothing to fall back TO, so it stays an error that names the store --
+#     never an empty answer that reads as "that snapshot held nothing".
+#   * an HTTPException raised inside the block (the 422 from an unanalyzable
+#     dataset) is re-raised untouched: it is an answer, not a database failure.
+#   * only the FETCH is wrapped, never the shaping that follows it, so a bug in
+#     our own post-processing still surfaces as a 500 instead of being masked by
+#     a fallback.
+
+_DB_SOURCE = "database"            # read from the persisted snapshot
+_MEMORY_SOURCE = "engine_memory"   # computed by the running engine, not persisted
+_NO_SOURCE = "unavailable"         # neither could answer; the payload is empty ON PURPOSE
+
+
+def _memory_fallback(t: str, resource: str, exc: Exception) -> tuple[EngineResult, dict]:
+    """The in-memory engine plus the provenance block to merge into the payload.
+
+    Raises 503 when memory cannot honestly answer for snapshot `t` -- a
+    historical snapshot exists only in the database, and inventing the live one
+    in its place would answer a question nobody asked."""
+    log.error("persisted read failed; falling back to the in-memory engine", exc_info=exc,
+              extra={"event": "degraded_read", "resource": resource, "snapshot_id": t,
+                     "error": str(exc)})
+    live = engine()
+    if t != live.snapshot_id:
+        raise HTTPException(503, (
+            f"{resource} for snapshot {t} exists only in the snapshot database, which is "
+            f"unreachable ({exc}). The running engine holds {live.snapshot_id} and nothing else, "
+            f"so this is unknown rather than empty."))
+    reason = (f"the snapshot database is unreachable ({exc}), so {resource} could not be read from "
+              f"the persisted snapshot; the running engine computed it in memory instead")
+    if not _ENGINE_STATE["inputs_ok"]:
+        # The same outage that broke the read also robbed the rebuild of the
+        # operator's confirmed merges. Say both, or the numbers on screen look
+        # better sourced than they are.
+        reason += f"; {_ENGINE_STATE['inputs_error']}"
+    return live, {"served_from": _MEMORY_SOURCE, "degraded_reason": reason}
+
+
+def _narrow(rows: list[dict], cols: tuple[str, ...]) -> list[dict]:
+    """Project full table rows down to the columns a query SELECTs. A wider dict
+    out of the fallback is a contract drift only the degraded path would show."""
+    return [{c: row[c] for c in cols} for row in rows]
+
+
+_RULE_COLS = ("source_tool", "source_device", "raw_rule_id", "rule_order", "action",
+              "src_kind", "src_value", "dst_kind", "dst_value", "protocol", "ports", "tags")
+
+
 @app.get("/api/rule/{ref}")
 def rule_detail(ref: str, snapshot: str | None = None):
     """A single canonical rule by its raw ref (for click-through rule links)."""
     t = view_sid(snapshot)
-    with get_conn() as conn, conn.cursor() as cur:
-        rows = fetch_all(cur, "SELECT source_tool,source_device,raw_rule_id,rule_order,action,src_kind,src_value,dst_kind,dst_value,protocol,ports,tags FROM ztpa.canonical_rules WHERE snapshot_id=%s AND raw_rule_id=%s", [t, ref])
-    return {"ref": ref, "rules": rows}
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            rows = fetch_all(cur, "SELECT source_tool,source_device,raw_rule_id,rule_order,action,src_kind,src_value,dst_kind,dst_value,protocol,ports,tags FROM ztpa.canonical_rules WHERE snapshot_id=%s AND raw_rule_id=%s", [t, ref])
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # RuleRef prints "Rule X is not in this snapshot" for an empty list -- a
+        # positive claim about the rulebase -- so this one must never degrade to [].
+        live, provenance = _memory_fallback(t, f"rule {ref}", exc)
+        rows = _narrow(sorted((r for r in canonical_rule_rows(live) if r["raw_rule_id"] == ref),
+                              key=lambda r: (r["source_tool"], r["rule_order"])), _RULE_COLS)
+        return {"ref": ref, "rules": rows, **provenance}
+    return {"ref": ref, "rules": rows, "served_from": _DB_SOURCE}
+
+
+# The ingest inspector's rule query: the same columns as _RULE_COLS, but keyed by
+# rule_uid instead of naming the device.
+_INGEST_RULE_COLS = ("rule_uid", "source_tool", "raw_rule_id", "rule_order", "action",
+                     "src_kind", "src_value", "dst_kind", "dst_value", "protocol", "ports", "tags")
+_RESOLVED_COLS = ("source_tool", "object_name", "object_kind", "resolved", "is_dynamic")
 
 
 @app.get("/api/ingest")
 def ingest(snapshot: str | None = None):
     """What actually got ingested for the snapshot (admin inspector)."""
     t = view_sid(snapshot)
-    with get_conn() as conn, conn.cursor() as cur:
-        sources = fetch_all(cur, "SELECT DISTINCT source_tool AS tool, source_device AS device FROM ztpa.canonical_rules WHERE snapshot_id=%s ORDER BY source_tool", [t])
-        resolved = fetch_all(cur, "SELECT source_tool,object_name,object_kind,resolved,is_dynamic FROM ztpa.resolved_objects WHERE snapshot_id=%s ORDER BY source_tool,object_name", [t])
-        rules = fetch_all(cur, "SELECT rule_uid,source_tool,raw_rule_id,rule_order,action,src_kind,src_value,dst_kind,dst_value,protocol,ports,tags FROM ztpa.canonical_rules WHERE snapshot_id=%s ORDER BY source_tool,rule_order", [t])
-    return {"active_scenario": _ACTIVE_SCENARIO, "sources": sources, "resolved_objects": resolved, "canonical_rules": rules}
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            sources = fetch_all(cur, "SELECT DISTINCT source_tool AS tool, source_device AS device FROM ztpa.canonical_rules WHERE snapshot_id=%s ORDER BY source_tool", [t])
+            resolved = fetch_all(cur, "SELECT source_tool,object_name,object_kind,resolved,is_dynamic FROM ztpa.resolved_objects WHERE snapshot_id=%s ORDER BY source_tool,object_name", [t])
+            rules = fetch_all(cur, "SELECT rule_uid,source_tool,raw_rule_id,rule_order,action,src_kind,src_value,dst_kind,dst_value,protocol,ports,tags FROM ztpa.canonical_rules WHERE snapshot_id=%s ORDER BY source_tool,rule_order", [t])
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # "Nothing was ingested" is the single most misleading thing this screen
+        # could say, and it is what an empty degraded answer would render as.
+        live, provenance = _memory_fallback(t, "the ingest inspector", exc)
+        rule_list = canonical_rule_rows(live)
+        sources = [{"tool": tool, "device": device} for tool, device in
+                   sorted({(r["source_tool"], r["source_device"]) for r in rule_list})]
+        resolved = _narrow(sorted(resolved_object_rows(live),
+                                  key=lambda r: (r["source_tool"], r["object_name"])), _RESOLVED_COLS)
+        rules = _narrow(sorted(rule_list, key=lambda r: (r["source_tool"], r["rule_order"])),
+                        _INGEST_RULE_COLS)
+        return {"active_scenario": _ACTIVE_SCENARIO, "sources": sources,
+                "resolved_objects": resolved, "canonical_rules": rules, **provenance}
+    return {"active_scenario": _ACTIVE_SCENARIO, "sources": sources, "resolved_objects": resolved,
+            "canonical_rules": rules, "served_from": _DB_SOURCE}
 
 
 @app.get("/api/snapshots")
 def snapshots_list():
-    with get_conn() as conn, conn.cursor() as cur:
-        rows = fetch_all(cur, """
-            SELECT s.snapshot_id, s.label, s.status, s.created_at,
-              (SELECT count(*) FROM ztpa.assets a WHERE a.snapshot_id=s.snapshot_id) AS assets,
-              (SELECT count(*) FROM ztpa.canonical_rules r WHERE r.snapshot_id=s.snapshot_id) AS rules,
-              (SELECT count(*) FROM ztpa.findings f WHERE f.snapshot_id=s.snapshot_id) AS findings,
-              (SELECT count(*) FROM ztpa.findings f WHERE f.snapshot_id=s.snapshot_id AND f.type='cross_tool_path') AS paths,
-              (SELECT count(*) FROM ztpa.findings f WHERE f.snapshot_id=s.snapshot_id AND f.severity_band='critical') AS critical
-            FROM ztpa.snapshots s ORDER BY s.created_at DESC""")
-    return {"snapshots": rows, "active": sid()}
+    """The timeline of PERSISTED runs -- the one read with no fallback worth
+    having, because a history of snapshots written to the system of record does
+    not exist when there is no system of record.
+
+    So it answers 200 with an empty list rather than 500 (a dead feed would drag
+    the whole console down with it over the one thing that is genuinely absent),
+    and `served_from: "unavailable"` + `degraded_reason` say that the list is
+    UNKNOWN, not empty. Rendering it as "no snapshots yet" would be the exact
+    lie the rest of this file exists to prevent, so the UI renders the reason."""
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            rows = fetch_all(cur, """
+                SELECT s.snapshot_id, s.label, s.status, s.created_at,
+                  (SELECT count(*) FROM ztpa.assets a WHERE a.snapshot_id=s.snapshot_id) AS assets,
+                  (SELECT count(*) FROM ztpa.canonical_rules r WHERE r.snapshot_id=s.snapshot_id) AS rules,
+                  (SELECT count(*) FROM ztpa.findings f WHERE f.snapshot_id=s.snapshot_id) AS findings,
+                  (SELECT count(*) FROM ztpa.findings f WHERE f.snapshot_id=s.snapshot_id AND f.type='cross_tool_path') AS paths,
+                  (SELECT count(*) FROM ztpa.findings f WHERE f.snapshot_id=s.snapshot_id AND f.severity_band='critical') AS critical
+                FROM ztpa.snapshots s ORDER BY s.created_at DESC""")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.error("the snapshot timeline could not be read", exc_info=exc,
+                  extra={"event": "degraded_read", "resource": "the snapshot timeline",
+                         "error": str(exc)})
+        return {"snapshots": [], "active": sid(), "served_from": _NO_SOURCE,
+                "degraded_reason": (f"the snapshot database is unreachable ({exc}), so the history of "
+                                    f"persisted runs could not be read. This list is unknown, not empty.")}
+    return {"snapshots": rows, "active": sid(), "served_from": _DB_SOURCE}
 
 
 @app.delete("/api/snapshots/{snapshot_id}")
@@ -260,22 +738,38 @@ def delete_snapshot(snapshot_id: str, _: None = Depends(require_admin)):
 @app.get("/api/snapshot")
 def snapshot_meta(snapshot: str | None = None):
     t = view_sid(snapshot)
-    with get_conn() as conn, conn.cursor() as cur:
-        snap = fetch_one(cur, "SELECT * FROM ztpa.snapshots WHERE snapshot_id=%s", [t])
-        counts = {}
-        for tbl in ("assets", "canonical_rules", "graph_nodes", "graph_edges",
-                    "findings", "resolved_objects", "asset_correlations", "ranked_actions"):
-            counts[tbl] = fetch_one(cur, f"SELECT count(*) n FROM ztpa.{tbl} WHERE snapshot_id=%s", [t])["n"]
-    return {"snapshot": snap, "counts": counts, "viewing": t, "active": sid()}
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            snap = fetch_one(cur, "SELECT * FROM ztpa.snapshots WHERE snapshot_id=%s", [t])
+            counts = {}
+            for tbl in ("assets", "canonical_rules", "graph_nodes", "graph_edges",
+                        "findings", "resolved_objects", "asset_correlations", "ranked_actions"):
+                counts[tbl] = fetch_one(cur, f"SELECT count(*) n FROM ztpa.{tbl} WHERE snapshot_id=%s", [t])["n"]
+    except HTTPException:
+        raise
+    except Exception as exc:
+        live, provenance = _memory_fallback(t, "the snapshot summary", exc)
+        # `created_at` is a database default, so the projection cannot know it --
+        # null rather than a fabricated now(), which would also break determinism.
+        return {"snapshot": {**snapshot_row(live), "created_at": None},
+                "counts": snapshot_counts(live), "viewing": t, "active": live.snapshot_id,
+                **provenance}
+    return {"snapshot": snap, "counts": counts, "viewing": t, "active": sid(), "served_from": _DB_SOURCE}
 
 
-@app.get("/api/graph")
-def graph(snapshot: str | None = None):
-    t = view_sid(snapshot)
-    with get_conn() as conn, conn.cursor() as cur:
-        nodes = fetch_all(cur, "SELECT node_id,kind,label,tags,ip_set FROM ztpa.graph_nodes WHERE snapshot_id=%s", [t])
-        edges = fetch_all(cur, "SELECT src_node,dst_node,source_tool,ports,l7_app,rule_uid FROM ztpa.graph_edges WHERE snapshot_id=%s", [t])
-        ct = fetch_all(cur, "SELECT signals FROM ztpa.findings WHERE snapshot_id=%s AND type='cross_tool_path' ORDER BY finding_id", [t])
+# The node/edge column lists the two graph queries SELECT, named once so the
+# in-memory projection below narrows to exactly the same shape the database
+# would have returned -- a wider dict from the fallback is a contract drift the
+# only exercised path would never catch.
+_GRAPH_NODE_COLS = ("node_id", "kind", "label", "tags", "ip_set")
+_GRAPH_EDGE_COLS = ("src_node", "dst_node", "source_tool", "ports", "l7_app", "rule_uid")
+
+
+def _graph_payload(nodes: list[dict], edges: list[dict], cross_rows: list[dict]) -> dict:
+    """Shape graph rows into the console's payload: one edge per (src,dst) pair
+    with its tools/services/apps merged. Lifted out of the route so the persisted
+    rows and the in-memory projection are shaped by the same code, not by two
+    copies that can disagree about what an edge is."""
     for n in nodes:
         n["zone"] = zone_of(n["node_id"], n.get("tags") or [])
     grouped: dict[tuple, dict] = {}
@@ -293,19 +787,58 @@ def graph(snapshot: str | None = None):
             g["services"].add("any")
     edge_list = [{"src": v["src"], "dst": v["dst"], "tools": sorted(v["tools"]),
                   "services": sorted(v["services"]), "apps": sorted(v["apps"])} for v in grouped.values()]
-    cross = [r["signals"] for r in ct]
+    cross = [r["signals"] for r in cross_rows]
     highlight = cross[0].get("path") if cross else []
     return {"nodes": nodes, "edges": edge_list, "highlight_path": highlight, "cross_tool_paths": cross}
 
 
+@app.get("/api/graph")
+def graph(snapshot: str | None = None):
+    t = view_sid(snapshot)
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            nodes = fetch_all(cur, "SELECT node_id,kind,label,tags,ip_set FROM ztpa.graph_nodes WHERE snapshot_id=%s", [t])
+            edges = fetch_all(cur, "SELECT src_node,dst_node,source_tool,ports,l7_app,rule_uid FROM ztpa.graph_edges WHERE snapshot_id=%s", [t])
+            ct = fetch_all(cur, "SELECT signals FROM ztpa.findings WHERE snapshot_id=%s AND type='cross_tool_path' ORDER BY finding_id", [t])
+        provenance = {"served_from": _DB_SOURCE}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        live, provenance = _memory_fallback(t, "the reachability graph", exc)
+        nodes = _narrow(graph_node_rows(live), _GRAPH_NODE_COLS)
+        edges = _narrow(graph_edge_rows(live), _GRAPH_EDGE_COLS)
+        # ORDER BY finding_id, explicitly: the highlighted path is cross[0], so a
+        # different order here would highlight a different chain than the DB read.
+        ct = sorted((row for row in finding_rows(live) if row["type"] == "cross_tool_path"),
+                    key=lambda row: row["finding_id"])
+    return {**_graph_payload(nodes, edges, ct), **provenance}
+
+
+_FINDING_COLS = ("finding_id", "type", "severity", "severity_band", "forced_critical",
+                 "signals", "involved", "raw_refs", "source_tools", "explanation")
+
+
 @app.get("/api/findings")
 def findings(snapshot: str | None = None):
-    with get_conn() as conn, conn.cursor() as cur:
-        rows = fetch_all(cur, """
-            SELECT finding_id,type,severity,severity_band,forced_critical,signals,involved,raw_refs,
-                   source_tools,explanation FROM ztpa.findings WHERE snapshot_id=%s
-            ORDER BY forced_critical DESC, severity DESC, type""", [view_sid(snapshot)])
-    return {"findings": rows}
+    t = view_sid(snapshot)
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            rows = fetch_all(cur, """
+                SELECT finding_id,type,severity,severity_band,forced_critical,signals,involved,raw_refs,
+                       source_tools,explanation FROM ztpa.findings WHERE snapshot_id=%s
+                ORDER BY forced_critical DESC, severity DESC, type""", [t])
+    except HTTPException:
+        raise
+    except Exception as exc:
+        live, provenance = _memory_fallback(t, "findings", exc)
+        # The SQL's ORDER BY, plus finding_id as the tiebreak Postgres leaves to
+        # the planner -- this API's answer has to be byte-stable, so nothing may
+        # be left to an arbitrary order.
+        rows = sorted(_narrow(finding_rows(live), _FINDING_COLS),
+                      key=lambda row: (not row["forced_critical"], -row["severity"],
+                                       row["type"], row["finding_id"]))
+        return {"findings": rows, **provenance}
+    return {"findings": rows, "served_from": _DB_SOURCE}
 
 
 @app.get("/api/findings/{fid}")
@@ -363,7 +896,12 @@ def explain_finding(fid: str):
 
 
 @app.post("/api/findings/{fid}/remediate")
-def remediate_finding(fid: str):
+def remediate_finding(fid: str, _: None = Depends(require_approver)):
+    """Draft a fix for a finding. Guarded, for two independent reasons: it appends
+    a row to `remediation_revisions` -- a GOVERNANCE table (src/db.py), the thread
+    an approver later reads and accepts -- and it spends model tokens. Proposing a
+    change to the estate is analyst work; a viewer reads the posture, and a viewer
+    is the role an auditor is given."""
     _require_capability("remediate")
     f = _finding(fid)
     if not f:
@@ -382,9 +920,12 @@ class RefineBody(BaseModel):
 
 
 @app.post("/api/findings/{fid}/remediate/refine")
-def remediate_refine(fid: str, body: RefineBody):
+def remediate_refine(fid: str, body: RefineBody, _: None = Depends(require_approver)):
     """Iterate on a remediation: fold the reviewer's comment into a revised draft,
-    re-validate it deterministically, and append it to the finding's thread."""
+    re-validate it deterministically, and append it to the finding's thread.
+
+    Same guard as the draft it revises -- it appends to the same governance thread
+    and spends the same tokens."""
     _require_capability("remediate")
     f = _finding(fid)
     if not f:
@@ -416,7 +957,7 @@ def campaign_get():
 
 
 @app.post("/api/campaign/plan")
-def campaign_plan(body: CampaignBody):
+def campaign_plan(body: CampaignBody, _: None = Depends(require_approver)):
     """Plan + PROVE a worst-first remediation campaign across the whole snapshot:
     the agent drafts a fix for the worst open finding, the engine re-simulates on the
     cumulative state, and it repeats until the critical count is driven to zero (or a
@@ -441,7 +982,7 @@ class CampaignSubmitBody(BaseModel):
 
 
 @app.post("/api/campaign/submit")
-def campaign_submit(body: CampaignSubmitBody):
+def campaign_submit(body: CampaignSubmitBody, _: None = Depends(require_approver)):
     """Send every proven fix in the persisted campaign to the Change Gate. Each
     applied step becomes its own change request, re-evaluated and ruled on by the
     gate individually (so the audit trail and staging/push flow are unchanged);
@@ -476,31 +1017,58 @@ def campaign_submit(body: CampaignSubmitBody):
 @app.get("/api/actions")
 def actions(snapshot: str | None = None):
     t = view_sid(snapshot)
-    with get_conn() as conn, conn.cursor() as cur:
-        rows = fetch_all(cur, "SELECT action_id,title,finding_ids,priority,rationale FROM ztpa.ranked_actions WHERE snapshot_id=%s ORDER BY priority", [t])
-        if rows or t != sid():
-            return {"actions": rows, "ranked_by": "cache"}   # historical: show cache only
-        ranked = rank_mod.rank(engine().findings)
-        persist_ranked_actions(cur, t, ranked)
-        rows = fetch_all(cur, "SELECT action_id,title,finding_ids,priority,rationale FROM ztpa.ranked_actions WHERE snapshot_id=%s ORDER BY priority", [t])
-    return {"actions": rows, "ranked_by": ranked.ranked_by}
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            rows = fetch_all(cur, "SELECT action_id,title,finding_ids,priority,rationale FROM ztpa.ranked_actions WHERE snapshot_id=%s ORDER BY priority", [t])
+            if rows or t != sid():
+                return {"actions": rows, "ranked_by": "cache", "served_from": _DB_SOURCE}   # historical: show cache only
+            ranked = rank_mod.rank(engine().findings)
+            persist_ranked_actions(cur, t, ranked)
+            rows = fetch_all(cur, "SELECT action_id,title,finding_ids,priority,rationale FROM ztpa.ranked_actions WHERE snapshot_id=%s ORDER BY priority", [t])
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # Ranking needs findings, not the database -- the cache is an
+        # optimisation, so losing it costs a recompute, not the answer.
+        live, provenance = _memory_fallback(t, "prioritized actions", exc)
+        ranked = rank_mod.rank(live.findings)
+        rows = sorted(({"action_id": a.action_id, "title": a.title, "finding_ids": list(a.finding_ids),
+                        "priority": a.priority, "rationale": a.rationale} for a in ranked.actions),
+                      key=lambda row: (row["priority"], row["action_id"]))
+        return {"actions": rows, "ranked_by": ranked.ranked_by, **provenance}
+    return {"actions": rows, "ranked_by": ranked.ranked_by, "served_from": _DB_SOURCE}
 
 
 @app.post("/api/actions/recompute")
-def recompute_actions():
+def recompute_actions(_: None = Depends(require_operator)):
     ranked = rank_mod.rank(engine().findings)
     with get_conn() as conn, conn.cursor() as cur:
         persist_ranked_actions(cur, sid(), ranked)
     return {"actions": [a.model_dump() for a in ranked.actions], "ranked_by": ranked.ranked_by}
 
 
+_ASSET_COLS = ("asset_id", "asset_key", "kind", "context", "identifiers", "ip_set", "tags", "source_tools")
+_CORRELATION_COLS = ("asset_id", "match_key", "confidence", "evidence")
+
+
 @app.get("/api/assets")
 def assets(snapshot: str | None = None):
     t = view_sid(snapshot)
-    with get_conn() as conn, conn.cursor() as cur:
-        a = fetch_all(cur, "SELECT asset_id,asset_key,kind,context,identifiers,ip_set,tags,source_tools FROM ztpa.assets WHERE snapshot_id=%s ORDER BY asset_key", [t])
-        c = fetch_all(cur, "SELECT asset_id,match_key,confidence,evidence FROM ztpa.asset_correlations WHERE snapshot_id=%s", [t])
-    return {"assets": a, "correlations": c}
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            a = fetch_all(cur, "SELECT asset_id,asset_key,kind,context,identifiers,ip_set,tags,source_tools FROM ztpa.assets WHERE snapshot_id=%s ORDER BY asset_key", [t])
+            c = fetch_all(cur, "SELECT asset_id,match_key,confidence,evidence FROM ztpa.asset_correlations WHERE snapshot_id=%s", [t])
+    except HTTPException:
+        raise
+    except Exception as exc:
+        live, provenance = _memory_fallback(t, "the asset inventory", exc)
+        a = _narrow(sorted(asset_rows(live), key=lambda r: r["asset_key"]), _ASSET_COLS)
+        # The correlation query has no ORDER BY; this answer still has to be
+        # byte-stable, so the tiebreak Postgres leaves to the planner is explicit.
+        c = _narrow(sorted(correlation_rows(live), key=lambda r: (r["asset_id"], r["match_key"], r["id"])),
+                    _CORRELATION_COLS)
+        return {"assets": a, "correlations": c, **provenance}
+    return {"assets": a, "correlations": c, "served_from": _DB_SOURCE}
 
 
 @app.get("/api/assets/merge-suggestions")
@@ -518,7 +1086,8 @@ def _apply_merges_and_persist(action: str, a: str, b: str) -> dict:
     """Re-resolve identities with the current confirmed merges, then re-persist the
     snapshot (delete_snapshot_children + reinsert) so DB-backed reads reflect it."""
     global _ENGINE
-    _ENGINE = run(label=_ACTIVE_SCENARIO, manual_merges=_load_merges(), applied_changes=_load_applied())
+    _ENGINE = _build_engine(_ACTIVE_SCENARIO)
+    _require_trustworthy_inputs()
     snap = _ENGINE.snapshot_id
     with get_conn() as conn, conn.cursor() as cur:
         persist_engine_result(cur, _ENGINE)
@@ -529,7 +1098,7 @@ def _apply_merges_and_persist(action: str, a: str, b: str) -> dict:
 
 
 @app.post("/api/assets/merge")
-def confirm_merge(body: MergeBody):
+def confirm_merge(body: MergeBody, _: None = Depends(require_operator)):
     """Human-confirm that two suggested duplicates are the same logical asset. The
     decision is durable; the identity layer unifies them on every run from now on."""
     if not body.a or not body.b or body.a == body.b:
@@ -541,7 +1110,7 @@ def confirm_merge(body: MergeBody):
 
 
 @app.post("/api/assets/unmerge")
-def undo_merge(body: MergeBody):
+def undo_merge(body: MergeBody, _: None = Depends(require_operator)):
     """Reverse a previously confirmed merge (the assets split back apart)."""
     with get_conn() as conn, conn.cursor() as cur:
         delete_asset_merge(cur, body.a, body.b)
@@ -574,24 +1143,40 @@ class ClassifyBody(BaseModel):
 
 
 @app.post("/api/change/classify")
-def classify(body: ClassifyBody):
+def classify(body: ClassifyBody, _: None = Depends(require_approver)):
+    """Evaluate a proposed change and rule on it.
+
+    Guarded as an approver action. It was exempted as "advisory" and it is not:
+    every call persists a `change_requests` row and a `change_decisions` row (see
+    the persist_change_decision below), both GOVERNANCE tables -- so an
+    unauthenticated viewer could write into the compliance trail the product's
+    whole story rests on, and spend model tokens doing it. Evaluating a proposed
+    change is analyst work; reading the posture is viewer work."""
     _require_capability("classify")
     e = engine()
     if body.request_id and body.request_id in DEMO_REQUESTS:
         req = DEMO_REQUESTS[body.request_id]
     elif body.source and body.destination and body.service:
-        from src.normalizers.common import is_cidr, parse_service
-        proto, port, label = parse_service(body.service)
-        from src.models import PolicyRecord
+        from src.normalizers.common import parse_service, record_from_service
+        # parse_service returns a 6-field DecodedService, never a 3-tuple: the old
+        # `proto, port, label = parse_service(...)` raised TypeError on EVERY custom
+        # change since the initial commit. Building the record through
+        # record_from_service also keeps port_end and the decoded App-ID, which the
+        # hand-rolled constructor dropped -- so "tcp/8000-8100" is scored as the
+        # range it is instead of a single port.
+        svc = parse_service(body.service)
         # Deterministic id from the proposed tuple: re-simulating the same change
         # updates its record (idempotent), but distinct changes accumulate as
         # separate audit entries in change_requests/change_decisions.
-        cr_id = det_id("cr", body.source, body.destination, label)
-        req = ChangeRequest(id=cr_id, title=f"{body.source} -> {body.destination} {label}",
-                            proposed=PolicyRecord(id=f"{cr_id}-rule", source_tool="algosec", raw_ref=cr_id,
-                                                  source=body.source, source_kind="cidr" if is_cidr(body.source) else "identity",
-                                                  destination=body.destination, destination_kind="cidr" if is_cidr(body.destination) else "identity",
-                                                  dest_tags=[], service=label, port=port, protocol=proto, action="allow", order=999),
+        cr_id = det_id("cr", body.source, body.destination, svc.label)
+        # dest_tags are deliberately NOT taken from the request: simulate_change
+        # re-derives them from the engine's assets, so a caller cannot understate
+        # the sensitivity of what it is asking to reach and buy an auto-approve.
+        req = ChangeRequest(id=cr_id, title=f"{body.source} -> {body.destination} {svc.label}",
+                            proposed=record_from_service(
+                                record_id=f"{cr_id}-rule", source_tool="algosec", raw_ref=cr_id,
+                                source=body.source, destination=body.destination, svc=svc,
+                                action="allow", dest_tags=[], order=999),
                             requested_by="custom", justification=body.justification)
     else:
         raise HTTPException(400, "provide request_id or source+destination+service")
@@ -604,7 +1189,7 @@ def classify(body: ClassifyBody):
 
 
 @app.get("/api/change-decisions")
-def change_decisions_log(limit: int = 25):
+def change_decisions_log(limit: int = Query(25, ge=1, le=200)):
     """The change audit trail: every evaluated request joined to how the gate
     ruled on it (decision, guardrail, who decided, when). Reads the
     change_requests + change_decisions tables that classify() writes."""
@@ -680,7 +1265,7 @@ def _submit_remediation(cur, finding_id: str, change: dict, revision_id: str | N
 
 
 @app.post("/api/change/submit")
-def change_submit(body: SubmitBody):
+def change_submit(body: SubmitBody, _: None = Depends(require_approver)):
     """Submit an accepted Risk-To-Do remediation to the Change Gate. The engine
     re-simulates it deterministically and the gate decides: auto_approve if it
     resolves its finding and introduces no new criticals, else escalate."""
@@ -701,7 +1286,10 @@ class StageBody(BaseModel):
 
 
 @app.post("/api/staging")
-def stage_change(body: StageBody):
+def stage_change(body: StageBody, _: None = Depends(require_approver)):
+    """Stage an approved change for push. Approver-gated UNCONDITIONALLY: the role
+    check used to live inside the `escalate` branch, so the auto_approve path --
+    four fifths of the traffic -- staged for anyone, including a viewer."""
     with get_conn() as conn, conn.cursor() as cur:
         ensure_change_request_status(cur)
         row = fetch_one(cur, """
@@ -713,10 +1301,10 @@ def stage_change(body: StageBody):
         if row.get("status") == "rejected":
             raise HTTPException(409, "this change request was rejected and cannot be staged")
         if row["decision"] == "escalate":
+            # The role half of this check is now the route dependency; what stays
+            # is the EXPLICIT act of approval an escalated change additionally needs.
             if not body.manual_approve:
                 raise HTTPException(400, "escalated change requires manual approval to stage")
-            if request_ctx.role() not in ("admin", "analyst"):
-                raise HTTPException(403, "only admin or analyst can approve an escalated change")
             staged_decision = "manual_approved"
         else:
             staged_decision = "auto_approve"
@@ -744,7 +1332,7 @@ def staging_list():
 
 
 @app.post("/api/staging/{staged_id}/push")
-def staging_push(staged_id: str):
+def staging_push(staged_id: str, _: None = Depends(require_operator)):
     """Simulated, stepped push. Conflicts are detected with real engine math and
     resolved deterministically; the UI animates the returned steps."""
     with get_conn() as conn, conn.cursor() as cur:
@@ -767,7 +1355,7 @@ def staging_push(staged_id: str):
 
 
 @app.delete("/api/staging/{staged_id}")
-def staging_delete(staged_id: str):
+def staging_delete(staged_id: str, _: None = Depends(require_approver)):
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("DELETE FROM ztpa.staged_changes WHERE staged_id=%s", [staged_id])
         audit(cur, "user", "discard_staged_change", subject=staged_id, detail={})
@@ -781,13 +1369,11 @@ class RejectBody(BaseModel):
 
 
 @app.post("/api/change/reject")
-def reject_change(body: RejectBody):
+def reject_change(body: RejectBody, _: None = Depends(require_approver)):
     """Decline a change request. A governance action, so only an approver
     (admin/analyst) may reject -- mirrors who can approve an escalation. The
     request moves out of Actions into the Decision log marked 'rejected', and can
     no longer be staged."""
-    if request_ctx.role() not in ("admin", "analyst"):
-        raise HTTPException(403, "only admin or analyst can reject a change")
     by = request_ctx.current().email or "reviewer"
     with get_conn() as conn, conn.cursor() as cur:
         n = reject_change_request(cur, body.request_id, by, body.reason)
@@ -807,7 +1393,8 @@ def reset_demo(_: None = Depends(require_admin)):
     with get_conn() as conn, conn.cursor() as cur:
         cleared = reset_change_workflow(cur)
         audit(cur, "user", "reset_demo", detail=cleared)
-    _ENGINE = run(label=_ACTIVE_SCENARIO, manual_merges=_load_merges(), applied_changes=_load_applied())
+    _ENGINE = _build_engine(_ACTIVE_SCENARIO)
+    _require_trustworthy_inputs()
     snap = _ENGINE.snapshot_id
     with get_conn() as conn, conn.cursor() as cur:
         summary = persist_engine_result(cur, _ENGINE)
@@ -859,8 +1446,7 @@ def admin_set_tool(key: str, body: ToolRolesBody, _: None = Depends(require_admi
 
 # --- Admin: KPI / cost dashboard -------------------------------------------
 @app.get("/api/admin/metrics")
-def admin_metrics(days: int = 30, _: None = Depends(require_admin)):
-    days = max(1, min(days, 365))
+def admin_metrics(days: int = Query(30, ge=1, le=365), _: None = Depends(require_admin)):
     with get_conn() as conn, conn.cursor() as cur:
         win = "ts > now() - make_interval(days => %s)"
         totals = fetch_one(cur, f"""
@@ -1012,7 +1598,8 @@ def propose_connector(body: ProposeBody):
 
 
 @app.get("/api/audit")
-def audit_log():
+def audit_log(limit: int = Query(50, ge=1, le=200)):
     with get_conn() as conn, conn.cursor() as cur:
-        rows = fetch_all(cur, "SELECT ts,actor,action,subject,detail FROM ztpa.audit_log ORDER BY ts DESC LIMIT 50")
+        rows = fetch_all(cur, "SELECT ts,actor,action,subject,detail FROM ztpa.audit_log ORDER BY ts DESC LIMIT %s",
+                         [limit])
     return {"audit": rows}

@@ -1,7 +1,8 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { ShieldHalf } from "lucide-react";
+import { AlertTriangle, HelpCircle, Lock, PlugZap, RotateCw, ShieldHalf } from "lucide-react";
+import { asApiError, type ApiError } from "@/lib/api";
 import { cn } from "@/lib/cn";
 
 export function Spinner({ label }: { label?: string }) {
@@ -55,6 +56,160 @@ export function EmptyState({ icon: Icon, title, sub }: { icon: typeof ShieldHalf
       <Icon size={26} />
       <div className="text-[13px] font-bold text-text2">{title}</div>
       {sub && <div className="text-[11.5px]">{sub}</div>}
+    </div>
+  );
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Failure states. An empty panel and a failed panel used to be pixel-identical
+// ("0 findings"), which is the worst thing a security tool can do. Everything
+// below exists so a caller can render WHAT failed and WHY, in one line, instead
+// of degrading to a plausible-looking zero.
+// ───────────────────────────────────────────────────────────────────────────
+
+/** Headline for a failure, keyed off the status so each class of failure reads
+ *  as itself — a 403 is a permissions problem and must never render as
+ *  "is the API running?", which is what every failure used to say. */
+export function errorHeadline(err: unknown): string {
+  const e = asApiError(err);
+  if (e.isNetwork) return "the API did not respond";
+  if (e.status === 401) return "your session has expired";
+  if (e.status === 403) return "your role is not permitted";
+  if (e.status === 404) return "the API has no such resource";
+  if (e.status === 409) return "it conflicts with the current state";
+  if (e.status === 422) return "the API rejected the request";
+  if (e.status === 429) return "the API is rate limiting us";
+  if (e.status >= 500) return "the API failed handling it";
+  return "the request failed";
+}
+
+/** What the user can actually do about it. */
+function errorHint(e: ApiError): string {
+  if (e.isNetwork) return "Nothing was returned, so nothing below is current. Check that the API is running and reachable, then retry.";
+  if (e.status === 401) return "Sign in again to continue.";
+  if (e.status === 403) return "Ask an administrator for a role that allows this. This is a permissions decision, not an outage.";
+  if (e.status === 404) return "This build of the API does not expose that endpoint. Check that the frontend and backend are the same version.";
+  if (e.status === 409) return "Reload to pick up the current snapshot, then try again.";
+  if (e.status >= 500) return "The API logged an error handling this request. Retrying may work; if it does not, the server log has the request id.";
+  return "Retrying may work. If it does not, the status and detail below identify the failure exactly.";
+}
+
+/** `HTTP 403` / `no response` — the machine-readable half of the panel. */
+function statusLabel(e: ApiError): string {
+  return e.isNetwork ? "no response" : `HTTP ${e.status}`;
+}
+
+export interface ErrorStateProps {
+  /** What failed to load, in the user's words ("findings", "the change log"). */
+  resource: string;
+  error: unknown;
+  onRetry?: () => void;
+  className?: string;
+}
+
+/**
+ * The block-level failure panel: name the resource, say what class of failure
+ * it was, and print the exact status + detail so the failure is reportable.
+ * Use this ANYWHERE a zero, an empty list or a green state would otherwise be
+ * rendered from data that never arrived.
+ */
+export function ErrorState({ resource, error, onRetry, className }: ErrorStateProps) {
+  const e = asApiError(error);
+  // Permission failures are amber, not red: nothing is broken, the answer is no.
+  const denied = e.status === 401 || e.status === 403;
+  const Icon = denied ? Lock : e.isNetwork ? PlugZap : AlertTriangle;
+  return (
+    <div
+      role="alert"
+      className={cn(
+        "border p-3.5",
+        denied ? "border-sev-high-line bg-sev-high-bg" : "border-sev-critical-line bg-sev-critical-bg",
+        className,
+      )}
+    >
+      <div className="flex items-start gap-2.5">
+        <Icon size={16} className={cn("mt-0.5 shrink-0", denied ? "text-sev-high" : "text-sev-critical")} />
+        <div className="min-w-0 flex-1">
+          <div className={cn("text-[13px] font-bold", denied ? "text-sev-high" : "text-sev-critical")}>
+            Could not load {resource} — {errorHeadline(e)}
+          </div>
+          <p className="mt-1 text-[12px] leading-relaxed text-text2">{errorHint(e)}</p>
+          <div className="mono mt-1.5 break-words text-[11px] text-text3">
+            {statusLabel(e)} · {e.detail}
+            {e.path ? ` · ${e.path}` : ""}
+          </div>
+        </div>
+        {onRetry && (
+          <button onClick={onRetry} className="btn-ghost shrink-0 text-xs">
+            <RotateCw size={12} /> Retry
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The 200 that is not an answer.
+ *
+ * A backend that is running but cannot reach its system of record answers some
+ * reads with an EMPTY payload plus the reason it is empty (`degraded_reason`).
+ * Putting that through the ordinary empty state would print "No snapshots found
+ * — run an analysis to create one" out of a database that was never read: the
+ * empty-vs-failed lie again, arriving with a 200 instead of a 500. So an
+ * empty-with-a-reason gets its own surface — amber rather than red, because
+ * nothing is broken; the fact being reported is that nothing is KNOWN.
+ */
+export function UnavailableState({ resource, reason, onRetry, className }: {
+  /** What could not be read, in the user's words ("the snapshot history"). */
+  resource: string;
+  /** The backend's own `degraded_reason`, rendered verbatim. */
+  reason: string;
+  onRetry?: () => void;
+  className?: string;
+}) {
+  return (
+    <div role="status" className={cn("border border-sev-medium-line bg-sev-medium-bg p-3.5", className)}>
+      <div className="flex items-start gap-2.5">
+        <HelpCircle size={16} className="mt-0.5 shrink-0 text-sev-medium" />
+        <div className="min-w-0 flex-1">
+          <div className="text-[13px] font-bold text-sev-medium">
+            {resource} is unknown, not empty
+          </div>
+          <p className="mt-1 text-[12px] leading-relaxed text-text2">
+            The backend answered, and told us it could not read this from the system of record.
+            Nothing here has been counted, so treat it as unread rather than as none.
+          </p>
+          <div className="mono mt-1.5 break-words text-[11px] text-text3">{reason}</div>
+        </div>
+        {onRetry && (
+          <button onClick={onRetry} className="btn-ghost shrink-0 text-xs">
+            <RotateCw size={12} /> Retry
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
+/** One-line variant for a failure inside a row, a toolbar or a side rail —
+ *  same facts, no panel chrome. */
+export function InlineError({ resource, error, onRetry, className }: ErrorStateProps) {
+  const e = asApiError(error);
+  const denied = e.status === 401 || e.status === 403;
+  return (
+    <div role="alert" className={cn("flex flex-wrap items-center gap-1.5 text-[11.5px]", denied ? "text-sev-high" : "text-sev-critical", className)}>
+      <AlertTriangle size={12} className="shrink-0" />
+      <span className="font-bold">Could not load {resource}</span>
+      <span className="mono text-text3">
+        {statusLabel(e)} · {e.detail}
+      </span>
+      {onRetry && (
+        <button onClick={onRetry} className="font-bold underline">
+          Retry
+        </button>
+      )}
     </div>
   );
 }

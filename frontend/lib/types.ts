@@ -60,21 +60,28 @@ export interface ChangeResult {
   decision: Decision;
 }
 
+/** What /api/health reports about the model layer. `active_provider` is the
+ *  provider judgment jobs actually route to right now (NOT the configured
+ *  preference), and `data_residency` is "local" only while that provider is
+ *  ollama — anything else means prompt content leaves this host. The Topbar
+ *  residency chip renders straight off these two fields. */
+export interface ProviderStatus {
+  active_provider: string;
+  judge_model: string;
+  prose_model: string;
+  embed_model: string;
+  ollama_reachable: boolean;
+  ollama_models: string[];
+  data_residency: string;
+  anthropic_available: boolean;
+  openai_available: boolean;
+}
+
 export interface Health {
   status: string;
   db: boolean;
   snapshot_id: string;
-  ai: {
-    active_provider: string;
-    judge_model: string;
-    prose_model: string;
-    embed_model: string;
-    ollama_reachable: boolean;
-    ollama_models: string[];
-    data_residency: string;
-    anthropic_available: boolean;
-    openai_available: boolean;
-  };
+  ai: ProviderStatus;
 }
 
 export interface Asset {
@@ -211,6 +218,12 @@ export interface Conflict {
   against?: string;
   resolution: string;
 }
+/** `no_op` is a real outcome, not a failure: every detected conflict resolved to
+ *  "skip", so the backend deliberately did NOT record the change and the pushed-
+ *  changes overlay leaves the record set untouched. It exists so the reported
+ *  resolution and the executed action are the same thing. */
+export type StagedStatus = "staged" | "pushing" | "pushed" | "no_op" | "conflict" | "failed";
+
 export interface StagedChange {
   staged_id: string;
   request_id: string;
@@ -219,14 +232,30 @@ export interface StagedChange {
   target_tool: string;
   payload: Record<string, any>;
   decision: string;
-  status: "staged" | "pushing" | "pushed" | "conflict" | "failed";
+  status: StagedStatus;
   conflicts: Conflict[];
   resolution: Record<string, any>;
   push_steps: PushStep[];
+  /** True when the push contacted nothing (this build has no connector). Not a
+   *  stored column, so it is only present on a push response; the card treats an
+   *  absent flag as simulated, which is what every build without a connector is. */
+  simulated?: boolean;
   created_at?: string;
   pushed_at?: string | null;
   justification?: string | null;
   requested_by?: string | null;
+}
+
+/** The POST /api/staging/{id}/push response. Wider than the declared return type
+ *  of `api.stagingPush` (lib/api.ts is owned elsewhere): the card reads its
+ *  wording off `simulated` rather than hardcoding a claim about a live push. */
+export interface PushPlan {
+  staged_id: string;
+  status: StagedStatus;
+  simulated?: boolean;
+  conflicts: Conflict[];
+  resolution: Record<string, any>;
+  push_steps: PushStep[];
 }
 
 export interface ToolInfo {

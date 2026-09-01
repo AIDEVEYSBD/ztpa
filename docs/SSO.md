@@ -41,9 +41,51 @@ reuse-detection races. Role freshness is handled by capping the session instead
 
 | SSO app role | App role | Grants |
 |---|---|---|
-| `npr_admin` | `admin` | Everything, plus the admin console: users, snapshots, per-role tool toggles, usage metrics |
-| `npr_analyst` | `analyst` | Full read + AI advisory, submit **and** approve/reject change requests, run remediation campaigns |
-| `npr_viewer` | `viewer` | Read-only: findings, graph, reports, evidence. Cannot approve or apply changes |
+| `npr_admin` | `admin` | Everything, plus the admin console: users, snapshots, per-role tool toggles, usage metrics. The only role that may mutate the system of record — recompute, merge/unmerge identities, push to a data source |
+| `npr_analyst` | `analyst` | Full read + AI advisory; propose, approve/reject, stage and withdraw change requests; run remediation campaigns |
+| `npr_viewer` | `viewer` | Read-only: findings, graph, reports, evidence. Cannot submit, approve, stage, push or withdraw a change, cannot merge identities, and cannot recompute a snapshot |
+
+### What the backend actually enforces
+
+The role in the table is not a UI convention: three FastAPI dependencies in
+`backend/app/main.py` reject the request with **403** before the handler body runs.
+
+| Dependency | Roles | Routes it protects |
+|---|---|---|
+| `require_admin` | `admin` | `GET /api/admin/tools`, `POST /api/admin/tools/{key}`, `GET /api/admin/metrics`, `POST /api/admin/dataset`, `POST /api/admin/reset-demo`, `DELETE /api/snapshots/{id}` |
+| `require_approver` | `admin`, `analyst` | `POST /api/change/classify`, `POST /api/change/submit`, `POST /api/change/reject`, `POST /api/staging`, `DELETE /api/staging/{id}`, `POST /api/campaign/plan`, `POST /api/campaign/submit`, `POST /api/findings/{id}/remediate`, `POST /api/findings/{id}/remediate/refine` |
+| `require_operator` | `admin` | `POST /api/recompute`, `POST /api/actions/recompute`, `POST /api/staging/{id}/push`, `POST /api/assets/merge`, `POST /api/assets/unmerge` |
+
+`require_approver` is drawn at *governance* actions — proposing, drafting a remediation,
+classifying, approving, staging, withdrawing — and `require_operator` at actions that
+**change the system of record or reach for a data source**. A viewer holds neither, so the
+read-only promise above is enforced server-side on **every** route in that table, not merely
+hidden in the UI. That is the full set of mutating endpoints; none is left unguarded.
+
+Four `POST` routes are deliberately **not** role-gated, because they mutate nothing in the
+governance pipeline and a viewer is entitled to them — they are POST only because they carry
+a request body: `POST /api/findings/{id}/explain` (returns the finding's explanation, writing
+only the explanation cache), `POST /api/agent/ask`, `POST /api/intake` (parses free text into
+a structured rule and returns it — it does not submit one) and `POST /api/connectors/propose`
+(returns a draft `SourceProfile`; nothing is registered). Each is still subject to
+`_require_capability`, the per-role AI feature flag — see the second bullet below for why
+that is not an authorization boundary.
+
+Two boundaries this depends on, both worth stating plainly:
+
+- **The role arrives in a header, and the header is only as trustworthy as the proxy.**
+  `middleware.ts` forwards `x-npr-role` / `x-npr-email` / `x-npr-sub` and the backend strips
+  any client-supplied copy before reading them (§3). When `NPR_PROXY_SECRET` is configured,
+  a request may claim an identity **only** if it also presents that secret, so a direct
+  caller cannot self-assign `admin`. **Leave `NPR_PROXY_SECRET` unset and that protection is
+  off** — anyone who can reach the backend URL can send `x-npr-role: admin`. `/api/health`
+  reports `proxy_auth: false` when it is unset; treat that as a deployment defect, not a
+  warning.
+- **The per-role AI *capability* toggles are a different mechanism, and are not an
+  authorization boundary.** `_require_capability` (admin Tools screen → `ztpa.tool_settings`)
+  is **default-on**: an absent row enables the capability for every role, and a database
+  error against a cold cache yields the same default-on map. It is a feature flag. Never
+  reason about who can write from it — the `require_*` dependencies above are the boundary.
 
 Notes:
 
@@ -122,9 +164,14 @@ Flow:
    -> middleware forwards x-npr-role / x-npr-email / x-npr-sub to FastAPI
 ```
 
-The backend reads those headers in `request_ctx` for per-role AI-tool gating and
-usage attribution. It strips any client-supplied `x-npr-*` header first, but it
-still trusts the proxy — the backend must stay reachable only through it.
+The backend reads those headers in `request_ctx` — for route authorization (§1),
+per-role AI-tool gating and usage attribution. It strips any client-supplied
+`x-npr-*` header first, then enforces the trust boundary: with
+**`NPR_PROXY_SECRET`** set on both the proxy and the backend, a request may claim
+an identity only if it also presents that secret, and otherwise gets **401**.
+Unset, the headers are trusted unconditionally and the backend must be reachable
+only through the proxy — `/api/health` reports `proxy_auth: false` so you can tell
+which regime you are in.
 
 ---
 
@@ -180,3 +227,7 @@ slowly with `200`.
       check the session is not flagged `misconfigured`
 - [ ] `db/sso_schema.sql` applied
 - [ ] `AUTH_LOCAL_LOGIN` unset in production (local login off)
+- [ ] `NPR_PROXY_SECRET` set to the **same** value on the backend and the frontend, and
+      `/api/health` reports `proxy_auth: true` — without it the role headers are
+      unauthenticated and every role guard in §1 can be bypassed by calling the backend
+      directly

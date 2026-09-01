@@ -4,8 +4,10 @@ import { useMemo, useState } from "react";
 import { ReactFlow, Background, Controls, Handle, Position, type Node, type Edge } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { Route, Globe, Server, Database, OctagonAlert, ArrowRight } from "lucide-react";
+import type { ApiError } from "@/lib/api";
 import type { Band, Finding, GraphData } from "@/lib/types";
 import { Stat, ToolBadge, Skeleton, cn } from "./ui";
+import { ErrorState } from "./ui/Feedback";
 import { RuleRef } from "./RuleRef";
 
 const SENSITIVE = ["pci", "customer-data", "crown-jewel", "phi"];
@@ -53,8 +55,12 @@ function ZTNode({ data }: { data: any }) {
 }
 const nodeTypes = { zt: ZTNode };
 
-export function NetworkMap({ graph, findings = [], counts = {}, loading = false }:
-  { graph?: GraphData; findings?: Finding[]; counts?: Record<string, number>; loading?: boolean }) {
+/** `graphError` / `findingsError` are not decoration: when either is set the
+ *  numbers this screen would otherwise print are computed from data that never
+ *  arrived, so the panel they feed renders the failure INSTEAD of a zero. */
+export function NetworkMap({ graph, findings = [], counts = {}, loading = false, graphError, findingsError, onRetry }:
+  { graph?: GraphData; findings?: Finding[]; counts?: Record<string, number>; loading?: boolean;
+    graphError?: ApiError; findingsError?: ApiError; onRetry?: () => void }) {
   const [traced, setTraced] = useState(true);
   const [mode, setMode] = useState<"focus" | "full">("focus");
 
@@ -144,21 +150,26 @@ export function NetworkMap({ graph, findings = [], counts = {}, loading = false 
 
   return (
     <div className="space-y-4">
-      {/* severity summary */}
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        {!ready ? (
-          Array.from({ length: 4 }).map((_, i) => (
-            <div key={i} className="panel space-y-2 p-4"><Skeleton className="h-7 w-12" /><Skeleton className="h-3 w-20" /><Skeleton className="h-2.5 w-28" /></div>
-          ))
-        ) : (
-          <>
-            <Stat band="critical" value={bands.critical} label="Critical" sub={`${counts.findings ?? findings.length} total findings`} />
-            <Stat band="high" value={bands.high} label="High" sub="over-broad prod access" />
-            <Stat band="medium" value={bands.medium} label="Medium" sub="hygiene & mgmt-plane" />
-            <Stat band="low" value={bands.low} label="Low" sub="informational" />
-          </>
-        )}
-      </div>
+      {/* severity summary — a band count is a claim about the estate, so it is
+          only rendered when the fetch that produced it actually succeeded. */}
+      {findingsError ? (
+        <ErrorState resource="the severity summary" error={findingsError} onRetry={onRetry} />
+      ) : (
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          {!ready ? (
+            Array.from({ length: 4 }).map((_, i) => (
+              <div key={i} className="panel space-y-2 p-4"><Skeleton className="h-7 w-12" /><Skeleton className="h-3 w-20" /><Skeleton className="h-2.5 w-28" /></div>
+            ))
+          ) : (
+            <>
+              <Stat band="critical" value={bands.critical} label="Critical" sub={`${counts.findings ?? findings.length} total findings`} />
+              <Stat band="high" value={bands.high} label="High" sub="over-broad prod access" />
+              <Stat band="medium" value={bands.medium} label="Medium" sub="hygiene & mgmt-plane" />
+              <Stat band="low" value={bands.low} label="Low" sub="informational" />
+            </>
+          )}
+        </div>
+      )}
 
       <div className="grid gap-4 xl:grid-cols-[1fr_332px] 3xl:grid-cols-[1fr_400px]">
         <section className="panel min-w-0">
@@ -186,7 +197,11 @@ export function NetworkMap({ graph, findings = [], counts = {}, loading = false 
           )}
 
           <div className="relative h-[420px] bg-sunk sm:h-[520px] 3xl:h-[640px]">
-            {!graph ? (
+            {graphError ? (
+              <div className="grid h-full place-items-center p-6">
+                <ErrorState resource="the reachability graph" error={graphError} onRetry={onRetry} className="max-w-xl bg-transparent" />
+              </div>
+            ) : !graph ? (
               <div className="grid h-full grid-cols-4 items-center gap-6 p-8">
                 {[0, 1, 2, 3].map((col) => (
                   <div key={col} className="space-y-6" style={{ marginTop: col % 2 ? 40 : 0 }}>
@@ -235,7 +250,11 @@ export function NetworkMap({ graph, findings = [], counts = {}, loading = false 
               ))}
             </div>
           )}
-          {!ready ? (
+          {graphError ? (
+            <div className="p-3.5">
+              <ErrorState resource="cross-tool paths" error={graphError} onRetry={onRetry} className="bg-transparent" />
+            </div>
+          ) : !ready ? (
             <div className="space-y-3 p-3.5">
               <Skeleton className="h-3 w-full" /><Skeleton className="h-3 w-4/5" />
               <div className="space-y-2 pt-1">

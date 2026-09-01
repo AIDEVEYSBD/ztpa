@@ -1,9 +1,13 @@
 """Map an EngineResult into the ztpa tables (the deterministic system of record).
 
 Every row uses a deterministic id derived from snapshot + content, so re-running
-a snapshot UPSERTs to identical rows. We delete the snapshot first (ON DELETE
-CASCADE clears children) and re-insert, so a changed analysis never leaves stale
-rows behind. AI-derived columns (findings.explanation, ranked_actions,
+a snapshot UPSERTs to identical rows. We clear the snapshot's engine-owned
+tables first (`delete_snapshot_children`) and re-insert, so a changed analysis
+never leaves stale rows behind. That clear is deliberately scoped to tables the
+engine derives: the `snapshots` row itself and every governance row that cites
+it (change_requests, change_decisions, staged_changes, audit_log) survive a
+recompute, because the audit trail must outlive the analysis it was recorded
+against. AI-derived columns (findings.explanation, ranked_actions,
 change_decisions) are written later by the advisory/change layers.
 """
 
@@ -57,45 +61,69 @@ def ensure_finding_types(cur: psycopg.Cursor) -> None:
     _FINDING_TYPES_READY = True
 
 
-def persist_engine_result(cur: psycopg.Cursor, r: EngineResult) -> dict:
-    sid = r.snapshot_id
-    ensure_finding_types(cur)   # widen the type CHECK before inserting findings
-    delete_snapshot_children(cur, sid)
+# --- pure projection: an EngineResult as the rows the tables hold ----------
+# `persist_engine_result` WRITES these dicts; `app.main` READS them straight
+# out of the in-memory result when Postgres is unreachable, so a degraded read
+# answers with the SAME shape the persisted read would have returned. One
+# mapping with two consumers, deliberately: a second hand-written copy of the
+# column list in the API would drift the moment a column moved, and the drift
+# would only ever be visible in the degraded path -- the one nobody exercises.
+#
+# Every function here is pure (no cursor, no I/O) and deterministic: it emits
+# rows in the engine's own order, which is already sorted upstream.
 
-    upsert(cur, "snapshots", {
-        "snapshot_id": sid, "label": r.label, "status": "complete",
+def _canon(r: EngineResult, name: str) -> str:
+    """The surviving identity for `name` after the identity layer merged aliases."""
+    return r.alias_map.get(name, name)
+
+
+def snapshot_row(r: EngineResult) -> dict:
+    """The `ztpa.snapshots` row. No `created_at`: the database defaults it, so a
+    projection cannot know it (and inventing `now()` would break determinism)."""
+    return {
+        "snapshot_id": r.snapshot_id, "label": r.label, "status": "complete",
         "notes": f"{len(r.records)} canonical rules, {len(r.assets)} assets, {len(r.findings)} findings",
-    }, ["snapshot_id"])
+    }
 
-    tools = sorted({rec.source_tool for rec in r.records})
-    upsert_many(cur, "sources", [{
+
+def source_rows(r: EngineResult) -> list[dict]:
+    return [{
         "source_id": det_id("src", tool), "tool": tool,   # global connector, not per-snapshot
         "device": _DEVICE.get(tool, tool), "config": {"mode": "simulated_export"},
-    } for tool in tools], ["source_id"])
+    } for tool in sorted({rec.source_tool for rec in r.records})]
 
-    upsert_many(cur, "resolved_objects", [{
+
+def resolved_object_rows(r: EngineResult) -> list[dict]:
+    sid = r.snapshot_id
+    return [{
         "id": det_id("ro", sid, ro.source_tool, ro.source_device or "", ro.object_name, ro.object_kind),
         "snapshot_id": sid, "source_tool": ro.source_tool, "source_device": ro.source_device,
         "object_name": ro.object_name, "object_kind": ro.object_kind,
         "resolved": ro.resolved, "is_dynamic": ro.is_dynamic,
-    } for ro in r.resolved], ["id"])
+    } for ro in r.resolved]
 
-    upsert_many(cur, "assets", [{
+
+def asset_rows(r: EngineResult) -> list[dict]:
+    sid = r.snapshot_id
+    return [{
         "asset_id": _asset_id(sid, a.asset_key), "snapshot_id": sid, "asset_key": a.asset_key,
         "kind": a.kind, "context": a.context, "identifiers": a.identifiers,
         "ip_set": list(a.ip_set), "tags": list(a.tags), "source_tools": list(a.source_tools),
-    } for a in r.assets], ["asset_id"])
+    } for a in r.assets]
 
-    upsert_many(cur, "asset_correlations", [{
+
+def correlation_rows(r: EngineResult) -> list[dict]:
+    sid = r.snapshot_id
+    return [{
         "id": det_id("corr", sid, c.asset_key, c.match_key, c.evidence),
         "snapshot_id": sid, "asset_id": _asset_id(sid, c.asset_key),
         "match_key": c.match_key, "confidence": c.confidence, "evidence": c.evidence,
-    } for c in r.correlations], ["id"])
+    } for c in r.correlations]
 
-    def canon(name: str) -> str:
-        return r.alias_map.get(name, name)
 
-    upsert_many(cur, "canonical_rules", [{
+def canonical_rule_rows(r: EngineResult) -> list[dict]:
+    sid = r.snapshot_id
+    return [{
         "rule_uid": _rule_uid(sid, rec.source_tool, rec.raw_ref), "snapshot_id": sid,
         "source_tool": rec.source_tool, "source_device": _DEVICE.get(rec.source_tool),
         "raw_rule_id": rec.raw_ref, "policy_id": None, "rule_order": rec.order, "action": rec.action,
@@ -104,31 +132,85 @@ def persist_engine_result(cur: psycopg.Cursor, r: EngineResult) -> dict:
         "protocol": rec.protocol, "ports": _ports(rec.protocol, rec.port, rec.port_end), "l7_app": rec.l7_app,
         "nat_original": None, "nat_translated": None, "tags": list(rec.dest_tags), "enabled": True,
         "schedule": None, "direction": None,
-        "src_asset_refs": [_asset_id(sid, canon(rec.source))], "dst_asset_refs": [_asset_id(sid, canon(rec.destination))],
-    } for rec in r.records], ["rule_uid"])
+        "src_asset_refs": [_asset_id(sid, _canon(r, rec.source))],
+        "dst_asset_refs": [_asset_id(sid, _canon(r, rec.destination))],
+    } for rec in r.records]
 
-    upsert_many(cur, "graph_nodes", [{
+
+def graph_node_rows(r: EngineResult) -> list[dict]:
+    sid = r.snapshot_id
+    return [{
         "node_id": node_id, "snapshot_id": sid,
         "kind": node_db_kind(node_id, data.get("kind", "concrete")),
         "label": data.get("display", node_id), "context": None,
         "asset_id": _asset_id(sid, node_id), "tags": list(data.get("tags", [])),
         "ip_set": list(data.get("ip_set", [])),
-    } for node_id, data in r.graph.nodes(data=True)], ["snapshot_id", "node_id"])
+    } for node_id, data in r.graph.nodes(data=True)]
 
-    upsert_many(cur, "graph_edges", [{
+
+def graph_edge_rows(r: EngineResult) -> list[dict]:
+    """One row per ALLOW record -- a deny is a rule, never an edge of reachability."""
+    sid = r.snapshot_id
+    return [{
         "edge_id": det_id("edge", sid, rec.source_tool, rec.raw_ref), "snapshot_id": sid,
-        "src_node": canon(rec.source), "dst_node": canon(rec.destination), "action": rec.action,
+        "src_node": _canon(r, rec.source), "dst_node": _canon(r, rec.destination), "action": rec.action,
         "ports": _ports(rec.protocol, rec.port, rec.port_end),
         "l7_app": rec.l7_app, "rule_uid": _rule_uid(sid, rec.source_tool, rec.raw_ref),
         "source_tool": rec.source_tool, "enforcement_point": _DEVICE.get(rec.source_tool),
-    } for rec in r.records if rec.action == "allow"], ["snapshot_id", "edge_id"])
+    } for rec in r.records if rec.action == "allow"]
 
-    upsert_many(cur, "findings", [{
+
+def finding_rows(r: EngineResult) -> list[dict]:
+    """`explanation` is None by construction: prose is AI-derived and cached onto
+    the row later, so an in-memory projection never has one."""
+    sid = r.snapshot_id
+    return [{
         "finding_id": f.id, "snapshot_id": sid, "type": f.type, "severity": f.severity,
         "severity_band": f.severity_band, "forced_critical": f.forced_critical,
         "signals": {**f.signals, "title": f.title}, "involved": list(f.involved),
         "raw_refs": list(f.raw_refs), "source_tools": list(f.source_tools), "explanation": None,
-    } for f in r.findings], ["finding_id"])
+    } for f in r.findings]
+
+
+def snapshot_counts(r: EngineResult) -> dict[str, int]:
+    """`SELECT count(*)` per engine-owned table, without the database.
+
+    Counted over the DISTINCT conflict key of each upsert rather than over the
+    source list, because that is precisely what the table would hold: two
+    records that collide on `rule_uid` are one row, not two, and a projection
+    that said otherwise would make the degraded counts differ from the
+    persisted ones for the same snapshot. (`len({...})` on the key tuples --
+    a cardinality, so no iteration order escapes into the answer.)
+    """
+    return {
+        "assets": len({row["asset_id"] for row in asset_rows(r)}),
+        "canonical_rules": len({row["rule_uid"] for row in canonical_rule_rows(r)}),
+        "graph_nodes": len({(row["snapshot_id"], row["node_id"]) for row in graph_node_rows(r)}),
+        "graph_edges": len({(row["snapshot_id"], row["edge_id"]) for row in graph_edge_rows(r)}),
+        "findings": len({row["finding_id"] for row in finding_rows(r)}),
+        "resolved_objects": len({row["id"] for row in resolved_object_rows(r)}),
+        "asset_correlations": len({row["id"] for row in correlation_rows(r)}),
+        # AI-derived, written by the ranking layer and never by the engine, so an
+        # engine projection genuinely holds none. Not "0 ranked actions exist" --
+        # the caller reading this from memory is told the source in the payload.
+        "ranked_actions": 0,
+    }
+
+
+def persist_engine_result(cur: psycopg.Cursor, r: EngineResult) -> dict:
+    sid = r.snapshot_id
+    ensure_finding_types(cur)   # widen the type CHECK before inserting findings
+    delete_snapshot_children(cur, sid)   # engine-owned tables only; governance rows survive
+
+    upsert(cur, "snapshots", snapshot_row(r), ["snapshot_id"])
+    upsert_many(cur, "sources", source_rows(r), ["source_id"])
+    upsert_many(cur, "resolved_objects", resolved_object_rows(r), ["id"])
+    upsert_many(cur, "assets", asset_rows(r), ["asset_id"])
+    upsert_many(cur, "asset_correlations", correlation_rows(r), ["id"])
+    upsert_many(cur, "canonical_rules", canonical_rule_rows(r), ["rule_uid"])
+    upsert_many(cur, "graph_nodes", graph_node_rows(r), ["snapshot_id", "node_id"])
+    upsert_many(cur, "graph_edges", graph_edge_rows(r), ["snapshot_id", "edge_id"])
+    upsert_many(cur, "findings", finding_rows(r), ["finding_id"])
 
     audit(cur, "system", "precompute_snapshot", subject=sid, snapshot_id=sid, detail={
         "records": len(r.records), "assets": len(r.assets), "findings": len(r.findings),

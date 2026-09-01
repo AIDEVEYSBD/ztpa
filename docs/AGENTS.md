@@ -27,12 +27,26 @@ provider is resolved per call by `settings.active_provider()`:
 
 So, to answer the question directly:
 
-- **If you run a local model (Ollama), the agents use that** — no key, no per-call cost,
-  and the sensitive topology never leaves the host. This is the default when Ollama is up.
+- **If you run a local model (Ollama), the agents use that** — no key, no per-call cost, and
+  the topology and policy text stay on the host *for the inference step*. This is the default
+  when Ollama is up. (The **system of record is still cloud Postgres (Neon)** unless you point
+  `DATABASE_URL` at a local one, so "nothing leaves the host" is a claim about inference, not
+  about the whole system.)
 - **If there is no local model, the agents use the OpenAI API key** (under `auto`, OpenAI
   is preferred over Anthropic). Set `ADVISORY_PROVIDER=openai` + `OPENAI_API_KEY` to force it.
-- Either way, **the same code, the same guardrails, the same fail-closed parsing** run.
-  Switching providers changes only *who generates the language/judgment*.
+- ⚠️ **The fallback under `auto` is silent, and the shipped Render blueprint pins
+  `ADVISORY_PROVIDER=openai`.** Nothing in the flow asks before sending finding text, rule
+  text and asset names to a hosted provider. The header's **AI residency chip** (bound to
+  `/api/health` → `ai.active_provider` / `ai.data_residency`) is how you tell which one is
+  live; check it before repeating a residency claim to a client.
+- ⚠️ **The availability probe checks that Ollama serves *some* model, not the right one.**
+  `settings.ollama_available()` is `bool(models)` over `/api/tags`. Pull `qwen3-coder:7b`
+  instead of `qwen3-coder:30b` and `auto` still routes to Ollama, every call 404s at request
+  time, and every capability degrades to its deterministic fallback with nothing on screen
+  saying why. The tags must match `OLLAMA_JUDGE_MODEL` / `OLLAMA_PROSE_MODEL` /
+  `OLLAMA_EMBED_MODEL` exactly.
+- Otherwise, **the same code, the same guardrails, the same fail-closed parsing** run —
+  with the two documented provider asymmetries under *Design guarantees* below.
 
 Two things **never** need any key, because they are pure deterministic Python:
 
@@ -52,6 +66,11 @@ local model degrades to the fallback rather than hanging the HTTP request.
 ---
 
 ## The five agentic capabilities
+
+> These five are the *agentic* subset — the ones that drive the engine in a loop.
+> **[FEATURES.md §1.5](FEATURES.md) is the source of truth for the full AI capability list
+> and count**; this document does not restate it. (The other five are single-shot language
+> or judgment jobs: `explain`, `rank`, `report`, `intake`, `entity_suggest`.)
 
 | # | Agent | Kind of loop | Endpoint |
 |---|---|---|---|
@@ -81,8 +100,24 @@ rule change) that the engine has *proven* resolves the finding without opening a
 3. The model **sees that verdict** and, if the fix didn't hold (still reachable) or was
    dirty (opened a new critical), **revises** — up to `MAX_ATTEMPTS` (3) rounds.
 4. A fix is accepted only when the engine certifies it is **clean** (resolves + no new
-   critical). If no clean model fix is found, a **deterministic surgical fallback** (which
-   exists for every finding type) is used and re-validated.
+   critical). If no clean model fix is found, a **deterministic conservative fallback**
+   (which exists for every finding type) is used and re-validated.
+
+**What "the engine has proven it" does and does not mean.** `_validate` re-runs the whole
+analyzer suite on the modified record set and compares against the pre-fix findings. It
+asserts exactly two things: the target finding is gone, and the set of **critical**-band
+findings gained no new member. Three limits follow, and they are worth stating before a
+client finds them:
+- **Only the critical band is checked.** A fix that resolves a critical while opening three
+  new *high* findings still certifies clean (`remediation.py:_is_clean`).
+- **The proof is against the snapshot at draft time.** It is not re-run when the change is
+  later staged or pushed, so a proof can be stale by the time it is acted on.
+- **The fallback is conservative, not surgical.** Every branch of
+  `remediation.py:_fallback_change` is `remove` — delete the offending rule — except a
+  shadowed rule, which is `reorder_before`. It never narrows a source or a service. That is
+  the safe direction to fail in, but it is a blunt instrument, and describing it as
+  "surgical" overstates it. (The *model* may propose `scope_source` / `restrict_service`; the
+  deterministic safety net may not.)
 
 **Output.** `fix_text`, `change`, `validation`, `by`, and `trace` (every attempt with its
 engine verdict). The UI (`RiskTodo.tsx`) shows the trace: *"scope R-14 → still reachable →
@@ -168,8 +203,17 @@ normalizer can apply — self-correcting until the sample normalizes cleanly.
    *"rows missing source → that field name is wrong"*, or a schema error — and the model
    **revises**, up to `MAX_ATTEMPTS` (3) rounds.
 4. If it never fully validates, the **best partial** profile is returned flagged
-   `needs_review`; a human always approves before a connector is registered. At runtime the
-   model is gone — only the deterministic profile normalizer runs.
+   `needs_review`. At runtime the model is gone — only the deterministic profile normalizer
+   would run.
+
+⚠️ **Design-time only in this build.** The response always carries `approved: false`, and
+that is literal: there is **no endpoint that registers an approved profile and no ingestion
+path that uses one**. `/api/connectors/propose` returns a proposal plus a validation report
+and stops there; the engine still reads only the three fixed mock exports. The
+`"approve to register this connector"` phrasing in this endpoint's own `note` string
+(`advisory/authoring.py`, the `note` returned on a clean validation) promises a step that
+does not exist and is a known open correction.
+Describe this capability as a **design-time preview** — see [FEATURES.md §1.7](FEATURES.md).
 
 **Output.** `profile`, `validation` (with `unmapped` fields), `attempts`, and the `trace` of
 each round, rendered in `Connectors.tsx`.
@@ -185,7 +229,25 @@ each round, rendered in `Connectors.tsx`.
   outcome (a proven fallback fix, an escalate, a "needs review"), never a crash or a silent
   bad result.
 - **Bounded.** Every loop has a hard round/tool-call cap and a per-call timeout.
-- **Provider-agnostic.** Local Ollama, OpenAI, or Anthropic — same contracts, same guardrails.
+- **Provider-agnostic for structured judgment — with one documented exception.** The
+  structured-judgment capabilities (classify, remediate, campaign, explain, rank, report,
+  intake, authoring) go through `advisory/client.py:complete()`, which speaks plain JSON
+  completions, so they run under identical contracts and identical guardrails on Ollama,
+  OpenAI and Anthropic. Two things are **not** provider-symmetric, and pretending otherwise
+  is the kind of claim an architect checks first:
+  - **Native tool-calling is implemented for Ollama only.** `agent/assistant.py:ask()` runs
+    the real `_ollama_loop` (the `/api/chat` `tools` protocol, up to 5 turns, each tool a
+    genuine engine call) **only when `active_provider() == "ollama"`**. On OpenAI or
+    Anthropic it takes `_grounded_fallback`: **one** completion over a *precomputed*
+    `risk_findings` list. It still cannot invent facts — the answer is grounded in engine
+    output and the trace shows the single `risk_findings` call — but it **cannot call
+    `reachable`, `find_paths` or `effective_policy`**, so it cannot answer a question the
+    precomputed findings do not already contain. Agent #3's `investigate` loop is different
+    and *is* portable: it drives tool selection through plain JSON completions rather than a
+    provider's tool protocol, so it works identically everywhere.
+  - **The Anthropic path is capped at 1500 output tokens** (`client.py:_anthropic_complete`,
+    `max_tokens=1500`). Long-form jobs — the posture report above all — can be truncated
+    there in a way they are not on the other two providers.
 - **Observable.** Every call is metered (tokens, latency, cost, role) and every agent returns
   a **trace** so a human can audit *how* it reached its answer.
 - **Deterministic core.** Re-running the same snapshot yields byte-identical facts; only the

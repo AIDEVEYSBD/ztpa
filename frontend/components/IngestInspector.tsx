@@ -2,8 +2,9 @@
 
 import { useEffect, useState } from "react";
 import { ArrowRight } from "lucide-react";
-import { api } from "@/lib/api";
+import { api, asApiError, type ApiError } from "@/lib/api";
 import { ToolBadge, Chip, Eyebrow, Skeleton, cn } from "./ui";
+import { ErrorState } from "./ui/Feedback";
 import { RuleRef } from "./RuleRef";
 import { useFilterSort, SearchBox, SortSelect } from "@/lib/tableTools";
 
@@ -21,7 +22,19 @@ function svc(r: any): string {
 
 export function IngestInspector({ snapshot }: { snapshot?: string }) {
   const [d, setD] = useState<{ active_scenario: string; sources: any[]; resolved_objects: any[]; canonical_rules: any[] }>();
-  useEffect(() => { api.ingest(snapshot).then(setD).catch(() => {}); }, [snapshot]);
+  const [err, setErr] = useState<ApiError>();
+  const [attempt, setAttempt] = useState(0);
+
+  // Swallowing this left the page on its skeleton forever, which reads as "still
+  // loading" no matter how long you wait — an outage disguised as latency.
+  useEffect(() => {
+    let live = true;
+    setErr(undefined);
+    api.ingest(snapshot)
+      .then((r) => { if (live) setD(r); })
+      .catch((e) => { if (live) { setD(undefined); setErr(asApiError(e)); } });
+    return () => { live = false; };
+  }, [snapshot, attempt]);
 
   const rules = d?.canonical_rules ?? [];
   const rt = useFilterSort(rules, {
@@ -32,6 +45,14 @@ export function IngestInspector({ snapshot }: { snapshot?: string }) {
     },
     initialSort: "tool",
   });
+
+  if (err) {
+    return (
+      <div className="space-y-5">
+        <ErrorState resource="the ingested connector data" error={err} onRetry={() => setAttempt((n) => n + 1)} />
+      </div>
+    );
+  }
 
   if (!d) {
     return (
