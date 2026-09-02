@@ -235,6 +235,12 @@ CREATE TABLE IF NOT EXISTS change_requests (
     proposed      jsonb NOT NULL,                  -- canonical-row-shaped object
     requested_by  text,
     justification text,                            -- UNTRUSTED free text; never used as evidence
+    -- Retired by `/api/admin/reset-demo`, NOT deleted by it. NULL means live;
+    -- a timestamp means a reset cleared the working set this row was part of.
+    -- Every read that feeds a screen filters `archived_at IS NULL`, so the demo
+    -- still resets to a clean slate while the record of who asked for what
+    -- survives. See db/migrations/0003 and src/persist.reset_change_workflow.
+    archived_at   timestamptz,
     created_at    timestamptz NOT NULL DEFAULT now()
 );
 
@@ -248,11 +254,16 @@ CREATE TABLE IF NOT EXISTS change_decisions (
     confidence         numeric(4,3) CHECK (confidence >= 0 AND confidence <= 1),
     forced_escalate    boolean NOT NULL DEFAULT false,
     model              text,
+    archived_at        timestamptz,                          -- see change_requests.archived_at
     decided_at         timestamptz NOT NULL DEFAULT now()
 );
 
 -- ============================================================================
 -- audit_log -- append-only record of every agent/user action (governance)
+--
+-- `actor` is a KIND, not an identity; the identity is the three actor_* columns,
+-- which src/db.audit() fills from request_ctx itself so no call site can forget
+-- them (it used to take a literal, and all fifteen call sites passed 'user').
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS audit_log (
     id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),  -- runtime event: random uuid is fine
@@ -260,9 +271,27 @@ CREATE TABLE IF NOT EXISTS audit_log (
     actor        text NOT NULL CHECK (actor IN ('agent', 'user', 'system')),
     action       text NOT NULL,
     subject      text,                             -- finding_id / request_id / rule_uid / ...
-    snapshot_id  text REFERENCES snapshots(snapshot_id) ON DELETE SET NULL,
-    detail       jsonb NOT NULL DEFAULT '{}'::jsonb
+    -- A PLAIN COLUMN, deliberately: no FK to snapshots. It was
+    -- `REFERENCES snapshots(snapshot_id) ON DELETE SET NULL`, so deleting a
+    -- snapshot erased the correlation between an audit row and the posture it
+    -- was recorded against. The id is a deterministic content hash, so it stays
+    -- meaningful (and re-derivable) after the snapshot row is gone.
+    -- See db/migrations/0002_audit_identity.sql.
+    snapshot_id  text,
+    detail       jsonb NOT NULL DEFAULT '{}'::jsonb,
+    -- Who. NULL means "no identified actor" (a CLI script, the warm-engine
+    -- thread at boot, a dev instance with no proxy) -- never request_ctx's
+    -- least-privilege 'viewer' default, which would invent a subject.
+    actor_email  text,                             -- SSO email at the time of the action
+    actor_sub    text,                             -- AutoX `sub`: stable across email reuse
+    actor_role   text                              -- admin | analyst | viewer, as resolved then
 );
+-- widen an audit_log that predates the identity columns (idempotent).
+ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS actor_email text;
+ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS actor_sub   text;
+ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS actor_role  text;
+-- and drop the snapshot FK on a database created before 0002 (idempotent).
+ALTER TABLE audit_log DROP CONSTRAINT IF EXISTS audit_log_snapshot_id_fkey;
 
 -- widen change_requests so remediation changes (not just add-allow) flow through
 -- the same request/decision tables (idempotent).
@@ -274,6 +303,12 @@ ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS origin text;
 ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'open';
 ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS rejected_by text;
 ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS reject_reason text;
+
+-- the reset stamp: a demo reset retires these rows instead of deleting them
+-- (db/migrations/0003). NULL = live, and NULL is the default for every row that
+-- predates the column, so a migration can never hide history.
+ALTER TABLE change_requests  ADD COLUMN IF NOT EXISTS archived_at timestamptz;
+ALTER TABLE change_decisions ADD COLUMN IF NOT EXISTS archived_at timestamptz;
 
 -- widen findings.type to include the transport/application-layer exposure class
 -- (QUIC / HTTP-3 blind spots), added after the initial schema (idempotent).
@@ -354,6 +389,10 @@ CREATE TABLE IF NOT EXISTS staged_changes (
     conflicts    jsonb NOT NULL DEFAULT '[]'::jsonb,
     resolution   jsonb NOT NULL DEFAULT '{}'::jsonb,
     push_steps   jsonb NOT NULL DEFAULT '[]'::jsonb,
+    -- Who approved this into the push queue. Stamped by
+    -- persist.persist_staged_change from request_ctx (it was declared here from
+    -- the first schema and written by nothing, on the table that lists the
+    -- changes about to be pushed into a production firewall).
     created_by   text,
     created_at   timestamptz NOT NULL DEFAULT now(),
     pushed_at    timestamptz
@@ -383,7 +422,15 @@ CREATE INDEX IF NOT EXISTS idx_findings_sev       ON findings (snapshot_id, seve
 CREATE INDEX IF NOT EXISTS idx_edges_src          ON graph_edges (snapshot_id, src_node);
 CREATE INDEX IF NOT EXISTS idx_edges_dst          ON graph_edges (snapshot_id, dst_node);
 CREATE INDEX IF NOT EXISTS idx_decisions_request  ON change_decisions (request_id);
+-- GET /api/change-decisions reads only the LIVE rows, newest first. Partial, so
+-- the page stays an index scan however large the retired archive grows.
+CREATE INDEX IF NOT EXISTS idx_decisions_live      ON change_decisions (decided_at DESC) WHERE archived_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_requests_live       ON change_requests (created_at DESC) WHERE archived_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_audit_subject      ON audit_log (subject);
+-- GET /api/audit is admin-only, newest first and paginated: ts DESC matches the
+-- ORDER BY exactly, so a page is an index scan instead of a sort of the table.
+CREATE INDEX IF NOT EXISTS idx_audit_ts           ON audit_log (ts DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_actor        ON audit_log (actor_email);
 CREATE INDEX IF NOT EXISTS idx_metrics_ts         ON ai_metrics (ts DESC);
 CREATE INDEX IF NOT EXISTS idx_metrics_capability ON ai_metrics (capability);
 CREATE INDEX IF NOT EXISTS idx_metrics_provider   ON ai_metrics (provider, model);

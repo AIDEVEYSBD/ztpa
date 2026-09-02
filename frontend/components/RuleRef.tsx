@@ -3,6 +3,8 @@
 import { useState } from "react";
 import { AlertTriangle, ArrowRight } from "lucide-react";
 import { api, asApiError, type ApiError } from "@/lib/api";
+import { useReportedFailure } from "./PanelHealth";
+import { errorStatusLabel } from "./ui/Feedback";
 import { cn } from "./ui";
 
 function side(v: any): string {
@@ -25,6 +27,10 @@ export function RuleRef({ refId, snapshot }: { refId: string; snapshot?: string 
   const [rule, setRule] = useState<any | null>();
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<ApiError>();
+  // This popover is a panel too. While it is open and showing a failure it goes
+  // on the console's record, so the degraded banner cannot claim that nothing
+  // below it failed (see components/PanelHealth.tsx).
+  useReportedFailure(`rule ${refId}`, open && !!err);
 
   /** `catch { setRule(null) }` collapsed "the fetch failed" into `null`, and the
    *  popover renders `null` as "Rule X is not in this snapshot." — a positive
@@ -66,7 +72,7 @@ export function RuleRef({ refId, snapshot }: { refId: string; snapshot?: string 
                   <AlertTriangle size={12} className="shrink-0" /> Could not load rule {refId}
                 </span>
                 <span className="mono block break-words text-[11px] text-text3">
-                  {err.isNetwork ? "no response" : `HTTP ${err.status}`} · {err.detail}
+                  {errorStatusLabel(err)} · {err.detail}
                 </span>
                 <span role="button" tabIndex={0} onClick={(e) => { e.stopPropagation(); void fetchRule(); }}
                   className="inline-block cursor-pointer text-[11px] font-bold underline">Retry</span>

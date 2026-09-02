@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { AlertTriangle, HelpCircle, Lock, PlugZap, RotateCw, ShieldHalf } from "lucide-react";
 import { asApiError, type ApiError } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { useReportedFailure } from "@/components/PanelHealth";
 
 export function Spinner({ label }: { label?: string }) {
   // The ring inherits `currentColor` so it stays visible on any surface —
@@ -72,7 +73,11 @@ export function EmptyState({ icon: Icon, title, sub }: { icon: typeof ShieldHalf
  *  "is the API running?", which is what every failure used to say. */
 export function errorHeadline(err: unknown): string {
   const e = asApiError(err);
-  if (e.isNetwork) return "the API did not respond";
+  // `apiUnreachable`, not `isNetwork`: with the Next rewrite in front of
+  // FastAPI, a stopped backend arrives as an HTTP 500 the proxy wrote, not as a
+  // transport failure. Both mean the API did not answer, and both must read as
+  // that rather than as an error the API supposedly logged.
+  if (e.apiUnreachable) return "the API did not respond";
   if (e.status === 401) return "your session has expired";
   if (e.status === 403) return "your role is not permitted";
   if (e.status === 404) return "the API has no such resource";
@@ -86,6 +91,10 @@ export function errorHeadline(err: unknown): string {
 /** What the user can actually do about it. */
 function errorHint(e: ApiError): string {
   if (e.isNetwork) return "Nothing was returned, so nothing below is current. Check that the API is running and reachable, then retry.";
+  // Same remedy, different evidence: a status came back, but the API did not
+  // write it. Saying so is the point — the old text sent the operator to an API
+  // log that does not contain this request, because the API never saw it.
+  if (e.apiUnreachable) return "The API never received this request: it was proxied to the backend and the connection failed, so this status came from the proxy. Nothing below is current. Start the API (or fix BACKEND_URL), then retry — its log has nothing to show for this.";
   if (e.status === 401) return "Sign in again to continue.";
   if (e.status === 403) return "Ask an administrator for a role that allows this. This is a permissions decision, not an outage.";
   if (e.status === 404) return "This build of the API does not expose that endpoint. Check that the frontend and backend are the same version.";
@@ -94,10 +103,16 @@ function errorHint(e: ApiError): string {
   return "Retrying may work. If it does not, the status and detail below identify the failure exactly.";
 }
 
-/** `HTTP 403` / `no response` — the machine-readable half of the panel. */
-function statusLabel(e: ApiError): string {
-  return e.isNetwork ? "no response" : `HTTP ${e.status}`;
+/** `HTTP 403` / `no response` — the machine-readable half of the panel. The
+ *  proxy case keeps its real status (a 500 DID come back) and names who wrote
+ *  it, so the line stays a faithful record of the wire rather than a summary.
+ *  Exported for RuleRef, whose popover must hand-roll the markup but must not
+ *  hand-roll a second, divergent vocabulary for the same facts. */
+export function errorStatusLabel(e: ApiError): string {
+  if (e.isNetwork) return "no response";
+  return e.apiUnreachable ? `HTTP ${e.status} from the proxy` : `HTTP ${e.status}`;
 }
+const statusLabel = errorStatusLabel;
 
 export interface ErrorStateProps {
   /** What failed to load, in the user's words ("findings", "the change log"). */
@@ -115,9 +130,13 @@ export interface ErrorStateProps {
  */
 export function ErrorState({ resource, error, onRetry, className }: ErrorStateProps) {
   const e = asApiError(error);
+  // Put this failure on the console's record while it is on screen, so the
+  // degraded banner above cannot claim the panels below it are fine. See
+  // components/PanelHealth.tsx for why the registration lives here.
+  useReportedFailure(resource, true);
   // Permission failures are amber, not red: nothing is broken, the answer is no.
   const denied = e.status === 401 || e.status === 403;
-  const Icon = denied ? Lock : e.isNetwork ? PlugZap : AlertTriangle;
+  const Icon = denied ? Lock : e.apiUnreachable ? PlugZap : AlertTriangle;
   return (
     <div
       role="alert"
@@ -197,6 +216,9 @@ export function UnavailableState({ resource, reason, onRetry, className }: {
  *  same facts, no panel chrome. */
 export function InlineError({ resource, error, onRetry, className }: ErrorStateProps) {
   const e = asApiError(error);
+  // A failure in a row or a toolbar is still a failure the banner may not paper
+  // over — same registration as the block panel above.
+  useReportedFailure(resource, true);
   const denied = e.status === 401 || e.status === 403;
   return (
     <div role="alert" className={cn("flex flex-wrap items-center gap-1.5 text-[11.5px]", denied ? "text-sev-high" : "text-sev-critical", className)}>

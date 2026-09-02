@@ -79,6 +79,8 @@ def _coerce(data, findings: list[Finding]) -> list[RankedAction] | None:
 
 
 def _fallback(findings: list[Finding]) -> list[RankedAction]:
+    """Group findings by root cause without a model. EVERY finding lands in
+    exactly one bucket -- see the catch-all at the end, and why it has to exist."""
     buckets: list[tuple[str, str, list[str]]] = []
 
     def collect(pred) -> list[str]:
@@ -102,8 +104,44 @@ def _fallback(findings: list[Finding]) -> list[RankedAction]:
         buckets.append(("Clean up redundant and dead rules", hygiene,
                         "Redundant and shadowed rules create false confidence and clutter."))
 
+    # Anything the four buckets above do not claim -- on the shipped demo that is
+    # all eight `transport_exposure` findings, a fifth of the estate. The four
+    # were written against the finding types that existed when they were, and a
+    # new analyzer's output silently DISAPPEARED from the action list: the screen
+    # said "N findings grouped into these actions" while N of them were in none of
+    # them. `_coerce` has carried this same catch-all for the model's grouping
+    # from the start (a model that omits a finding is not trusted to have meant
+    # it); the deterministic path needed it more, not less, now that it is what
+    # /api/actions serves on the request path rather than only when the model is
+    # unreachable.
+    covered = {fid for _t, ids, _r in buckets for fid in ids}
+    remaining = [f.id for f in findings if f.id not in covered]
+    if remaining:
+        buckets.append(("Review remaining findings", remaining,
+                        "Findings outside the grouped root causes -- review them individually."))
+
     return [RankedAction(action_id=f"A{i}", title=t, finding_ids=ids, priority=i, rationale=r)
             for i, (t, ids, r) in enumerate(buckets, start=1)]
+
+
+def rank_deterministic(findings: list[Finding]) -> RankedActions:
+    """The ranking with NO model call: the deterministic root-cause buckets, put
+    through the same guardrail sort as an LLM answer.
+
+    Named and exported because a caller sometimes has to be able to say "not
+    now" to the model rather than take whatever `rank()` decides. Two do:
+    GET /api/actions, which may not spend up to `OLLAMA_TIMEOUT` seconds on a
+    request path (and used to, inside an open database transaction), and the
+    degraded read that answers while the snapshot store is unreachable. Both need
+    a real, ordered, complete action list -- an empty one would render as "nothing
+    to do", which is the worst sentence this product can print by accident.
+
+    `ranked_by` is "engine_fallback" here for the same reason it is when the model
+    is unreachable: the caller is looking at the engine's grouping, and the UI
+    says so."""
+    if not findings:
+        return RankedActions(actions=[], ranked_by="engine_fallback")
+    return RankedActions(actions=_enforce(_fallback(findings), findings), ranked_by="engine_fallback")
 
 
 def rank(findings: list[Finding]) -> RankedActions:
@@ -112,7 +150,6 @@ def rank(findings: list[Finding]) -> RankedActions:
     r = complete(system=_PROMPT, user=json.dumps({"findings": _payload(findings)}),
                  role="judge", temperature=0.1, expect_json=True)
     actions = _coerce(parse_json(r.text, None), findings) if r.ok else None
-    ranked_by = "llm" if actions else "engine_fallback"
     if not actions:
-        actions = _fallback(findings)
-    return RankedActions(actions=_enforce(actions, findings), ranked_by=ranked_by)
+        return rank_deterministic(findings)
+    return RankedActions(actions=_enforce(actions, findings), ranked_by="llm")

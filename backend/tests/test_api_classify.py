@@ -31,6 +31,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import main
+from src import tools_registry
 from src.advisory import classify_change
 from src.analyzers.run_all import run
 
@@ -87,6 +88,17 @@ def cur(monkeypatch, eng):
 
     monkeypatch.setattr(main, "get_conn", _fake_get_conn)
     monkeypatch.setattr(main, "_ENGINE", eng)
+    # The capability layer reads ztpa.tool_settings through its OWN get_conn
+    # (src.tools_registry imports it from src.db), so it needs wiring too: a
+    # HEALTHY settings table with no rows, i.e. every capability default-on. It
+    # is not optional scenery -- an unreadable settings table now resolves every
+    # ai_capability to nobody, admin included (that is the `rank` kill switch,
+    # asserted in test_api_authz.py), and `classify` is an ai_capability. Without
+    # this the file would be measuring the fail-closed path, not the change gate.
+    monkeypatch.setattr(tools_registry, "_CACHE",
+                        {"at": 0.0, "map": {}, "loaded": False, "read_at": 0.0})
+    monkeypatch.setattr(tools_registry, "get_conn", _fake_get_conn)
+    monkeypatch.setattr(tools_registry, "fetch_all", lambda *_a, **_kw: [])
     monkeypatch.setattr(classify_change, "complete", lambda **_kw: types.SimpleNamespace(
         ok=False, text="", provider="stub", model="stub", error="unreachable"))
     return fake

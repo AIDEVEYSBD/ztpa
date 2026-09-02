@@ -15,13 +15,42 @@ Two change kinds flow through here:
 Everything is a pure records -> records transform: no model, no randomness, no
 persistence. `run()` calls it between normalize and graph-build so the snapshot
 fingerprint (and therefore the snapshot id) already reflects the applied state.
+
+A CHANGE THAT DOES NOT APPLY IS AN INCIDENT, NOT A NO-OP
+--------------------------------------------------------
+This module is the one place where an operator's *accepted, pushed* decision is
+turned back into policy. Two of its paths used to drop that decision without a
+sound:
+
+  * `_added_record` answered None on an unreconstructable `add_allow` payload and
+    `apply_overlay` skipped it, so a rule the change gate approved simply was not
+    in the snapshot -- and the snapshot was then persisted as authoritative;
+  * `apply_remediation` matches on `raw_ref`, and a `target_ref` that names no
+    record matches nothing, so the fix "applied" while the finding it was proven
+    against stayed exactly as it was. The staging screen says applied, the
+    dashboard still shows the critical, and nothing connects the two.
+
+Both now log at ERROR with the change's identity. Neither RAISES: the overlay is
+folded inside `run()`, and turning a single bad stored payload into an exception
+would take the whole snapshot down, which is a strictly worse failure than one
+missing change plus a log line naming it. Making `apply_remediation` raise on an
+unmatched ref is a Phase 3 workstream (it is listed there with the validator
+changes that must land with it); this commit makes it visible, not fatal.
 """
 
 from __future__ import annotations
 
+import logging
+
+from pydantic import ValidationError
+
 from ..models import PolicyRecord
 from ..normalizers.common import ObservedEntity, is_cidr, parse_service
 from ..normalizers.profile import object_is_abstract
+
+# Child of the API logger; see advisory/client.py for the convention. Named
+# "overlay" rather than "apply" because that is what the operator calls it.
+log = logging.getLogger("npr.api.overlay")
 
 
 def apply_remediation(records: list[PolicyRecord], change: dict) -> list[PolicyRecord]:
@@ -31,9 +60,11 @@ def apply_remediation(records: list[PolicyRecord], change: dict) -> list[PolicyR
     op, ref = change.get("op"), change.get("target_ref")
     order_of = {r.raw_ref: r.order for r in records if r.order is not None}
     shadowing_order = order_of.get(change.get("shadowing_ref"))
+    matched = 0
     out: list[PolicyRecord] = []
     for rec in records:
         if rec.raw_ref == ref:
+            matched += 1
             if op == "remove":
                 continue
             if op == "scope_source" and change.get("new_source"):
@@ -48,16 +79,43 @@ def apply_remediation(records: list[PolicyRecord], change: dict) -> list[PolicyR
             elif op == "reorder_before" and shadowing_order is not None:
                 rec = rec.model_copy(update={"order": shadowing_order - 1})
         out.append(rec)
+    if not matched:
+        # The transform ran and changed nothing. Silently, this is the shape of
+        # "we applied your fix" over a snapshot in which the fix does not exist:
+        # the ref may name a rule from an older export, a different source tool,
+        # or one an earlier overlay item already removed.
+        log.error("remediation matched no rule; the accepted fix did not change the snapshot",
+                  extra={"event": "overlay_remediation_unmatched", "op": op, "target_ref": ref,
+                         "records": len(records)})
+    elif op == "reorder_before" and shadowing_order is None:
+        # Matched the rule but had no order to move it before, so the record was
+        # appended untouched -- the same "applied, but nothing happened" lie.
+        log.error("reorder_before had no shadowing rule to move before; the rule was left in place",
+                  extra={"event": "overlay_reorder_unresolved", "target_ref": ref,
+                         "shadowing_ref": change.get("shadowing_ref")})
     return out
 
 
 def _added_record(payload: dict) -> PolicyRecord | None:
     """Reconstruct the proposed PolicyRecord from a stored add_allow payload
-    (which is a PolicyRecord dump). Returns None if it cannot be reconstructed."""
+    (which is a PolicyRecord dump). Returns None if it cannot be reconstructed.
+
+    `ValidationError` (a ValueError) is what a stored payload that no longer
+    matches the model raises -- a field renamed since the row was written, a
+    JSONB value that came back the wrong type -- and TypeError covers a payload
+    that is not a mapping at all. Both are named rather than caught as
+    `Exception`, so a defect in this function is not silently reclassified as
+    "that operator's change was malformed".
+    """
     try:
         fields = {k: v for k, v in payload.items() if k in PolicyRecord.model_fields}
         return PolicyRecord(**fields)
-    except Exception:
+    except (ValidationError, TypeError, AttributeError) as exc:
+        log.error("accepted add_allow could not be reconstructed; the rule is MISSING from "
+                  "this snapshot", exc_info=True,
+                  extra={"event": "overlay_add_allow_invalid",
+                         "raw_ref": payload.get("raw_ref") if isinstance(payload, dict) else None,
+                         "error": f"{type(exc).__name__}: {exc}"})
         return None
 
 

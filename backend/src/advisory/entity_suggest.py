@@ -12,7 +12,7 @@ import math
 
 from ..config import SENSITIVE_TAGS
 from ..models import Asset
-from .client import embed
+from .client import embed_texts
 
 
 def _cos(a: list[float], b: list[float]) -> float:
@@ -42,22 +42,51 @@ def suggest_merges(assets: list[Asset]) -> list[dict]:
         return []
 
     flat = [t for pair in candidates for t in (_text(pair[0]), _text(pair[1]))]
-    vecs = embed(flat)
+    emb = embed_texts(flat)
+    vecs = emb.vectors
 
+    # A dead embedding server used to render as the POSITIVE claim "these two PCI
+    # assets do not resemble each other": embed() returned [] for both "nothing
+    # asked" and "every provider down", so every pair scored name_similarity 0.0
+    # and the suggestion shipped anyway. Zero similarity computed from zero data
+    # is not a measurement. When the vectors are absent we now say so, and drop
+    # the similarity term from confidence rather than scoring it as a hard zero.
     out: list[dict] = []
     for k, (a, b) in enumerate(candidates):
-        sim = _cos(vecs[2 * k], vecs[2 * k + 1]) if len(vecs) > 2 * k + 1 else 0.0
+        have_vecs = emb.ok and len(vecs) > 2 * k + 1
+        sim = _cos(vecs[2 * k], vecs[2 * k + 1]) if have_vecs else None
         shared = sorted(set(a.tags) & set(b.tags) & SENSITIVE_TAGS)
-        confidence = round(0.5 * sim + 0.5 * min(1.0, 0.6 + 0.2 * len(shared)), 3)
+        tag_term = min(1.0, 0.6 + 0.2 * len(shared))
+        # With no similarity, confidence rests on the tag evidence alone instead
+        # of being halved by a fabricated 0.0.
+        confidence = round(0.5 * sim + 0.5 * tag_term, 3) if have_vecs else round(tag_term, 3)
         out.append({
             "a": a.asset_key, "b": b.asset_key,
             "a_tools": a.source_tools, "b_tools": b.source_tools,
             "a_ips": a.ip_set, "b_ips": b.ip_set,
-            "shared_sensitive_tags": shared, "name_similarity": round(sim, 3),
-            "confidence": confidence, "recommended_action": "review",
-            "reason": (f"Both carry {', '.join(shared)} and resemble the same logical asset seen across "
-                       f"{sorted(set(a.source_tools) | set(b.source_tools))}. Review before merging -- "
-                       f"the engine will not merge automatically (different addresses, no shared identifier)."),
+            "shared_sensitive_tags": shared,
+            "name_similarity": round(sim, 3) if have_vecs else None,
+            "similarity_available": have_vecs,
+            "similarity_unavailable_reason": None if have_vecs else (
+                emb.error or "no embedding provider answered"),
+            "confidence": confidence,
+            "confidence_basis": "similarity+tags" if have_vecs else "tags_only",
+            "recommended_action": "review",
+            # The "resemble" clause is a similarity claim, so it may only be made
+            # when a similarity was actually computed. Degraded, we state the tag
+            # evidence we do have and name what is missing -- rather than implying
+            # a resemblance the engine never measured.
+            "reason": (
+                (f"Both carry {', '.join(shared)} and resemble the same logical asset seen across "
+                 f"{sorted(set(a.source_tools) | set(b.source_tools))}. Review before merging -- "
+                 f"the engine will not merge automatically (different addresses, no shared identifier).")
+                if have_vecs else
+                (f"Both carry {', '.join(shared)} and appear across "
+                 f"{sorted(set(a.source_tools) | set(b.source_tools))}. Name similarity could NOT be "
+                 f"computed (no embedding provider answered), so this pair is proposed on shared "
+                 f"sensitive tags alone -- treat the absence of a similarity score as unknown, not as "
+                 f"evidence the assets differ. Review before merging.")
+            ),
         })
     out.sort(key=lambda x: -x["confidence"])
     return out

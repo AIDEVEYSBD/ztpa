@@ -133,12 +133,17 @@ that detects and resolves real conflicts in real time.
   `no_op` (every conflict resolved to "skip") records **nothing**, so the narrated skip and the
   overlay now agree; `conflict` blocks on a contradiction or stale target for human review.
 - **Per-role tool enable/disable** (admin Tools screen) and an admin KPI/cost dashboard.
-  ⚠️ *The toggle is a **feature flag, not an authorization boundary**.* It is **default-on and
-  best-effort**: an absent `ztpa.tool_settings` row enables the capability for **all** roles,
-  and a DB error against a cold cache also yields the default-on map
-  (`tools_registry.enabled_roles`). Write paths are gated by the `require_admin` /
-  `require_approver` / `require_operator` route dependencies in `app/main.py` — those are the
-  authorization boundary. Do not rely on a capability toggle to restrict one.
+  ⚠️ *The toggle is a **feature flag, not an authorization boundary**.* It is **default-on**:
+  an absent `ztpa.tool_settings` row enables the capability for **all** roles. Write paths are
+  gated by the `require_admin` / `require_approver` / `require_operator` route dependencies in
+  `app/main.py` — those are the authorization boundary. Do not rely on a capability toggle to
+  restrict one.
+  It *is*, however, a **kill switch for spend**, and that half is fail-closed
+  (`tools_registry.enabled_roles`): an **unreadable** `ztpa.tool_settings` is not the same as
+  an absent row, and resolves every `ai_capability` to **nobody — admin included** (admin used
+  to be carved out, which made the `rank` switch bypassable on the admin-only recompute route).
+  A disable that was written survives the store breaking afterwards, and a cached map nobody
+  can refresh decays to that fail-closed answer after 60s instead of being served forever.
 - *Where:* `backend/src/change/staging.py`, `backend/src/change/apply.py`, `backend/src/metrics.py`,
   `backend/src/tools_registry.py`, `frontend/components/Staging.tsx`, `frontend/components/admin/`.
 

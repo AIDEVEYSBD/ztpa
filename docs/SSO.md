@@ -83,9 +83,11 @@ Two boundaries this depends on, both worth stating plainly:
   warning.
 - **The per-role AI *capability* toggles are a different mechanism, and are not an
   authorization boundary.** `_require_capability` (admin Tools screen → `ztpa.tool_settings`)
-  is **default-on**: an absent row enables the capability for every role, and a database
-  error against a cold cache yields the same default-on map. It is a feature flag. Never
-  reason about who can write from it — the `require_*` dependencies above are the boundary.
+  is **default-on**: an absent row enables the capability for every role. It is a feature
+  flag. Never reason about who can write from it — the `require_*` dependencies above are the
+  boundary. (An *unreadable* settings table is the opposite case and is fail-closed: it
+  resolves every AI capability to nobody, admin included, so breaking the store cannot
+  re-enable a capability an operator killed.)
 
 Notes:
 

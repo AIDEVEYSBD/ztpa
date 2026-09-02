@@ -19,13 +19,28 @@ export class ApiError extends Error {
   readonly detail: string;
   /** Request path, so an error panel can name the resource that failed. */
   readonly path: string;
+  /**
+   * Did FastAPI itself answer this request?
+   *
+   * `false` means the status above was minted by something in front of the API —
+   * in this app, the Next.js rewrite that proxies /api/* to the backend (see
+   * `looksLikeDeadUpstream`). It matters because the two cases have opposite
+   * remedies and opposite meanings: "the API logged an error handling this" is
+   * a bug report, "nothing is listening at the API" is a process that is not
+   * running, and the second must never be reported as the first.
+   */
+  readonly reachedApi: boolean;
 
-  constructor(status: number, detail: string, path: string) {
+  // `reachedApi` defaults off the status so the transport-failure constructor
+  // (`new ApiError(0, ...)`) cannot forget it: status 0 means no response, which
+  // by definition never reached the API.
+  constructor(status: number, detail: string, path: string, reachedApi: boolean = status !== 0) {
     super(`${path || "request"} -> ${status || "no response"}: ${detail}`);
     this.name = "ApiError";
     this.status = status;
     this.detail = detail;
     this.path = path;
+    this.reachedApi = reachedApi;
     // Downlevelled `extends Error` loses the prototype chain, which would make
     // `instanceof ApiError` false in every consumer. Restore it explicitly.
     Object.setPrototypeOf(this, ApiError.prototype);
@@ -35,6 +50,16 @@ export class ApiError extends Error {
    *  failure, or an aborted request. Distinct from any HTTP answer. */
   get isNetwork(): boolean {
     return this.status === 0;
+  }
+
+  /**
+   * True when the API never answered — whether that surfaced as no response at
+   * all (`isNetwork`) or as a status invented on its behalf by the proxy in
+   * front of it. This, not `isNetwork`, is the question a UI is actually asking
+   * when it wants to say "is the backend up?".
+   */
+  get apiUnreachable(): boolean {
+    return !this.reachedApi;
   }
 }
 
@@ -97,9 +122,77 @@ function detailFor(status: number, parsed: unknown, path: string): string {
   return flat || FALLBACK_DETAIL[status] || `${path} failed with HTTP ${status}.`;
 }
 
-/** Read the failure body once and turn it into a detail string. */
-async function readDetail(r: Response, path: string): Promise<string> {
-  return detailFor(r.status, parseBody(await r.text().catch(() => "")), path);
+/**
+ * THE DEAD BACKEND THAT LOOKED LIKE AN APPLICATION BUG.
+ *
+ * The browser never talks to FastAPI directly: `next.config.mjs` rewrites
+ * /api/* to BACKEND_URL, so every call goes through the Next server. When
+ * nothing is listening on the backend port, that proxy hop fails with
+ * ECONNREFUSED and Next answers the browser itself:
+ *
+ *     HTTP/1.1 500 Internal Server Error
+ *     (no content-type header at all)
+ *     Internal Server Error
+ *
+ * — measured, not assumed, against `next start` 14.2.35 with the backend
+ * stopped. `fetch` resolves, so the transport-failure branch below never fires,
+ * `isNetwork` stays false, and the 502 fallback text never applies. The console
+ * then told the user "The API logged an error handling this request. Retrying
+ * may work; if it does not, the server log has the request id" — about a process
+ * that was not running, whose log therefore contains nothing, and which no
+ * amount of retrying will summon. That is the same class of defect Phase 0
+ * existed to fix, arriving from the other side: a failure reported as the wrong
+ * failure.
+ *
+ * THE DISCRIMINATOR IS THE CONTENT-TYPE HEADER, and it has to be, because the
+ * BODY is ambiguous: Starlette's own last-resort handler answers an unhandled
+ * exception with the plain text `Internal Server Error` too — byte for byte the
+ * same string. What separates them is that every response FastAPI produces
+ * declares a type (`application/json` for HTTPException, for the global
+ * {error, request_id} handler and for every route; `text/plain` for Starlette's
+ * fallback), while the Next proxy failure carries NO content-type at all. So:
+ *
+ *   json          -> the API answered. Never an outage.
+ *   text/plain    -> the API answered, badly. Its log DOES have this request.
+ *   html          -> a gateway error page. This app's API never serves HTML.
+ *   absent        -> nobody wrote a body on purpose. The proxy is talking.
+ *
+ * The rule errs deliberately toward "the API spoke": anything that declared a
+ * type is credited to the API, so a real 500 can never be explained away as an
+ * outage. The cost is that a future proxy which starts labelling its errors
+ * `text/plain` would go undetected — which is why the console test suite drives
+ * this path against a genuinely stopped backend rather than trusting the rule.
+ */
+function looksLikeDeadUpstream(r: Response): boolean {
+  // Only the statuses a proxy invents when it cannot reach its upstream. A 4xx
+  // is always an answer about the request itself, so it is always the API's.
+  if (![500, 502, 503, 504].includes(r.status)) return false;
+  const type = (r.headers.get("content-type") || "").toLowerCase();
+  return type === "" || type.includes("html");
+}
+
+/** What to tell the user when the request never reached the API. Names the one
+ *  thing that is actually wrong, and the one thing that fixes it. */
+function deadUpstreamDetail(status: number): string {
+  return (
+    `Nothing answered at the API. This app proxies /api/* to the backend, the ` +
+    `connection failed, and the proxy returned HTTP ${status} on its behalf — ` +
+    `so this is not an error the API logged, it is the API not running or not ` +
+    `reachable from this server.`
+  );
+}
+
+/** Turn an already-read failure body into the ApiError that describes it — the
+ *  single place that decides whether the API answered or something spoke for it. */
+function failureFrom(r: Response, parsed: unknown, path: string): ApiError {
+  return looksLikeDeadUpstream(r)
+    ? new ApiError(r.status, deadUpstreamDetail(r.status), path, false)
+    : new ApiError(r.status, detailFor(r.status, parsed, path), path);
+}
+
+/** Read the failure body once and classify it. */
+async function readFailure(r: Response, path: string): Promise<ApiError> {
+  return failureFrom(r, parseBody(await r.text().catch(() => "")), path);
 }
 
 /** Normalize anything thrown at a call site into an ApiError, so an error state
@@ -125,7 +218,7 @@ async function j<T>(url: string, init?: RequestInit): Promise<T> {
     // Status 0 lets a caller say "no answer" instead of guessing a status.
     throw new ApiError(0, e instanceof Error && e.message ? e.message : "The request could not be sent.", url);
   }
-  if (!r.ok) throw new ApiError(r.status, await readDetail(r, url), url);
+  if (!r.ok) throw await readFailure(r, url);
   try {
     return (await r.json()) as T;
   } catch {
@@ -178,7 +271,10 @@ async function readHealth(): Promise<HealthReport> {
   // 503 is this endpoint's considered answer about itself, not a transport
   // failure — but only when the body actually is the report.
   if (isReport && (r.ok || r.status === 503)) return parsed as HealthReport;
-  throw new ApiError(r.status, detailFor(r.status, parsed, url), url);
+  // Not the report. It may still not be the API talking at all: with the backend
+  // stopped, THIS is the call that decides whether the whole console reads
+  // "degraded" or "down", so it must not mistake the proxy's 500 for the API's.
+  throw failureFrom(r, parsed, url);
 }
 
 /**
@@ -211,6 +307,40 @@ export type SnapshotSummary = {
 } & Provenance;
 
 export type SnapshotList = { snapshots: any[]; active: string } & Provenance;
+
+/**
+ * One row of the governance audit trail (`ztpa.audit_log`).
+ *
+ * `actor` is the coarse kind the CHECK constraint allows — 'agent' | 'user' |
+ * 'system' — and is NOT a person. The person is `actor_email` / `actor_sub`,
+ * written inside `db.audit()` from the request context so no call site can
+ * forget them, and `actor_role` is the role that request carried. All three are
+ * optional here on purpose: rows written before those columns existed have
+ * them null, and an audit screen that rendered a missing actor as a present one
+ * would be lying about exactly the field the screen exists to show. The UI
+ * renders "unattributed" for a null, never a guess.
+ */
+export type AuditEntry = {
+  id: string;
+  ts: string;
+  actor: string;
+  action: string;
+  subject?: string | null;
+  snapshot_id?: string | null;
+  detail?: Record<string, unknown> | null;
+  actor_email?: string | null;
+  actor_sub?: string | null;
+  actor_role?: string | null;
+};
+
+/** A page of the audit trail. `total` is the count of ALL matching rows, not of
+ *  `items` — the pager needs to know what it is a window onto. */
+export type AuditPage = {
+  items: AuditEntry[];
+  total: number;
+  limit: number;
+  offset: number;
+};
 
 const post = (body?: unknown): RequestInit =>
   ({ method: "POST", headers: { "content-type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
@@ -254,6 +384,11 @@ export const api = {
   adminTools: () => j<{ tools: ToolInfo[]; roles: string[] }>("/api/admin/tools"),
   setToolRoles: (key: string, enabled_roles: string[]) => j<{ ok: boolean; tool_key: string; enabled_roles: string[] }>(`/api/admin/tools/${encodeURIComponent(key)}`, post({ enabled_roles })),
   adminMetrics: (days = 30) => j<AdminMetrics>(`/api/admin/metrics?days=${days}`),
+  // Admin-only, newest first, `limit` bounded by the API. The offset/limit pair
+  // is passed explicitly rather than defaulted here so the screen's pager and
+  // the request it makes can never disagree about which window is on screen.
+  audit: (limit: number, offset: number) =>
+    j<AuditPage>(`/api/audit?limit=${encodeURIComponent(limit)}&offset=${encodeURIComponent(offset)}`),
   ask: (question: string) => j<AskResult>("/api/agent/ask", post({ question })),
   askSuggestions: () => j<{ suggestions: string[] }>("/api/agent/suggestions"),
   report: () => j<any>("/api/report"),

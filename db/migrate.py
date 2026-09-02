@@ -23,14 +23,26 @@ The trade-off is that a syntax error reports a character offset into the file
 rather than a statement index; the offset is in the error, and the file name is
 printed with it.
 
+THIS IS THE ONLY WAY SCHEMA CHANGES APPLY. Until Phase 2 it was one of three:
+`db/schema.sql`, this runner, and four `ensure_*` helpers in
+`backend/src/persist.py` that executed ALTER/CREATE from the REQUEST path behind
+module-level latches -- so the live schema depended on which endpoints had been
+hit since the last restart, and one table (`asset_merges`) existed in no .sql
+file at all. Those helpers are deleted. The corollary is that this step is no
+longer optional on a deploy: a missing column now fails the write that needs it,
+loudly, instead of being silently created by the next request. `render.yaml`
+runs it in `buildCommand`; see docs/DEPLOY.md.
+
 Usage:
     python db/migrate.py                    # baseline schema.sql, then pending migrations
     python db/migrate.py db/auth_schema.sql # that file as the baseline, then pending migrations
     python db/migrate.py --migrations-only  # skip the baseline (deploy/preDeploy step)
     python db/migrate.py --status           # report applied vs pending, change nothing
+    python db/migrate.py --check            # exit 1 if anything is pending (CI / pre-deploy gate)
 
-Exit codes: 0 applied (or nothing to do), 2 DATABASE_URL missing / file missing,
-3 the repo and the database disagree about an already-applied migration.
+Exit codes: 0 applied (or nothing to do), 1 --check found pending migrations,
+2 DATABASE_URL missing / file missing, 3 the repo and the database disagree about
+an already-applied migration.
 """
 
 from __future__ import annotations
@@ -77,10 +89,17 @@ def version_of(path: pathlib.Path) -> str:
 
 
 def migration_files(directory: pathlib.Path = MIGRATIONS_DIR) -> list[pathlib.Path]:
-    """Every migration, ordered by version. Missing directory = no migrations."""
+    """Every migration, ordered by version. Missing directory = no migrations.
+
+    Sorted NUMERICALLY, not lexicographically: the repo pads to four digits, so
+    the two agree today, but the day someone adds `10_...` next to `0009_...` a
+    filename sort would run them out of order -- silently, once, on a production
+    database. `int()` is safe because `version_of` has already rejected any name
+    whose prefix is not digits.
+    """
     if not directory.is_dir():
         return []
-    files = sorted(directory.glob("*.sql"), key=lambda p: p.name)
+    files = sorted(directory.glob("*.sql"), key=lambda p: (int(version_of(p)), p.name))
     versions = [version_of(f) for f in files]           # validates every name
     dupes = {v for v in versions if versions.count(v) > 1}
     if dupes:
@@ -142,7 +161,8 @@ def _drifted(files: list[pathlib.Path], applied: dict[str, tuple[str, str]]) -> 
 
 def main(argv: list[str] | None = None) -> int:
     args = list(argv if argv is not None else sys.argv[1:])
-    status_only = "--status" in args
+    check_only = "--check" in args
+    status_only = "--status" in args or check_only
     skip_baseline = "--migrations-only" in args
     positional = [a for a in args if not a.startswith("-")]
 
@@ -184,6 +204,13 @@ def main(argv: list[str] | None = None) -> int:
             print(f"schema {SCHEMA}: {len(applied)} applied, {len(pending)} pending")
             for f in files:
                 print(f"  [{'applied' if version_of(f) in applied else 'pending'}] {f.name}")
+            if check_only and pending:
+                # A gate, not a report: "the database this is about to serve is
+                # behind the code about to be deployed" has to be able to fail a
+                # pipeline, which needs a non-zero exit.
+                print(f"ERROR: {len(pending)} migration(s) pending; run `python db/migrate.py`.",
+                      file=sys.stderr)
+                return 1
             return 0
 
         if not skip_baseline:

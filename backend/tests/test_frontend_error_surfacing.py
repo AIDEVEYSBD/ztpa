@@ -76,7 +76,11 @@ DISABLE_DIRECTIVE = "eslint-disable-next-line no-restricted-syntax"
 KNOWN_EXEMPT = {
     "app/sso/logout/route.ts",       # no readable session == the same instruction as a valid one
     "components/auth/SsoSignIn.tsx",  # a probe that does not answer IS the "waking" signal
-    "lib/baseurl.ts",                # headers() throws outside a request scope; that is the fallback's job
+    # lib/baseurl.ts used to be the third: it called next/headers' `headers()`,
+    # which throws outside a request scope, and discarded that to reach the
+    # APP_URL fallback. It no longer reads the request at all (host-header
+    # injection -- see the contract entry below), so there is nothing left to
+    # discard and the exemption is gone with the try/except that needed it.
 }
 
 
@@ -249,8 +253,13 @@ SURFACING_CONTRACT: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
         # Span-based popover: ErrorState renders a <div>, which cannot legally
         # nest inside it, so the panel is hand-rolled -- but it is still a
         # role="alert" carrying the status and the detail.
+        # `errorStatusLabel(err)` replaced the hand-rolled `HTTP ${err.status}`
+        # here: the popover has to print the machine-readable status, and it must
+        # print the SAME one the block panels do -- including the case where the
+        # status came from the proxy rather than from the API (see the lib/api.ts
+        # entry below). One vocabulary, one place to change it.
         "components/RuleRef.tsx",
-        ('role="alert"', "Could not load rule", "err.status"),
+        ('role="alert"', "Could not load rule", "errorStatusLabel(err)", "err.detail"),
         ("catch { setRule(null); }",),
     ),
     (
@@ -286,10 +295,75 @@ SURFACING_CONTRACT: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
         # present while the five panels below the banner were HTTP 500. The
         # behavioural half lives in tests/test_degraded_console.py, which drives
         # the real API with DATABASE_URL blanked; keep both.
+        #
+        # ...AND THEN IT WAS REFUTED AGAIN, which is why the required strings
+        # changed. `failures` measures the SIX CONSOLE-LEVEL feeds this page
+        # fetches. The panels a user is looking at belong to the child screen,
+        # which fetches its own data -- so on the Change Gate with no database
+        # the banner rendered "Every panel below loaded" directly above two HTTP
+        # 500 panels. Conditioning the sentence on `failures` was necessary and
+        # not sufficient: the signal has to be SCREEN-AWARE.
+        #
+        # `useScreenFailures` is that signal (components/PanelHealth.tsx). Every
+        # ErrorState/InlineError mounted under the banner registers itself, so
+        # rendering a failure IS reporting it and a new screen cannot forget to.
+        # `pending` is the other half: "nothing has failed" is not "everything
+        # loaded" while a feed is still in flight.
         "app/console/page.tsx",
         ('role="status"', "degraded_reasons", "degraded.map",
-         "failures.length === 0", "fromMemory"),
-        ("everything below was computed for real",),
+         "useScreenFailures", "PanelHealthProvider", "screenFailures.length > 0",
+         "pending > 0", "fromMemory"),
+        ("everything below was computed for real", "Every panel below loaded"),
+    ),
+    (
+        # THE DEAD BACKEND THAT READ AS AN APPLICATION BUG.
+        #
+        # The browser never reaches FastAPI directly -- next.config.mjs rewrites
+        # /api/* to BACKEND_URL. With nothing listening there, the Next server
+        # answers `HTTP 500`, no content-type, body "Internal Server Error".
+        # `fetch` RESOLVES, so the transport branch never fired, `isNetwork`
+        # stayed false, and Feedback's `status >= 500` hint told the operator
+        # "The API logged an error handling this request... the server log has
+        # the request id" -- about a process that was not running, whose log
+        # therefore has nothing in it. Same class of lie as an empty panel: the
+        # failure reported as a different failure.
+        #
+        # `reachedApi` is the fact that fixes it, and `looksLikeDeadUpstream` is
+        # the discriminator: a 5xx with neither a JSON content-type nor a
+        # readable `detail` is not FastAPI talking. Both halves are required, so
+        # a genuine FastAPI 500 is never relabelled as an outage.
+        "lib/api.ts",
+        ("looksLikeDeadUpstream", "reachedApi", "apiUnreachable", "deadUpstreamDetail"),
+        (),
+    ),
+    (
+        # ...and the panel says it. `apiUnreachable` (not `isNetwork`) gates the
+        # headline and the hint, so the proxy's 500 reads as "the API did not
+        # respond" and NOT as an error the API logged.
+        "components/ui/Feedback.tsx",
+        ("e.apiUnreachable", "from the proxy", "useReportedFailure"),
+        (),
+    ),
+    (
+        # HOST-HEADER INJECTION. getBaseUrl() built magic-link / reset / invite
+        # URLs from `x-forwarded-host` or `host` -- both client-controlled. One
+        # curl with a forged Host produced a real single-use sign-in token inside
+        # a link pointing at the attacker, in a mail that genuinely came from us:
+        # account takeover of any address an attacker can name. The origin is now
+        # pinned to configuration and the request is not consulted at all, so the
+        # forbidden list is the whole point of the entry.
+        "lib/baseurl.ts",
+        ("process.env.APP_URL", "process.env.AUTH_URL"),
+        ("next/headers", "headers()", "x-forwarded-host", 'h.get("host")'),
+    ),
+    (
+        # The audit screen may not render an empty table out of a failed read:
+        # "no actions recorded" is a claim about the governance log, and this is
+        # the one screen whose entire purpose is that claim being true.
+        "components/admin/AuditAdmin.tsx",
+        ('<ErrorState resource="the audit trail"', "isAdmin(role)", "setPage(undefined)",
+         "Array.isArray(p.items)"),
+        ("setPage({ items: []",),
     ),
     (
         # The chip must not read a missing provider as "not ollama" and print a
@@ -394,3 +468,91 @@ def test_the_linter_is_a_declared_dependency_not_a_ci_side_install() -> None:
     assert "--no-save" not in steps, (
         "CI is installing a package outside the lockfile again. Whatever it is "
         "belongs in package.json + package-lock.json, where it is reviewable.")
+
+
+# ---------------------------------------------------------------------------
+# Host-header injection: a link in an email may never be built from the request.
+# ---------------------------------------------------------------------------
+
+# The two headers that carry a client-supplied origin. `Host` is a request header
+# like any other; `x-forwarded-host` is whatever the last hop chose to pass on.
+# Neither is evidence of anything unless a trusted proxy is known to overwrite
+# it, and that is not a property this repository can assert about its deploys.
+HOST_HEADER_READS = ('"x-forwarded-host"', "'x-forwarded-host'", '.get("host")', ".get('host')")
+
+
+def test_no_frontend_source_derives_an_origin_from_the_request_host() -> None:
+    """Pins the fix for the account-takeover primitive the security review found.
+
+    `lib/baseurl.ts` built magic-link, password-reset and invite URLs from
+    `x-forwarded-host` or `host`. Both are attacker-controllable on any request
+    the attacker makes:
+
+        curl -H 'Host: attacker.example' https://app/forgot -d email=admin@corp
+
+    mints a real, valid, single-use sign-in token and embeds it in a link to the
+    attacker's server, inside a mail that genuinely came from this application.
+    The victim clicks, the attacker receives the token, and replays it here.
+
+    The distinction that makes this different from `req.nextUrl.origin` (still
+    used, correctly, in app/sso/logout/route.ts to bounce a user back to the
+    origin they arrived on): there, the forged value is echoed to the same
+    client that forged it, which gains an attacker nothing. Here, the forged
+    value is PERSISTED INTO A CREDENTIAL SENT TO SOMEONE ELSE. Only the second
+    is a vulnerability, and only the second is banned.
+
+    The whole tree is scanned rather than just baseurl.ts, because the next
+    helper that wants "the current origin" is where this comes back.
+    """
+    hits = [
+        f"{path}:{i}: {line.strip()}"
+        for path, text in _iter_sources()
+        for i, line in enumerate(text.splitlines(), 1)
+        if not _COMMENT_LINE.match(line)
+        for pat in HOST_HEADER_READS
+        if pat in line
+    ]
+    assert not hits, (
+        "A request-supplied host is being read. If this is for a link that "
+        "leaves the server (email, redirect target stored anywhere), it is an "
+        "account-takeover primitive: pin the origin to APP_URL/AUTH_URL as "
+        "lib/baseurl.ts does.\n  " + "\n  ".join(hits)
+    )
+
+
+# ---------------------------------------------------------------------------
+# The audit screen exists, is reachable, and is reachable only by an admin.
+# ---------------------------------------------------------------------------
+
+def test_the_audit_screen_is_wired_into_the_admin_only_nav() -> None:
+    """A screen nobody can navigate to is not a screen.
+
+    Phase 2's exit criterion is "an admin Audit screen exists and is role-gated".
+    Three things have to line up for that to be true, and each one is a separate
+    edit somebody can forget: the screen id must exist, the console must render
+    the component for it, and the nav entry must sit in the ADMIN group -- the
+    block Sidebar renders only when `role === "admin"`. The API is the real gate
+    (`Depends(require_admin)`); this asserts the door matches the lock.
+    """
+    sidebar = (FRONTEND / "components/Sidebar.tsx").read_text(encoding="utf-8")
+    console = (FRONTEND / "app/console/page.tsx").read_text(encoding="utf-8")
+    screen = (FRONTEND / "components/admin/AuditAdmin.tsx").read_text(encoding="utf-8")
+
+    assert '| "audit"' in sidebar, "ScreenId has no `audit` member"
+
+    # The nav entry must be inside the ADMIN array, not CONSOLE or REFERENCE.
+    admin_block = sidebar.split("const ADMIN: NavDef[] = [", 1)
+    assert len(admin_block) == 2, "the ADMIN nav group has been renamed or removed"
+    admin_block = admin_block[1].split("];", 1)[0]
+    assert '{ id: "audit"' in admin_block, "the Audit entry is not in the admin-only nav group"
+    assert 'role === "admin" && (' in sidebar, "the ADMIN group is no longer gated on the admin role"
+
+    assert 'screen === "audit" && <AuditAdmin />' in console, "the console does not render the audit screen"
+    # ...and the component refuses on its own, so reaching it another way answers
+    # with the permissions decision rather than firing an admin-only request.
+    assert "isAdmin(role)" in screen, "AuditAdmin does not check the session role"
+
+    # It must page. A trail that only ever shows its first N rows, with no way to
+    # see the rest and no statement of how many there are, is a demo of a trail.
+    assert "api.audit(limit, offset)" in screen, "the audit screen does not paginate"
+    assert "of ${total} entries" in screen, "the audit screen does not say how much it is NOT showing"

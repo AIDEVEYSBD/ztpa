@@ -791,9 +791,11 @@ profile normalizer runs.
 `AI-16` Each capability **shall** be enable-able per role from an admin screen, backed by a
 `tool_settings` table, and a disabled capability **shall** 403 for that role.
 
-> **As-built constraint (`LIM-11`).** An absent `tool_settings` row defaults to *all roles*,
-> and a DB error with a cold cache also yields the default-on map. This is a **feature-flag
-> layer, not an authorization boundary**, and must not be relied on to restrict write paths.
+> **As-built constraint (`LIM-11`).** An absent `tool_settings` row defaults to *all roles*.
+> This is a **feature-flag layer, not an authorization boundary**, and must not be relied on
+> to restrict write paths. A DB error no longer yields that default-on map: an unreadable
+> `tool_settings` resolves every `ai_capability` to *no roles* — admin included — so the
+> spend kill switch cannot be undone by breaking the table that stores it.
 
 ---
 

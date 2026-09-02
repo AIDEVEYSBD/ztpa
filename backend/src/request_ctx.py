@@ -17,15 +17,40 @@ the shipped Render blueprint deploys the API as a public web service -- so
 "keep it private" was a deployment convention, not a control. `NPR_PROXY_SECRET`
 turns it into one:
 
-  * SET (production): the proxy must present the same value in
+  * SET (production): every request must present the same value in
     `x-npr-proxy-secret`. `_ActorMiddleware` compares it with
-    `hmac.compare_digest` and rejects any request carrying an `x-npr-*` header
-    without a valid secret with 401 -- so a forged role header from the open
-    internet is refused rather than believed.
+    `hmac.compare_digest` and answers 401 without it.
   * UNSET (local dev, and any deployment that has not configured it): behaviour
     is exactly as before -- the headers are trusted as-is -- but `/api/health`
     reports `proxy_auth: false` so the gap is visible on the status payload
     instead of being an undocumented assumption.
+
+THE SECRET AUTHENTICATES THE REQUEST, NOT THE CLAIM. This is the correction a
+five-lens security review forced, and the distinction is the whole control. The
+first implementation demanded the secret only from a request that *claimed* an
+identity (`if claims_identity and not verify(...)`), on the reasoning that a
+request claiming nothing has nothing to forge. But the anonymous default is not
+"no access" -- it is `Actor(role="viewer")`, a real principal that reads every
+finding, every rule, the whole asset inventory and the reachability graph of the
+customer's network. So with the secret correctly configured and the proxy
+correctly forwarding it, `curl https://api.example.com/api/findings` with NO
+HEADERS AT ALL still got a full answer: the control that the entire Phase 0
+authorization model rests on had a hole exactly the shape of sending nothing.
+
+A request is now refused unless it presents the secret, whatever it claims. Two
+exemptions, both narrow and both listed in `UNAUTHENTICATED_PATHS` /
+`secret_required_for` below rather than scattered through the middleware:
+
+  * `/api/live` -- the platform's liveness probe (render.yaml healthCheckPath).
+    Render cannot be given the secret, and a probe that 401s restart-loops a
+    healthy process. It returns `{"status": "alive"}` and touches nothing.
+  * CORS preflight (`OPTIONS`) -- a browser sends no custom headers on a
+    preflight by design, so requiring one would make every cross-origin call
+    fail at the preflight, before the request that carries the secret is ever
+    sent. A preflight carries no credentials and reaches no handler; it is
+    answered by CORSMiddleware with headers only. A preflight that nonetheless
+    CLAIMS an identity is still refused -- exempting the blanket requirement is
+    not the same as trusting a forged header.
 
 The proxy still strips any client-supplied `x-npr-*` headers before setting its
 own; the shared secret is what makes that stripping non-bypassable by talking to
@@ -44,6 +69,11 @@ VALID_ROLES = ("admin", "analyst", "viewer")
 # means a request is claiming an identity (and therefore needs that proof).
 PROXY_SECRET_HEADER = "x-npr-proxy-secret"
 ACTOR_HEADER_PREFIX = "x-npr-"
+
+# The only paths served without the shared secret while the boundary is enforced.
+# Deliberately a frozenset of exact paths, not a prefix match: "/api/live" must
+# not admit "/api/livewire" or "/api/live/../findings" through a startswith().
+UNAUTHENTICATED_PATHS = frozenset({"/api/live"})
 
 
 @dataclass(frozen=True)
@@ -118,3 +148,21 @@ def verify_proxy_secret(presented: str | None) -> bool:
     if not expected:
         return True
     return hmac.compare_digest(presented or "", expected)
+
+
+def secret_required_for(path: str, method: str) -> bool:
+    """Must THIS request present the shared secret, whatever it claims?
+
+    The answer for a configured boundary is "yes" for everything except the two
+    exemptions the module docstring justifies: the platform liveness probe, and a
+    CORS preflight. Unconfigured, always False -- dev and every deployment that
+    has not set NPR_PROXY_SECRET behave exactly as they did before.
+
+    Kept here, next to the docstring that explains it, rather than inline in the
+    middleware: the shape of this predicate IS the trust boundary, and a test can
+    ask it a question without standing up an ASGI app."""
+    if not proxy_auth_enabled():
+        return False
+    if method.upper() == "OPTIONS":
+        return False
+    return path not in UNAUTHENTICATED_PATHS

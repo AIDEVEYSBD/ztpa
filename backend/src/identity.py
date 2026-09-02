@@ -68,17 +68,52 @@ union-find rooted at `min(name)`, byte-identical output across processes and
 PYTHONHASHSEED values) is a property of this file and every addition preserves
 it: sets are used only as internal scratch, never in an output path, and every
 group is `sorted()` before it is read.
+
+WITHHOLDING IS A DECISION, SO IT IS ANNOUNCED
+---------------------------------------------
+The guards are the good half of this module, and they were also its quietest.
+`IdentityResult.suppressed_merges` and `.suppressed_by_reason` are computed
+correctly and then dropped: `analyzers.run_all.run()` copies assets,
+correlations and alias_map out of the result and never reads the counts, so the
+only surviving trace of "we withheld six merges on this estate" is a set of
+confidence-0.0 correlation rows nobody queries. To an operator looking at two
+asset cards for what they believe is one host, the engine appears to have simply
+not noticed.
+
+Two events are logged here, at levels that match what they mean:
+
+  * merges WITHHELD (INFO). Not a failure -- it is the module working -- but it
+    is a queue of human decisions the estate is waiting on, and the by-reason
+    breakdown says which. `unscoped_ip` in particular is an export-quality
+    finding ("your export declares no VPC/VRF"), not a network finding.
+  * a manual merge naming a name NOBODY OBSERVED (WARNING). That one is a
+    failure: a human went to the review queue, confirmed two assets are the same
+    host, and the engine dropped the answer because the name is not in this
+    snapshot's entity set (a renamed host, a tool no longer ingested, a merge
+    confirmed against an older export). Nothing told them. `run_all` folds
+    merges into the snapshot fingerprint, so the id even changes -- a new
+    snapshot that is identical to the old one.
+
+Logging cannot reach the fact path: no branch below reads a logger, and the
+`sorted()` in each call site is there so the MESSAGE is deterministic too.
 """
 
 from __future__ import annotations
 
 import ipaddress
+import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
 
 from .models import Asset, AssetCorrelation
 from .netaddr import parse_net
 from .normalizers.common import INTERNET_CIDR, ObservedEntity
+
+# A child of the API's logger, so an identity decision comes out as one JSON line
+# with the request id already attached (app/main.py configures "npr.api"). In the
+# engine-only contexts -- verify_engine.py, the test suite -- it propagates to
+# the root logger, which is where pytest's caplog can see it.
+log = logging.getLogger("npr.api.identity")
 
 # "An address object of either family". Named here rather than reused from
 # `netaddr`, whose same-spelled private name is the isinstance TUPLE of these two
@@ -424,9 +459,22 @@ def resolve_identities(entities: list[ObservedEntity],
     # Deterministic like the others; only union names we actually observed.
     # These bypass every guard above BY DESIGN: the guards exist to hand an
     # ambiguous collision to a human, and this is the human's answer coming back.
+    unmatched: list[tuple[str, str, list[str]]] = []
     for a, b in manual_merges:
         if a in parent and b in parent:
             union(a, b)
+        else:
+            # The operator's decision is being DROPPED. Collected rather than
+            # logged inline so one line covers the whole run, and sorted so the
+            # line is as deterministic as the assets it describes.
+            unmatched.append((a, b, sorted(n for n in (a, b) if n not in parent)))
+    if unmatched:
+        log.warning("confirmed asset merges name entities that are not in this snapshot; "
+                    "the operator's decision was NOT applied",
+                    extra={"event": "identity_manual_merge_unmatched",
+                           "count": len(unmatched),
+                           "pairs": [{"a": a, "b": b, "missing": miss}
+                                     for a, b, miss in sorted(unmatched)]})
 
     components: dict[str, list[str]] = defaultdict(list)
     for n in names:
@@ -540,6 +588,17 @@ def resolve_identities(entities: list[ObservedEntity],
         reason_counts[reason] = reason_counts.get(reason, 0) + 1
     result.suppressed_merges = sum(reason_counts.values())
     result.suppressed_by_reason = {r: reason_counts[r] for r in sorted(reason_counts)}
+    if result.suppressed_merges:
+        # INFO, not WARNING: withholding is the correct answer to an ambiguous
+        # collision, and a demo estate legitimately has one every run. It is
+        # still a queue of decisions waiting on a human, which is why it is said
+        # out loud at all -- `run_all.run()` drops these counts on the floor, so
+        # this line is currently the ONLY place outside the correlation rows
+        # where the number appears.
+        log.info("candidate asset merges withheld pending human review",
+                 extra={"event": "identity_merges_withheld",
+                        "withheld": result.suppressed_merges,
+                        "by_reason": result.suppressed_by_reason})
 
     # audit: human-confirmed merges (so the unified asset shows as cross-tool correlated)
     for a, b in manual_merges:

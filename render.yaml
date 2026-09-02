@@ -14,7 +14,24 @@ services:
     runtime: python
     plan: free
     rootDir: backend
-    buildCommand: pip install -r requirements.txt
+    # MIGRATIONS RUN HERE, and they are not optional. Until Phase 2 the schema
+    # partly applied itself: four `ensure_*` helpers in src/persist.py executed
+    # ALTER/CREATE from the request path, so a deploy against a database missing
+    # a column limped along until the right endpoint happened to be hit. Those
+    # helpers are deleted, so a missing column is now a failed write. The
+    # migration runner is idempotent (`no pending migrations` on a re-run), and
+    # this build FAILS if it cannot reach the database — deliberately: shipping
+    # code whose schema was never applied is the outcome worth preventing.
+    #
+    # `../db/migrate.py` because rootDir is `backend`. Render exposes envVars to
+    # the build, so DATABASE_URL below is available here.
+    #
+    # THE RIGHT HOME FOR THIS IS `preDeployCommand`, which runs after the build
+    # and before traffic shifts — but Render only offers pre-deploy commands on
+    # paid instance types, and this blueprint is `plan: free`. On a paid plan,
+    # move the migrate call out of buildCommand and into:
+    #     preDeployCommand: python ../db/migrate.py --migrations-only
+    buildCommand: pip install -r requirements.txt && python ../db/migrate.py
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     # Liveness, NOT readiness. /api/health reports degraded (503) when a
     # dependency such as the database is unreachable — correct for a status

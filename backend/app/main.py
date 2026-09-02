@@ -9,6 +9,7 @@ memory for live reachability/simulation (identical data to the persisted snapsho
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import json
 import logging
 import os
@@ -37,16 +38,23 @@ from src.change import staging as staging_mod  # noqa: E402
 from src.change.requests import DEMO_REQUESTS  # noqa: E402
 from src.change.simulate import simulate_change  # noqa: E402
 from src.scenarios import SCENARIOS, write_scenario  # noqa: E402
-from src.db import audit, delete_snapshot_children, fetch_all, fetch_one, get_conn, ping, upsert  # noqa: E402
+# `delete_snapshot` is aliased because the admin route below is also called
+# `delete_snapshot`: the route definition would otherwise shadow the import, and
+# the route would call itself. The alias keeps the two names distinguishable at
+# every call site instead of relying on definition order.
+from src.db import (  # noqa: E402
+    audit, delete_snapshot as delete_snapshot_row, fetch_all, fetch_one, get_conn, ping, upsert,
+)
 from src.graph.zones import zone_of  # noqa: E402
 from src.ids import det_id  # noqa: E402
 from src.models import ChangeRequest, RankedAction, RankedActions  # noqa: E402
 from src.persist import (  # noqa: E402
-    accept_remediation_revision, cache_explanation, delete_asset_merge, ensure_change_request_status,
+    accept_remediation_revision, cache_explanation, delete_asset_merge,
     asset_rows, canonical_rule_rows, correlation_rows, finding_rows, graph_edge_rows,
     graph_node_rows, load_applied_changes, load_asset_merges,
     load_campaign_plan, load_remediation_thread, persist_asset_merge, persist_campaign_plan,
-    persist_change_decision, persist_engine_result, persist_ranked_actions, persist_remediation_revision,
+    persist_change_decision, persist_change_decision_row, persist_change_request_row,
+    persist_engine_result, persist_ranked_actions, persist_remediation_revision,
     persist_staged_change, reject_change_request, reset_change_workflow, resolved_object_rows,
     snapshot_counts, snapshot_row,
 )
@@ -120,11 +128,19 @@ class _ActorMiddleware:
     async context before the (threadpooled) endpoint runs, so anyio copies the
     values into the worker thread.
 
-    The boundary: when NPR_PROXY_SECRET is configured, a request may only claim an
-    identity (`x-npr-*`) if it also presents the secret -- otherwise 401, and the
-    actor is never set from those headers. Unconfigured, the headers are trusted
-    exactly as before and /api/health reports `proxy_auth: false`. See
-    src/request_ctx.py for why this exists."""
+    The boundary: when NPR_PROXY_SECRET is configured, EVERY request must present
+    the secret -- not only one that claims an identity. The earlier form
+    (`claims_identity and not verify(...)`) authenticated the claim rather than
+    the request, so a header-less call from the open internet was served as the
+    default `viewer`, which reads the entire estate. `request_ctx` documents that
+    at length; `request_ctx.secret_required_for` holds the two exemptions
+    (/api/live, CORS preflight). Unconfigured, the headers are trusted exactly as
+    before and /api/health reports `proxy_auth: false`.
+
+    Order matters and is not accidental: this middleware is added LAST, so it is
+    the OUTERMOST layer and sees a request before CORSMiddleware. That is why the
+    preflight exemption lives here rather than being left to CORS -- a 401 with no
+    CORS headers on the preflight fails the real request before it is ever sent."""
 
     def __init__(self, app):
         self.app = app
@@ -140,10 +156,16 @@ class _ActorMiddleware:
         request_ctx.set_request_id(rid)
         request_ctx.set_actor(None, None, None)   # reset: contextvars outlive a pooled worker
 
+        # Two independent reasons to demand the secret, OR'd: the request claims
+        # an identity (forged-header defence, unchanged), or the boundary is
+        # enforced for this request at all (anonymous-access defence, new).
         claims_identity = any(k.startswith(request_ctx.ACTOR_HEADER_PREFIX) for k in h)
-        if claims_identity and not request_ctx.verify_proxy_secret(h.get(request_ctx.PROXY_SECRET_HEADER)):
-            log.warning("rejected forged actor headers", extra={
+        must_present = request_ctx.secret_required_for(scope.get("path") or "", scope.get("method") or "")
+        if (claims_identity or must_present) and not request_ctx.verify_proxy_secret(
+                h.get(request_ctx.PROXY_SECRET_HEADER)):
+            log.warning("rejected a request that did not come through the proxy", extra={
                 "event": "proxy_auth_failed", "path": scope.get("path"),
+                "claimed_identity": claims_identity,
                 "client": (scope.get("client") or ("-",))[0]})
             response = JSONResponse(
                 status_code=401,
@@ -198,11 +220,35 @@ def require_operator() -> None:
 
 
 def _require_capability(key: str) -> None:
-    """403 a disabled AI capability for the caller's role (fail-closed).
+    """403 a capability the admin Tools screen has turned off for the caller's role.
 
-    NOT an authorization layer: an absent tool_settings row defaults to every
-    role, so this is a feature toggle. The require_* dependencies above are what
-    gate a mutating route."""
+    Its exact strength, stated in full because this docstring twice claimed more
+    than the code delivered ("fail-closed" over a lookup that failed open, then
+    "stops the spend even in the outage" over a lookup that exempted admin):
+
+      * a capability nobody has ever configured is ON for every role -- this is an
+        opt-out toggle, not an authorization layer. The require_* dependencies
+        above are what gate a mutating route, and they run as FastAPI
+        dependencies so they cannot be reached around;
+      * a capability that has been turned off is OFF, and stays off when the
+        database holding that decision becomes unreachable. Every key reached
+        from here is an `ai_capability`, and an unreadable ztpa.tool_settings
+        resolves those to NOBODY -- admin included (src/tools_registry.py,
+        UNKNOWN_SPEND_ROLES). Admin is not carved out precisely because admin is
+        who can spend: /api/actions/recompute is admin-only, so an admin
+        carve-out was the whole bypass. What an operator keeps during the outage
+        is the diagnostic surface -- GET /api/admin/tools, /api/health and every
+        read of the estate are gated by ROLE, and never come through here;
+      * a disable that was successfully written survives the store breaking
+        afterwards: the toggle is applied to the in-process map, and a map that
+        can no longer be refreshed decays to the fail-closed answer after
+        `_MAX_STALE` rather than being served forever. That decay is also the
+        bound on the one residual window -- a sibling worker the toggle never
+        reached, holding a map read before it.
+
+    Called from the endpoint BODY rather than as a dependency on purpose: it is
+    the second question, asked after the role guard has answered the first, and
+    several routes need it only on the branch that actually spends."""
     if not tools_registry.is_enabled(key):
         raise HTTPException(403, f"capability '{key}' is disabled for role {request_ctx.role()}")
 
@@ -264,12 +310,27 @@ def _load_applied() -> tuple[list[dict], bool]:
         return [], False
 
 
-def _run_engine(scenario: str) -> EngineResult:
+EngineInputs = tuple[list[tuple[str, str]], list[dict]]   # (confirmed merges, applied changes)
+
+
+def _run_engine(scenario: str, inputs: EngineInputs | None = None) -> EngineResult:
     """Run the deterministic engine for a scenario, recording on _ENGINE_STATE
     whether its two DB-backed inputs actually loaded. Every rebuild goes through
-    here so no call site can quietly recompute on a truncated input set."""
-    merges, merges_ok = _load_merges()
-    applied, applied_ok = _load_applied()
+    here so no call site can quietly recompute on a truncated input set.
+
+    `inputs` lets a caller that ALREADY holds a transaction hand the two inputs in
+    rather than have this function open two more connections to re-read them.
+    That is what makes the merge/reset routes atomic: the rows they just wrote are
+    not visible to a different connection until they commit, so a rebuild that
+    re-read them would recompute the snapshot WITHOUT the change it is persisting
+    the consequences of. Passing them in means loaded_ok is true by construction:
+    they came off a live cursor."""
+    if inputs is not None:
+        merges, applied = inputs
+        merges_ok = applied_ok = True
+    else:
+        merges, merges_ok = _load_merges()
+        applied, applied_ok = _load_applied()
     missing = [n for n, ok in (("confirmed merges", merges_ok), ("applied changes", applied_ok)) if not ok]
     _ENGINE_STATE.update(
         inputs_ok=not missing,
@@ -282,7 +343,7 @@ def _run_engine(scenario: str) -> EngineResult:
     return run(label=_run_label(scenario), manual_merges=merges, applied_changes=applied)
 
 
-def _build_engine(scenario: str) -> EngineResult:
+def _build_engine(scenario: str, inputs: EngineInputs | None = None) -> EngineResult:
     """`_run_engine` with a bad dataset turned into a diagnosable 4xx.
 
     A normalizer or analyzer that raises on one malformed record used to leave two
@@ -300,7 +361,7 @@ def _build_engine(scenario: str) -> EngineResult:
     good `_ENGINE` in place and the app keeps serving the snapshot it has.
     """
     try:
-        built = _run_engine(scenario)
+        built = _run_engine(scenario, inputs)
     except Exception as exc:
         detail = f"{type(exc).__name__}: {exc}"
         _ENGINE_STATE["build_error"] = f"dataset '{scenario}' could not be analyzed ({detail})"
@@ -524,7 +585,7 @@ def recompute(_: None = Depends(require_operator)):
         summary["paths"] = sum(1 for f in _ENGINE.findings if f.type == "cross_tool_path")
         cur.execute("DELETE FROM ztpa.ranked_actions WHERE snapshot_id=%s", [snap])
         cur.execute("UPDATE ztpa.findings SET explanation=NULL WHERE snapshot_id=%s", [snap])
-        audit(cur, "user", "recompute_snapshot", subject=snap, snapshot_id=snap, detail=summary)
+        audit(cur, "recompute_snapshot", subject=snap, snapshot_id=snap, detail=summary)
     return {"ok": True, "summary": summary}
 
 
@@ -565,7 +626,7 @@ def switch_dataset(body: DatasetBody, _: None = Depends(require_admin)):
         summary["paths"] = sum(1 for f in _ENGINE.findings if f.type == "cross_tool_path")
         cur.execute("DELETE FROM ztpa.ranked_actions WHERE snapshot_id=%s", [snap])
         cur.execute("UPDATE ztpa.findings SET explanation=NULL WHERE snapshot_id=%s", [snap])
-        audit(cur, "user", "switch_dataset", subject=body.scenario, snapshot_id=snap, detail=summary)
+        audit(cur, "switch_dataset", subject=body.scenario, snapshot_id=snap, detail=summary)
     return {"ok": True, "scenario": body.scenario, "summary": summary}
 
 
@@ -727,11 +788,25 @@ def snapshots_list():
 
 @app.delete("/api/snapshots/{snapshot_id}")
 def delete_snapshot(snapshot_id: str, _: None = Depends(require_admin)):
+    """Drop a snapshot: its engine-derived rows AND the `snapshots` row itself.
+
+    `delete_snapshot_row` (src.db.delete_snapshot), not
+    `delete_snapshot_children`. Phase 2 split that one function in two --
+    "clear the engine's cache for this snapshot" and "remove this snapshot" --
+    because the old single implementation cleared children by deleting the
+    PARENT row and letting the cascade take everything, governance included.
+    This route kept calling the children-only half under a comment claiming it
+    deleted the parent, so a 200 `{"deleted": ...}` left the row exactly where it
+    was, with its findings gone: the snapshot list still showed it, now reading
+    0 findings / 0 assets. The governance record survives this either way -- the
+    request keeps its decision and loses only its baseline pointer, which
+    db/migrations/0001 made `ON DELETE SET NULL` for exactly this case.
+    """
     if snapshot_id == sid():
         raise HTTPException(400, "Cannot delete the active snapshot. Switch dataset or recompute first.")
     with get_conn() as conn, conn.cursor() as cur:
-        delete_snapshot_children(cur, snapshot_id)   # deletes the snapshot row; children cascade
-        audit(cur, "user", "delete_snapshot", subject=snapshot_id, detail={})
+        delete_snapshot_row(cur, snapshot_id)
+        audit(cur, "delete_snapshot", subject=snapshot_id, detail={})
     return {"ok": True, "deleted": snapshot_id}
 
 
@@ -854,6 +929,22 @@ _EXPLAIN_TIMEOUT = 180.0
 _explaining: set[str] = set()   # findings whose LLM explanation is being computed in the background
 
 
+def _spawn(name: str, fn, *args) -> None:
+    """Start a daemon thread that INHERITS this request's context.
+
+    `threading.Thread` starts with an empty ContextVar context, so work moved off
+    the request path lost the actor and the request id: an explanation a named
+    admin asked for was recorded against the anonymous `viewer` default in
+    ai_metrics, and (now that db.audit reads the actor itself) would be written
+    into the audit trail under the same fiction. `contextvars.copy_context()`
+    snapshots role, email, sub and request id here, in the request, and
+    `ctx.run` re-establishes them inside the thread -- so the background work is
+    attributed to whoever caused it and its log lines carry the same request id
+    as the response that started it."""
+    ctx = contextvars.copy_context()
+    threading.Thread(target=ctx.run, args=(fn, *args), name=name, daemon=True).start()
+
+
 def _bg_explain(fid: str, f) -> None:
     """Compute the LLM explanation off the request path and cache it. Cold local
     models can take minutes; doing this in the background means the HTTP request
@@ -863,7 +954,8 @@ def _bg_explain(fid: str, f) -> None:
         if result.get("by") != "engine_fallback" and result.get("explanation", "").strip():
             with get_conn() as conn, conn.cursor() as cur:
                 cache_explanation(cur, fid, result["explanation"], result.get("by"))
-                audit(cur, "agent", "explain_finding", subject=fid, snapshot_id=sid(), detail={"by": result["by"]})
+                audit(cur, "explain_finding", subject=fid, snapshot_id=sid(),
+                      detail={"by": result["by"]}, actor_kind="agent")
     finally:
         _explaining.discard(fid)
 
@@ -888,7 +980,7 @@ def explain_finding(fid: str):
     # open until the LLM finished — a true thread returns the fallback instantly.
     if fid not in _explaining:
         _explaining.add(fid)
-        threading.Thread(target=_bg_explain, args=(fid, f), name=f"explain-{fid}", daemon=True).start()
+        _spawn(f"explain-{fid}", _bg_explain, fid, f)
     # tell the UI which provider will produce the richer explanation, so it can
     # label the "refining…" state truthfully (local model vs a hosted one).
     return {"explanation": explain_mod._fallback(f), "by": "engine_fallback",
@@ -909,7 +1001,7 @@ def remediate_finding(fid: str, _: None = Depends(require_approver)):
     result = remediation.draft(f, engine())
     with get_conn() as conn, conn.cursor() as cur:
         rev = persist_remediation_revision(cur, sid(), fid, result)
-        audit(cur, "agent", "remediate_finding", subject=fid, snapshot_id=sid(),
+        audit(cur, "remediate_finding", subject=fid, snapshot_id=sid(), actor_kind="agent",
               detail={"by": result["by"], "resolves": result["validation"].get("resolves")})
     return {**result, "thread_id": rev["thread_id"], "seq": rev["seq"], "revision_id": rev["revision_id"]}
 
@@ -970,7 +1062,7 @@ def campaign_plan(body: CampaignBody, _: None = Depends(require_approver)):
     result = campaign_mod.plan(e, target_bands=bands)
     with get_conn() as conn, conn.cursor() as cur:
         persist_campaign_plan(cur, sid(), result)
-        audit(cur, "agent", "campaign_plan", snapshot_id=sid(),
+        audit(cur, "campaign_plan", snapshot_id=sid(), actor_kind="agent",
               detail={"applied": result["applied_count"], "needs_review": result["needs_review_count"],
                       "trajectory": result["criticals_trajectory"],
                       "cleared_all_criticals": result["cleared_all_criticals"]})
@@ -987,64 +1079,243 @@ def campaign_submit(body: CampaignSubmitBody, _: None = Depends(require_approver
     applied step becomes its own change request, re-evaluated and ruled on by the
     gate individually (so the audit trail and staging/push flow are unchanged);
     steps the campaign flagged needs-review, or that no longer map to a live finding,
-    are skipped and reported. Idempotent: re-submitting upserts the same requests."""
+    are skipped and reported. Idempotent: re-submitting upserts the same requests.
+
+    Three phases, and the middle one holds nothing: READ the plan, RULE on every
+    step (a full engine re-analysis each, no connection), then WRITE the whole
+    batch in one short transaction. It used to be a single transaction wrapped
+    around all three, so a 40-step campaign pinned a pooled connection through 40
+    re-analyses -- with ten connections in the pool, two concurrent submissions
+    and the console went down with them."""
     _require_capability("classify")
     with get_conn() as conn, conn.cursor() as cur:
         plan = load_campaign_plan(cur, sid())
-        if not plan:
-            raise HTTPException(400, "no campaign plan to submit; plan the campaign first")
-        submitted, skipped = [], []
-        for step in plan.get("steps", []):
-            fid, change = step.get("finding_id"), step.get("change")
-            if step.get("status") != "applied" or not fid or not change:
-                skipped.append({"n": step.get("n"), "title": step.get("target", {}).get("title"),
-                                "reason": step.get("reason") or "not an applied, live-finding fix"})
-                continue
-            if not _finding(fid):   # finding no longer exists in the live snapshot
-                skipped.append({"n": step.get("n"), "title": step.get("target", {}).get("title"),
-                                "reason": "finding not in the current snapshot"})
-                continue
-            res = _submit_remediation(cur, fid, change, justification=body.justification, origin="campaign")
-            submitted.append({"n": step.get("n"), "finding_id": fid, "request_id": res["request_id"],
-                              "decision": res["decision"]["decision"]})
-        audit(cur, "user", "campaign_submit", snapshot_id=sid(),
+    if not plan:
+        raise HTTPException(400, "no campaign plan to submit; plan the campaign first")
+
+    ruled, skipped = [], []
+    for step in plan.get("steps", []):
+        fid, change = step.get("finding_id"), step.get("change")
+        if step.get("status") != "applied" or not fid or not change:
+            skipped.append({"n": step.get("n"), "title": step.get("target", {}).get("title"),
+                            "reason": step.get("reason") or "not an applied, live-finding fix"})
+            continue
+        if not _finding(fid):   # finding no longer exists in the live snapshot
+            skipped.append({"n": step.get("n"), "title": step.get("target", {}).get("title"),
+                            "reason": "finding not in the current snapshot"})
+            continue
+        ruled.append((step, _rule_remediation(fid, change, justification=body.justification,
+                                              origin="campaign")))
+
+    submitted = []
+    with get_conn() as conn, conn.cursor() as cur:
+        # One transaction for the batch, deliberately: a campaign submission is an
+        # all-or-nothing act, and half a campaign in the Change Gate is worse than
+        # none. What changed is that nothing expensive happens inside it any more.
+        for step, r in ruled:
+            res = _record_remediation(cur, r)
+            submitted.append({"n": step.get("n"), "finding_id": res["finding_id"],
+                              "request_id": res["request_id"], "decision": res["decision"]["decision"]})
+        audit(cur, "campaign_submit", subject=sid(), snapshot_id=sid(),
               detail={"submitted": len(submitted), "skipped": len(skipped)})
     return {"submitted": submitted, "skipped": skipped,
             "auto_approved": sum(1 for s in submitted if s["decision"] == "auto_approve"),
             "escalated": sum(1 for s in submitted if s["decision"] == "escalate")}
 
 
+# --- ranking: the model call, and where it is allowed to happen --------------
+# THE RULE THIS SECTION EXISTS FOR: no model call may run while a pooled database
+# connection is checked out. `rank()` is the worst offender in the codebase --
+# `settings.OLLAMA_TIMEOUT` defaults to 600 seconds and the pool is ten
+# connections deep with a 30s acquire timeout, so eleven people opening the Risks
+# tab on a cold model starved every other endpoint in the process. It also ran on
+# a GET, so a prefetch or a double render fired two of them.
+#
+# What replaces it:
+#   * GET /api/actions is a PURE READ. Cache hit -> the persisted rows. Cache
+#     miss -> the deterministic ranking (no model, no connection, instant), the
+#     LLM ranking started on a background thread, and `pending: true` on the
+#     payload so the UI can say which one it is showing.
+#   * POST /api/actions/recompute is where a caller ASKS for the model, and it
+#     computes first and opens a transaction second.
+#   * both go through `_rank_once`, which is single-flighted: ten concurrent
+#     callers share ONE ranking run instead of paying for ten.
+
+_ACTION_COLS = "action_id,title,finding_ids,priority,rationale"
+_ACTIONS_SQL = (f"SELECT {_ACTION_COLS} FROM ztpa.ranked_actions "
+                "WHERE snapshot_id=%s ORDER BY priority")
+
+
+class _SingleFlight:
+    """One in-flight computation per key; everyone else waits and shares its result.
+
+    Not an lru_cache and not a lock: a plain lock would serialise ten callers into
+    ten SEQUENTIAL ranking runs, which is worse than the concurrent ten it
+    replaces. Here the first caller computes and the rest block on its Event, so
+    the model is asked once. The leader's exception is re-raised to the
+    followers -- a failure shared is still one answer, and a follower that
+    silently got `None` would look like an empty estate."""
+
+    class _Call:
+        __slots__ = ("done", "value", "error")
+
+        def __init__(self) -> None:
+            self.done = threading.Event()
+            self.value: object = None
+            self.error: BaseException | None = None
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._calls: dict[str, "_SingleFlight._Call"] = {}
+
+    def run(self, key: str, fn):
+        with self._lock:
+            call = self._calls.get(key)
+            leader = call is None
+            if leader:
+                call = self._Call()
+                self._calls[key] = call
+        if not leader:
+            call.done.wait()
+            if call.error is not None:
+                raise call.error
+            return call.value
+        try:
+            call.value = fn()
+        except BaseException as exc:      # noqa: BLE001 - re-raised below, after the followers are freed
+            call.error = exc
+            raise
+        finally:
+            with self._lock:
+                # Popped before the Event is set, so a caller arriving after this
+                # point starts a fresh run instead of joining a finished one.
+                self._calls.pop(key, None)
+            call.done.set()
+        return call.value
+
+
+_RANKING = _SingleFlight()
+
+
+def _rank_once(t: str, findings) -> RankedActions:
+    """The LLM ranking for snapshot `t`, computed at most once at a time, with NO
+    connection held. `_require_capability('rank')` is checked HERE, at the point
+    of spend, so every path that could reach the model goes past the kill switch:
+    the recompute route, the report's cache miss, and the background refresh."""
+    _require_capability("rank")
+    return _RANKING.run(t, lambda: rank_mod.rank(findings))
+
+
+def _action_rows(ranked: RankedActions) -> list[dict]:
+    """A RankedActions in the shape `_ACTIONS_SQL` returns, ordered the same way
+    (priority, then action_id -- the tiebreak Postgres would leave to the planner)."""
+    return sorted(({"action_id": a.action_id, "title": a.title, "finding_ids": list(a.finding_ids),
+                    "priority": a.priority, "rationale": a.rationale} for a in ranked.actions),
+                  key=lambda row: (row["priority"], row["action_id"]))
+
+
+def _persist_ranking(t: str, ranked: RankedActions) -> bool:
+    """Write a ranking to the cache in a transaction of its own; returns whether
+    it landed. Failure is logged and does not raise: the ranking has already been
+    computed and is about to be returned, so losing the CACHE is a cost, not a
+    wrong answer -- but the caller that asked for a recompute is TOLD, rather than
+    getting a 200 that implies a durable write that did not happen."""
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            persist_ranked_actions(cur, t, ranked)
+        return True
+    except Exception as exc:
+        log.error("ranked actions could not be cached; they were computed and served live",
+                  exc_info=True, extra={"event": "persist_ranking_failed", "snapshot_id": t,
+                                        "error": str(exc)})
+        return False
+
+
+_ranking_bg: set[str] = set()      # snapshots whose LLM ranking is being computed off-request
+
+
+def _bg_rank(t: str, findings) -> None:
+    """Compute the LLM ranking off the request path and cache it, exactly as
+    `_bg_explain` does for explanations. The request that triggered this has
+    already answered with the deterministic ranking."""
+    try:
+        ranked = _rank_once(t, findings)
+        if ranked.actions:
+            _persist_ranking(t, ranked)
+    except Exception as exc:
+        log.warning("background ranking failed; the deterministic ranking stands",
+                    exc_info=True, extra={"event": "bg_rank_failed", "snapshot_id": t,
+                                          "error": str(exc)})
+    finally:
+        _ranking_bg.discard(t)
+
+
+def _start_bg_rank(t: str, findings) -> bool:
+    """Kick off the background ranking unless one is already running for `t`, or
+    the caller's role may not spend on ranking at all. Returns whether a richer
+    ranking is now on its way, which is what `pending` on the payload means."""
+    if not tools_registry.is_enabled("rank"):
+        return False                       # the kill switch, applied before the thread
+    if t in _ranking_bg:
+        return True
+    _ranking_bg.add(t)
+    _spawn(f"rank-{t}", _bg_rank, t, findings)
+    return True
+
+
 @app.get("/api/actions")
 def actions(snapshot: str | None = None):
+    """The Risk To-Do list: a READ of the ranked-actions cache.
+
+    It used to be a GET that ran a 600-second-timeout model call inside an open
+    transaction and wrote the result. Now the only thing it can spend is a
+    deterministic sort, and the model ranking that replaces it arrives on the
+    next poll (`pending: true` says so). `ranked_by` names which one you are
+    looking at: "cache" (persisted, model-authored), "engine_fallback" (the
+    deterministic grouping), or "llm" on the degraded path."""
     t = view_sid(snapshot)
     try:
         with get_conn() as conn, conn.cursor() as cur:
-            rows = fetch_all(cur, "SELECT action_id,title,finding_ids,priority,rationale FROM ztpa.ranked_actions WHERE snapshot_id=%s ORDER BY priority", [t])
-            if rows or t != sid():
-                return {"actions": rows, "ranked_by": "cache", "served_from": _DB_SOURCE}   # historical: show cache only
-            ranked = rank_mod.rank(engine().findings)
-            persist_ranked_actions(cur, t, ranked)
-            rows = fetch_all(cur, "SELECT action_id,title,finding_ids,priority,rationale FROM ztpa.ranked_actions WHERE snapshot_id=%s ORDER BY priority", [t])
+            rows = fetch_all(cur, _ACTIONS_SQL, [t])
     except HTTPException:
         raise
     except Exception as exc:
         # Ranking needs findings, not the database -- the cache is an
-        # optimisation, so losing it costs a recompute, not the answer.
+        # optimisation, so losing it costs the model's grouping, not the answer.
+        # The deterministic ranking is used rather than the model one: this is a
+        # GET on a degraded system, and nothing about a database outage makes it
+        # the right moment to start a minutes-long model call on the request path.
         live, provenance = _memory_fallback(t, "prioritized actions", exc)
-        ranked = rank_mod.rank(live.findings)
-        rows = sorted(({"action_id": a.action_id, "title": a.title, "finding_ids": list(a.finding_ids),
-                        "priority": a.priority, "rationale": a.rationale} for a in ranked.actions),
-                      key=lambda row: (row["priority"], row["action_id"]))
-        return {"actions": rows, "ranked_by": ranked.ranked_by, **provenance}
-    return {"actions": rows, "ranked_by": ranked.ranked_by, "served_from": _DB_SOURCE}
+        ranked = rank_mod.rank_deterministic(live.findings)
+        return {"actions": _action_rows(ranked), "ranked_by": ranked.ranked_by,
+                "pending": False, **provenance}
+    if rows or t != sid():
+        # Historical snapshots show the cache and nothing else: their findings are
+        # not in memory, so there is nothing to rank live even if we wanted to.
+        return {"actions": rows, "ranked_by": "cache", "pending": False, "served_from": _DB_SOURCE}
+    ranked = rank_mod.rank_deterministic(engine().findings)
+    pending = _start_bg_rank(t, engine().findings)
+    return {"actions": _action_rows(ranked), "ranked_by": ranked.ranked_by, "pending": pending,
+            "served_from": _MEMORY_SOURCE,
+            "degraded_reason": ("the model-authored ranking for this snapshot has not been computed yet, "
+                                "so these actions are the engine's deterministic grouping"
+                                + (" (the model ranking is being computed now)" if pending else
+                                   "; ranking is disabled for your role, so it will not be refined"))}
 
 
 @app.post("/api/actions/recompute")
 def recompute_actions(_: None = Depends(require_operator)):
-    ranked = rank_mod.rank(engine().findings)
-    with get_conn() as conn, conn.cursor() as cur:
-        persist_ranked_actions(cur, sid(), ranked)
-    return {"actions": [a.model_dump() for a in ranked.actions], "ranked_by": ranked.ranked_by}
+    """Ask the model to re-group and re-rank. THE model call happens here, and it
+    happens outside every transaction -- compute first, persist second, which is
+    the shape /api/campaign/plan already had right."""
+    t = sid()
+    ranked = _rank_once(t, engine().findings)
+    persisted = _persist_ranking(t, ranked)
+    return {"actions": [a.model_dump() for a in ranked.actions], "ranked_by": ranked.ranked_by,
+            # An operator who pressed Recompute is told whether the result was
+            # written down, rather than reading a 200 as "cached" when the cache
+            # write failed and the next page load will recompute all over again.
+            "persisted": persisted}
 
 
 _ASSET_COLS = ("asset_id", "asset_key", "kind", "context", "identifiers", "ip_set", "tags", "source_tools")
@@ -1082,19 +1353,41 @@ class MergeBody(BaseModel):
     b: str
 
 
-def _apply_merges_and_persist(action: str, a: str, b: str) -> dict:
-    """Re-resolve identities with the current confirmed merges, then re-persist the
-    snapshot (delete_snapshot_children + reinsert) so DB-backed reads reflect it."""
+def _merge_and_repersist(write, action: str, a: str, b: str) -> dict:
+    """Record an identity decision AND the snapshot that follows from it, in ONE
+    transaction.
+
+    `write(cur)` is the decision itself (confirm or undo). Everything after it --
+    re-reading the merge set, re-resolving identities, re-persisting the snapshot,
+    clearing the AI caches keyed on it, the audit row -- happens on the same
+    cursor, so the pair either both land or neither does.
+
+    It used to be two transactions with a rebuild between them, and the failure
+    that shape allows is specific: the merge commits, the re-persist fails, and
+    the estate on screen is now derived from an identity decision the system of
+    record does not reflect. Every read after that is a confident wrong answer.
+
+    Reading the inputs off THIS cursor is also what makes it correct: the merge is
+    uncommitted, so a rebuild that opened its own connection (which is what
+    `_build_engine()` does by default) would not see it and would recompute the
+    snapshot WITHOUT the merge, then persist that as the consequence of applying
+    it. The engine build is deterministic, in-process and bounded -- no model call
+    and no network -- which is the only reason it is allowed inside a transaction
+    at all."""
     global _ENGINE
-    _ENGINE = _build_engine(_ACTIVE_SCENARIO)
-    _require_trustworthy_inputs()
-    snap = _ENGINE.snapshot_id
     with get_conn() as conn, conn.cursor() as cur:
-        persist_engine_result(cur, _ENGINE)
+        write(cur)
+        built = _build_engine(_ACTIVE_SCENARIO, inputs=(load_asset_merges(cur), load_applied_changes(cur)))
+        _require_trustworthy_inputs()
+        snap = built.snapshot_id
+        persist_engine_result(cur, built)
         cur.execute("DELETE FROM ztpa.ranked_actions WHERE snapshot_id=%s", [snap])
         cur.execute("UPDATE ztpa.findings SET explanation=NULL WHERE snapshot_id=%s", [snap])
-        audit(cur, "user", action, subject=f"{a}~{b}", snapshot_id=snap, detail={"a": a, "b": b})
-    return {"assets": len(_ENGINE.assets), "snapshot_id": snap}
+        audit(cur, action, subject=f"{a}~{b}", snapshot_id=snap, detail={"a": a, "b": b})
+    # Rebound only after the commit: a rolled-back merge must not leave the
+    # process serving the snapshot that merge would have produced.
+    _ENGINE = built
+    return {"assets": len(built.assets), "snapshot_id": snap}
 
 
 @app.post("/api/assets/merge")
@@ -1103,18 +1396,16 @@ def confirm_merge(body: MergeBody, _: None = Depends(require_operator)):
     decision is durable; the identity layer unifies them on every run from now on."""
     if not body.a or not body.b or body.a == body.b:
         raise HTTPException(400, "provide two distinct asset keys")
-    with get_conn() as conn, conn.cursor() as cur:
-        persist_asset_merge(cur, body.a, body.b, by="human")
-    summary = _apply_merges_and_persist("confirm_merge", body.a, body.b)
+    summary = _merge_and_repersist(lambda cur: persist_asset_merge(cur, body.a, body.b, by="human"),
+                                   "confirm_merge", body.a, body.b)
     return {"ok": True, "merged": [body.a, body.b], **summary}
 
 
 @app.post("/api/assets/unmerge")
 def undo_merge(body: MergeBody, _: None = Depends(require_operator)):
     """Reverse a previously confirmed merge (the assets split back apart)."""
-    with get_conn() as conn, conn.cursor() as cur:
-        delete_asset_merge(cur, body.a, body.b)
-    summary = _apply_merges_and_persist("undo_merge", body.a, body.b)
+    summary = _merge_and_repersist(lambda cur: delete_asset_merge(cur, body.a, body.b),
+                                   "undo_merge", body.a, body.b)
     return {"ok": True, "unmerged": [body.a, body.b], **summary}
 
 
@@ -1182,32 +1473,74 @@ def classify(body: ClassifyBody, _: None = Depends(require_approver)):
         raise HTTPException(400, "provide request_id or source+destination+service")
     delta = simulate_change(e.records, e.assets, e.alias_map, req.proposed)
     decision = classify_change.classify_change(req, delta, ctx=e)
-    with get_conn() as conn, conn.cursor() as cur:
-        persist_change_decision(cur, sid(), req, decision)
-    return {"request": {"id": req.id, "title": req.title, "justification": req.justification},
-            "delta": delta, "decision": decision.model_dump()}
+    # The ruling is computed from the engine in memory and needs no database. The
+    # RECORD of it does, and that write is the one thing here that can fail on its
+    # own -- so it is not allowed to take the answer down with it. With no
+    # DATABASE_URL (the state this repo ships in) this route used to 500 out of an
+    # unguarded get_conn, so the flagship "simulate a custom change" card was dead
+    # on any deployment without Postgres even though every input it needs was
+    # already in memory. Phase 1 fixed the read endpoints this way; this is the
+    # same fix on the one write that can honestly degrade.
+    #
+    # It degrades LOUDLY: `persisted: false` plus a reason, because a change gate
+    # whose decision is not in the compliance trail has done half its job, and the
+    # half it skipped is the half the product is sold on.
+    persisted, degraded_reason = True, None
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            persist_change_decision(cur, sid(), req, decision)
+    except Exception as exc:
+        persisted = False
+        degraded_reason = (f"the decision database is unreachable ({exc}), so this ruling was NOT "
+                           f"recorded in the change-decision trail. The decision itself is the "
+                           f"engine's and is unaffected; it simply has not been written down.")
+        log.error("a change decision could not be persisted; it was returned but not recorded",
+                  exc_info=True, extra={"event": "classify_persist_failed", "request_id_cr": req.id,
+                                        "decision": decision.decision, "error": str(exc)})
+    out = {"request": {"id": req.id, "title": req.title, "justification": req.justification},
+           "delta": delta, "decision": decision.model_dump(), "persisted": persisted}
+    if degraded_reason:
+        out["degraded_reason"] = degraded_reason
+    return out
+
+
+# The change-decision log, as a named constant rather than a literal inside the
+# route, so `backend/tests/test_db_governance.py` can execute THE query against a
+# real database instead of a copy of it. A test holding its own transcription of
+# a query cannot notice the day the route's WHERE clause loses
+# `archived_at IS NULL` -- and this is the filter that makes a demo reset look
+# like a reset without deleting the compliance record, so it is exactly the one
+# worth pinning to the real thing.
+LIVE_DECISIONS_SQL = """
+    SELECT d.decision_id, d.request_id, d.decision, d.forced_escalate, d.confidence,
+           d.model AS decided_by, d.triggering_reason, d.decided_at,
+           d.criteria, d.delta_summary,
+           r.proposed, r.justification, r.requested_by, r.kind, r.origin,
+           r.status AS request_status, r.rejected_by, r.reject_reason,
+           s.staged_id, s.status AS staged_status
+    FROM ztpa.change_decisions d
+    JOIN ztpa.change_requests r ON r.request_id = d.request_id
+    LEFT JOIN ztpa.staged_changes s ON s.request_id = d.request_id
+    WHERE d.archived_at IS NULL AND r.archived_at IS NULL
+    ORDER BY d.decided_at DESC NULLS LAST
+    LIMIT %s
+"""
 
 
 @app.get("/api/change-decisions")
 def change_decisions_log(limit: int = Query(25, ge=1, le=200)):
     """The change audit trail: every evaluated request joined to how the gate
     ruled on it (decision, guardrail, who decided, when). Reads the
-    change_requests + change_decisions tables that classify() writes."""
+    change_requests + change_decisions tables that classify() writes.
+
+    LIVE rows only. `/api/admin/reset-demo` retires a request and its decision by
+    stamping `archived_at` instead of deleting them (src/persist.py), so this
+    filter is what makes the reset look like a reset on screen while the rows
+    stay in the system of record. Without it the console would show the whole
+    history of every demo ever run; without the archive, the reset would still be
+    destroying the compliance artifact to get the same picture."""
     with get_conn() as conn, conn.cursor() as cur:
-        ensure_change_request_status(cur)
-        rows = fetch_all(cur, """
-            SELECT d.decision_id, d.request_id, d.decision, d.forced_escalate, d.confidence,
-                   d.model AS decided_by, d.triggering_reason, d.decided_at,
-                   d.criteria, d.delta_summary,
-                   r.proposed, r.justification, r.requested_by, r.kind, r.origin,
-                   r.status AS request_status, r.rejected_by, r.reject_reason,
-                   s.staged_id, s.status AS staged_status
-            FROM ztpa.change_decisions d
-            JOIN ztpa.change_requests r ON r.request_id = d.request_id
-            LEFT JOIN ztpa.staged_changes s ON s.request_id = d.request_id
-            ORDER BY d.decided_at DESC NULLS LAST
-            LIMIT %s
-        """, [limit])
+        rows = fetch_all(cur, LIVE_DECISIONS_SQL, [limit])
     return {"decisions": rows}
 
 
@@ -1220,12 +1553,20 @@ class SubmitBody(BaseModel):
     justification: str | None = None
 
 
-def _submit_remediation(cur, finding_id: str, change: dict, revision_id: str | None = None,
-                        justification: str | None = None, origin: str = "risk_todo") -> dict:
-    """Core of a remediation -> Change Gate submission: the engine re-simulates the
-    fix and the gate rules (auto_approve if it resolves its finding and opens no new
-    critical, else escalate). Shared by the single-fix route and the campaign batch.
-    Writes the change_request + change_decision rows and returns the response shape."""
+# A remediation submission is split in two halves on purpose, and the seam is the
+# transaction boundary. `_rule_remediation` is the whole ruling -- a full engine
+# re-analysis per submission (`remediation._validate` -> `reanalyze`) -- and it
+# opens no connection. `_record_remediation` is four statements. The campaign
+# batch is what forced the split: it looped `_submit_remediation` inside ONE open
+# transaction, so a 40-step campaign held a pooled connection across 40 full
+# re-analyses, and any failure discarded every submission that came before it.
+
+def _rule_remediation(finding_id: str, change: dict, revision_id: str | None = None,
+                      justification: str | None = None, origin: str = "risk_todo") -> dict:
+    """Re-simulate the fix and rule on it: auto_approve if it resolves its finding
+    and opens no new critical, else escalate. Pure computation over the in-memory
+    engine -- NO database access -- returning the rows to write and the response
+    to send. Raises 404 for a finding that is not in the live snapshot."""
     f = _finding(finding_id)
     if not f:
         raise HTTPException(404, f"finding not found: {finding_id}")
@@ -1243,25 +1584,42 @@ def _submit_remediation(cur, finding_id: str, change: dict, revision_id: str | N
     crit = {"resolves": resolves, "no_new_criticals": not new_crit}
     trig = ("introduces new critical findings: " + ", ".join(new_crit)) if new_crit else (
         None if resolves else "the fix does not resolve the finding")
-    upsert(cur, "change_requests", {
-        "request_id": request_id, "snapshot_id": sid(), "proposed": proposed,
-        "requested_by": request_ctx.current().email or origin, "justification": justification,
-        "kind": "remediation", "origin": origin}, ["request_id"])
-    upsert(cur, "change_decisions", {
-        "decision_id": decision_id, "request_id": request_id, "decision": decision, "criteria": crit,
-        "triggering_reason": trig if decision == "escalate" else None, "delta_summary": validation,
-        "confidence": 1.0 if resolves else 0.5, "forced_escalate": bool(new_crit), "model": "engine"},
-        ["decision_id"])
-    if revision_id:
-        accept_remediation_revision(cur, revision_id)
-    audit(cur, "user", "submit_remediation", subject=finding_id, snapshot_id=sid(),
-          detail={"decision": decision, "request_id": request_id, "origin": origin})
-    return {"request_id": request_id, "kind": "remediation", "finding_id": finding_id,
+    return {
+        "finding_id": finding_id, "revision_id": revision_id, "origin": origin,
+        "request_row": {
+            "request_id": request_id, "snapshot_id": sid(), "proposed": proposed,
+            "requested_by": request_ctx.current().email or origin, "justification": justification,
+            "kind": "remediation", "origin": origin},
+        "decision_row": {
+            "decision_id": decision_id, "request_id": request_id, "decision": decision, "criteria": crit,
+            "triggering_reason": trig if decision == "escalate" else None, "delta_summary": validation,
+            "confidence": 1.0 if resolves else 0.5, "forced_escalate": bool(new_crit), "model": "engine"},
+        "response": {
+            "request_id": request_id, "kind": "remediation", "finding_id": finding_id,
             "decision": {"request_id": request_id, "decision": decision, "criteria": crit,
                          "triggering_reason": trig, "delta_summary": validation,
                          "confidence": 1.0 if resolves else 0.5, "forced_escalate": bool(new_crit),
                          "decided_by": "engine"},
-            "target_tool": target_tool}
+            "target_tool": target_tool},
+    }
+
+
+def _record_remediation(cur, ruled: dict) -> dict:
+    """Write one ruling from `_rule_remediation` and return its response shape.
+    Statements only: no engine work, so a batch of these is a short transaction."""
+    # Through the persist helpers, never a bare upsert: they are the one place
+    # that clears `archived_at`, so re-submitting a remediation whose request was
+    # retired by a demo reset brings it back onto the board instead of writing a
+    # live decision into a row every screen filters out. Ids are deterministic
+    # content hashes, so "the same submission again" is the normal case.
+    persist_change_request_row(cur, ruled["request_row"])
+    persist_change_decision_row(cur, ruled["decision_row"])
+    if ruled["revision_id"]:
+        accept_remediation_revision(cur, ruled["revision_id"])
+    audit(cur, "submit_remediation", subject=ruled["finding_id"], snapshot_id=sid(),
+          detail={"decision": ruled["decision_row"]["decision"],
+                  "request_id": ruled["request_row"]["request_id"], "origin": ruled["origin"]})
+    return ruled["response"]
 
 
 @app.post("/api/change/submit")
@@ -1274,8 +1632,9 @@ def change_submit(body: SubmitBody, _: None = Depends(require_approver)):
         raise HTTPException(400, "unsupported submit kind")
     if not body.finding_id or not body.change:
         raise HTTPException(400, "remediation submit needs finding_id and change")
+    ruled = _rule_remediation(body.finding_id, body.change, body.revision_id, body.justification)
     with get_conn() as conn, conn.cursor() as cur:
-        return _submit_remediation(cur, body.finding_id, body.change, body.revision_id, body.justification)
+        return _record_remediation(cur, ruled)
 
 
 # --- Staging area ----------------------------------------------------------
@@ -1291,11 +1650,14 @@ def stage_change(body: StageBody, _: None = Depends(require_approver)):
     check used to live inside the `escalate` branch, so the auto_approve path --
     four fifths of the traffic -- staged for anyone, including a viewer."""
     with get_conn() as conn, conn.cursor() as cur:
-        ensure_change_request_status(cur)
+        # LIVE rows only, like the decision log: a request retired by a demo
+        # reset is history, and staging it would push a change nobody currently
+        # holds a ruling on. It reads as a 404 -- that request is no longer open.
         row = fetch_one(cur, """
             SELECT d.decision, r.proposed, r.kind, r.origin, r.snapshot_id, r.status
             FROM ztpa.change_decisions d JOIN ztpa.change_requests r ON r.request_id = d.request_id
-            WHERE d.request_id = %s""", [body.request_id])
+            WHERE d.request_id = %s AND d.archived_at IS NULL AND r.archived_at IS NULL""",
+            [body.request_id])
         if not row:
             raise HTTPException(404, "change request/decision not found")
         if row.get("status") == "rejected":
@@ -1349,7 +1711,7 @@ def staging_push(staged_id: str, _: None = Depends(require_operator)):
             "pushed_at=now() WHERE staged_id=%s",
             [plan["status"], Jsonb(plan["conflicts"]), Jsonb(plan["resolution"]),
              Jsonb(plan["push_steps"]), staged_id])
-        audit(cur, "user", "push_staged_change", subject=staged_id, snapshot_id=row.get("snapshot_id"),
+        audit(cur, "push_staged_change", subject=staged_id, snapshot_id=row.get("snapshot_id"),
               detail={"status": plan["status"], "target_tool": row.get("target_tool")})
     return {"staged_id": staged_id, **plan}
 
@@ -1358,7 +1720,7 @@ def staging_push(staged_id: str, _: None = Depends(require_operator)):
 def staging_delete(staged_id: str, _: None = Depends(require_approver)):
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("DELETE FROM ztpa.staged_changes WHERE staged_id=%s", [staged_id])
-        audit(cur, "user", "discard_staged_change", subject=staged_id, detail={})
+        audit(cur, "discard_staged_change", subject=staged_id, detail={})
     return {"ok": True, "deleted": staged_id}
 
 
@@ -1385,23 +1747,39 @@ def reject_change(body: RejectBody, _: None = Depends(require_approver)):
 # --- Admin: reset the change-gate demo -------------------------------------
 @app.post("/api/admin/reset-demo")
 def reset_demo(_: None = Depends(require_admin)):
-    """Clear the change-governance working set (requests, decisions, staged
-    changes, remediation threads) and recompute a clean baseline. Use this to
-    re-run the demo: any pushed change is cleared, so the resolved finding
-    reappears on the next recompute."""
+    """Retire the change-governance working set and recompute a clean baseline.
+    Use this to re-run the demo: any pushed change is cleared, so the resolved
+    finding reappears on the next recompute.
+
+    It RETIRES rather than deletes the compliance record: `change_requests` and
+    `change_decisions` are stamped `archived_at` and stay in the table (the reads
+    that feed the console filter them out, so the screen still empties), while
+    the working set proper -- staged changes, remediation threads, the cached
+    campaign plan -- is deleted. `cleared` reports both, per table. See
+    src/persist.reset_change_workflow for why the distinction is the exit
+    criterion rather than a nicety.
+
+    ONE transaction, for the same reason the merge routes are: clearing the
+    working set and recomputing the baseline that clearing implies are one act.
+    Split across two, a failure between them left the governance tables emptied
+    and the snapshot still showing the state they described -- a demo reset that
+    silently half-happened. The engine rebuild inside the transaction reads its
+    inputs off this cursor, so it sees the cleared `staged_changes` (whose pushed
+    rows ARE an engine input) rather than the pre-reset overlay a separate
+    connection would still have seen."""
     global _ENGINE
     with get_conn() as conn, conn.cursor() as cur:
         cleared = reset_change_workflow(cur)
-        audit(cur, "user", "reset_demo", detail=cleared)
-    _ENGINE = _build_engine(_ACTIVE_SCENARIO)
-    _require_trustworthy_inputs()
-    snap = _ENGINE.snapshot_id
-    with get_conn() as conn, conn.cursor() as cur:
-        summary = persist_engine_result(cur, _ENGINE)
-        summary["timings"] = _ENGINE.timings
-        summary["paths"] = sum(1 for f in _ENGINE.findings if f.type == "cross_tool_path")
+        built = _build_engine(_ACTIVE_SCENARIO, inputs=(load_asset_merges(cur), load_applied_changes(cur)))
+        _require_trustworthy_inputs()
+        snap = built.snapshot_id
+        summary = persist_engine_result(cur, built)
+        summary["timings"] = built.timings
+        summary["paths"] = sum(1 for f in built.findings if f.type == "cross_tool_path")
         cur.execute("DELETE FROM ztpa.ranked_actions WHERE snapshot_id=%s", [snap])
         cur.execute("UPDATE ztpa.findings SET explanation=NULL WHERE snapshot_id=%s", [snap])
+        audit(cur, "reset_demo", subject=snap, snapshot_id=snap, detail=cleared)
+    _ENGINE = built
     return {"ok": True, "cleared": cleared, "snapshot_id": snap, "summary": summary}
 
 
@@ -1439,8 +1817,12 @@ def admin_set_tool(key: str, body: ToolRolesBody, _: None = Depends(require_admi
     with get_conn() as conn, conn.cursor() as cur:
         upsert(cur, "tool_settings", {"tool_key": key, "enabled_roles": roles,
                "updated_by": request_ctx.current().email or "admin"}, ["tool_key"])
-        audit(cur, "user", "set_tool_roles", subject=key, detail={"enabled_roles": roles})
-    tools_registry.invalidate_cache()
+        audit(cur, "set_tool_roles", subject=key, detail={"enabled_roles": roles})
+    # apply_setting, not invalidate_cache: invalidating alone left the PRE-toggle
+    # map in place as the fallback, so a settings read that failed right after a
+    # successful disable served the capability as still ENABLED, for every role.
+    # The row is committed at this point, so the value is knowledge, not a guess.
+    tools_registry.apply_setting(key, roles)
     return {"ok": True, "tool_key": key, "enabled_roles": roles}
 
 
@@ -1476,7 +1858,11 @@ def admin_metrics(days: int = Query(30, ge=1, le=365), _: None = Depends(require
         top_tools = fetch_all(cur, f"""
             SELECT tool_name, count(*) AS uses, COALESCE(sum(total_tokens),0) AS tokens
             FROM ztpa.ai_metrics WHERE {win} GROUP BY tool_name ORDER BY uses DESC LIMIT 8""", [days])
-        decisions = fetch_all(cur, "SELECT decision, count(*) AS n FROM ztpa.change_decisions GROUP BY decision")
+        # Live rows only: the KPI tile counts the decisions currently on the
+        # board, so a demo reset must zero it -- the retired ones are still in
+        # the table, they are just not this quarter's work.
+        decisions = fetch_all(cur, "SELECT decision, count(*) AS n FROM ztpa.change_decisions "
+                                   "WHERE archived_at IS NULL GROUP BY decision")
         staging = fetch_all(cur, "SELECT status, count(*) AS n FROM ztpa.staged_changes GROUP BY status")
         snaps = fetch_one(cur, "SELECT count(*) AS n FROM ztpa.snapshots")
         finds = fetch_one(cur, """
@@ -1504,7 +1890,7 @@ def agent(body: AskBody):
     _require_capability("assistant")
     result = agent_ask(engine(), body.question)
     with get_conn() as conn, conn.cursor() as cur:
-        audit(cur, "user", "agent_ask", snapshot_id=sid(),
+        audit(cur, "agent_ask", snapshot_id=sid(),
               detail={"question": body.question[:200], "tools": [t["tool"] for t in result.get("trace", [])]})
     return result
 
@@ -1539,19 +1925,41 @@ def agent_suggestions():
     return {"suggestions": out[:4]}
 
 
-def _ranked_cached(cur) -> RankedActions:
-    """Reuse the persisted ranked actions (same cache /api/actions uses) so the
-    report never re-runs the slow ranking model. Computes + persists only if absent."""
+def _ranked_cached() -> RankedActions:
+    """The ranked actions the report renders, WITHOUT ever holding a connection
+    across the model.
+
+    Three steps, each with its own short transaction or none at all:
+      1. read the cache (the same rows /api/actions serves);
+      2. on a miss, rank OUTSIDE any transaction -- single-flighted, and only if
+         `rank` is enabled for this caller, so an admin who turned ranking off
+         stops the spend here as well as on the actions screen;
+      3. persist, in a transaction of its own.
+
+    It took a cursor before, which is what put a 600-second-timeout model call
+    inside the report's open transaction: two people opening the Report tab on a
+    cold model held two of the pool's ten connections for the duration.
+
+    A cache read that FAILS is not fatal -- the report is about findings, and
+    the ranking is a grouping of them, so a dead database costs the model's
+    grouping (and, with it, the persistence of the new one), not the report."""
     t = sid()
-    rows = fetch_all(cur, "SELECT action_id,title,finding_ids,priority,rationale FROM ztpa.ranked_actions WHERE snapshot_id=%s ORDER BY priority", [t])
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            rows = fetch_all(cur, _ACTIONS_SQL, [t])
+    except Exception as exc:
+        log.warning("the ranked-actions cache could not be read for the report",
+                    exc_info=True, extra={"event": "degraded_read", "resource": "ranked actions",
+                                          "snapshot_id": t, "error": str(exc)})
+        return rank_mod.rank_deterministic(engine().findings)
     if rows:
         return RankedActions(
             actions=[RankedAction(action_id=r["action_id"], title=r["title"], finding_ids=r["finding_ids"],
                                   priority=r["priority"], rationale=r["rationale"]) for r in rows],
             ranked_by="llm",
         )
-    ranked = rank_mod.rank(engine().findings)
-    persist_ranked_actions(cur, t, ranked)
+    ranked = _rank_once(t, engine().findings)
+    _persist_ranking(t, ranked)
     return ranked
 
 
@@ -1561,8 +1969,7 @@ def report():
     The richer LLM narrative is fetched separately so the page never hangs."""
     _require_capability("report")
     e = engine()
-    with get_conn() as conn, conn.cursor() as cur:
-        ranked = _ranked_cached(cur)
+    ranked = _ranked_cached()
     return orchestrator.posture_facts(e.findings, e.assets, ranked)
 
 
@@ -1571,8 +1978,7 @@ def report_narrative():
     """The slow, board-ready LLM narrative (bounded + fail-closed)."""
     _require_capability("report")
     e = engine()
-    with get_conn() as conn, conn.cursor() as cur:
-        ranked = _ranked_cached(cur)
+    ranked = _ranked_cached()
     return orchestrator.posture_narrative(e.findings, e.assets, ranked)
 
 
@@ -1597,9 +2003,43 @@ def propose_connector(body: ProposeBody):
     return authoring.propose_profile(body.sample, body.tool_hint)
 
 
+# --- the audit trail's reader ----------------------------------------------
+# The trail had 20+ write sites, one endpoint nobody called, and no screen. A
+# governance record nobody can read is not a governance record: "every action is
+# audited" was true of the INSERTs and false of everything a compliance function
+# would do with them.
+#
+# Admin-only, because this is the one place the actor of every action in the
+# system is enumerated -- who recomputed what, who merged which identities, whose
+# email approved which change. That is exactly the read an auditor is given the
+# ADMIN role for, and exactly the read a viewer is not.
+_AUDIT_COLS = ("id, ts, actor, actor_email, actor_sub, actor_role, action, subject, "
+               "snapshot_id, detail")
+
+
 @app.get("/api/audit")
-def audit_log(limit: int = Query(50, ge=1, le=200)):
+def audit_log(limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0),
+              _: None = Depends(require_admin)):
+    """The audit trail, newest first, paginated.
+
+    `{items, total, limit, offset}` -- `total` because a page of 50 out of an
+    unknown number is not a trail anyone can reason about, and a screen that
+    cannot say "50 of 4,213" invites the reader to assume they are seeing
+    everything.
+
+    `limit` is bounded by FastAPI (ge=1, le=200) rather than by a hand-rolled
+    check, so an out-of-range value is a 422 naming the field instead of a
+    silently clamped page or an unbounded scan of the whole table.
+
+    ORDER BY ts DESC, id DESC: `ts` alone is not a total order -- every row
+    written inside one transaction shares a `now()` -- so paging on it would
+    repeat and skip rows across pages. The id breaks the tie deterministically.
+
+    The actor columns (`actor_email`, `actor_sub`, `actor_role`) are populated
+    inside `db.audit()` from `request_ctx`, never by a call site, which is what
+    makes them impossible to forget on one branch out of fifteen."""
     with get_conn() as conn, conn.cursor() as cur:
-        rows = fetch_all(cur, "SELECT ts,actor,action,subject,detail FROM ztpa.audit_log ORDER BY ts DESC LIMIT %s",
-                         [limit])
-    return {"audit": rows}
+        total = (fetch_one(cur, "SELECT count(*) AS n FROM ztpa.audit_log") or {}).get("n", 0)
+        rows = fetch_all(cur, f"SELECT {_AUDIT_COLS} FROM ztpa.audit_log "
+                              "ORDER BY ts DESC, id DESC LIMIT %s OFFSET %s", [limit, offset])
+    return {"items": rows, "total": int(total or 0), "limit": limit, "offset": offset}

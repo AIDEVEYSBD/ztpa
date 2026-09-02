@@ -23,7 +23,9 @@ import { UsersAdmin } from "@/components/admin/UsersAdmin";
 import { SnapshotsAdmin } from "@/components/admin/SnapshotsAdmin";
 import { ToolsAdmin } from "@/components/admin/ToolsAdmin";
 import { MetricsAdmin } from "@/components/admin/MetricsAdmin";
+import { AuditAdmin } from "@/components/admin/AuditAdmin";
 import { ErrorState } from "@/components/ui/Feedback";
+import { PanelHealthProvider, useScreenFailures } from "@/components/PanelHealth";
 
 const META: Record<ScreenId, { title: string; sub: string }> = {
   map: { title: "Network Map", sub: "Unified reachability across AlgoSec, Guardicore and Wiz" },
@@ -39,6 +41,7 @@ const META: Record<ScreenId, { title: string; sub: string }> = {
   snapshots: { title: "Snapshots", sub: "Point-in-time runs, with delete (admin)" },
   tools: { title: "Tools & Usage", sub: "Available tools, per-role access, and usage metrics (admin)" },
   metrics: { title: "Metrics & Cost", sub: "Application-wide KPIs, token usage and estimated cost (admin)" },
+  audit: { title: "Audit trail", sub: "Every recorded action, who performed it and when (admin)" },
 };
 
 /**
@@ -142,6 +145,10 @@ export default function Dashboard() {
     ["the snapshot timeline", snaps],
   ] as [string, Resource<Provenance>][];
   const failures = feeds.filter(([, r]) => r.status === "error");
+  // ...and the ones that have not answered yet. "Nothing has failed" is not the
+  // same statement as "everything loaded", and while a feed is still in flight
+  // only the first of the two is true.
+  const pending = feeds.filter(([, r]) => r.status === "loading");
 
   // Which of them the backend recomputed in memory because it could not read
   // the persisted snapshot. Real numbers, from the same engine that produced the
@@ -167,41 +174,17 @@ export default function Dashboard() {
       <div id="app-col" className="flex min-w-0 flex-1 flex-col">
         <Topbar title={m.title} sub={m.sub} viewSnap={viewSnap} onViewSnap={setViewSnap}
           snaps={snaps.data?.snapshots ?? []} snapsUnknown={snaps.data?.degraded_reason} />
+        {/* Everything the banner is entitled to talk about lives inside this
+            provider: the console's own failure panels AND the child screen's.
+            A failure panel registers itself by being rendered (see
+            components/PanelHealth.tsx), which is what makes it impossible for
+            the banner to assert that the panels below it are fine while one of
+            them is on screen saying otherwise. */}
+        <PanelHealthProvider>
         <main id="app-main" className="zt-scroll relative flex-1 overflow-x-hidden overflow-y-auto">
           {degraded.length > 0 && (
-            <div role="status" className="m-4 border border-sev-medium-line bg-sev-medium-bg p-3.5">
-              <div className="flex items-start gap-2.5">
-                <ShieldAlert size={16} className="mt-0.5 shrink-0 text-sev-medium" />
-                <div className="min-w-0 flex-1">
-                  <div className="text-[13px] font-bold text-sev-medium">
-                    The backend is running in a degraded state
-                  </div>
-                  {/* This paragraph used to assert, unconditionally, that every panel */}
-                  {/* under it held real computed data — a claim about fetches this */}
-                  {/* component had not looked at, and false in the exact state the */}
-                  {/* banner exists to describe: with no database every data feed below */}
-                  {/* it answered 500, and the banner said otherwise anyway. It may only */}
-                  {/* state what `failures` and `fromMemory` measured, so every clause is */}
-                  {/* now conditional on one of them. */}
-                  <p className="mt-1 text-[12px] leading-relaxed text-text2">
-                    It answered, and reported
-                    {degraded.length === 1 ? " this problem" : ` these ${degraded.length} problems`} with
-                    itself.{failures.length === 0
-                      ? " Every panel below loaded."
-                      : ` ${failures.length} of the ${feeds.length} panels below did not load — see the errors under this notice.`}
-                    {fromMemory.length > 0 &&
-                      ` ${fromMemory.join(", ")} came from the running engine rather than from the persisted snapshot: the numbers are real, but they were not read back from the system of record.`}
-                    {unread.length > 0 &&
-                      ` ${unread.join(", ")} could not be read at all — treat it as unknown, not as empty.`}
-                    {" "}Anything durable (snapshots, decisions, the audit trail) may not be being written.
-                  </p>
-                  <ul className="mono mt-1.5 space-y-0.5 text-[11px] text-text3">
-                    {degraded.map((reason) => <li key={reason}>· {reason}</li>)}
-                  </ul>
-                </div>
-                <button onClick={retry} className="btn-ghost shrink-0 text-xs">Re-check</button>
-              </div>
-            </div>
+            <DegradedBanner degraded={degraded} feedCount={feeds.length} failed={failures.length}
+              pending={pending.length} fromMemory={fromMemory} unread={unread} onRetry={retry} />
           )}
           {failures.length > 0 && (
             <div className="m-4 space-y-2">
@@ -252,10 +235,87 @@ export default function Dashboard() {
                 {screen === "snapshots" && <SnapshotsAdmin onView={(id) => { setViewSnap(id); setScreen("map"); }} />}
                 {screen === "tools" && <ToolsAdmin />}
                 {screen === "metrics" && <MetricsAdmin />}
+                {screen === "audit" && <AuditAdmin />}
               </motion.div>
             </AnimatePresence>
           </div>
         </main>
+        </PanelHealthProvider>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The degraded-state notice — and the paragraph that used to lie.
+ *
+ * "It answered, and reported N problems with itself. Every panel below loaded."
+ * The second sentence was unconditional on anything the component had measured.
+ * `failures` covers the six CONSOLE feeds this page fetches; the panels a user
+ * is looking at belong to the child screen, which fetches its own data. On the
+ * Change Gate with no database, that sentence rendered directly above two HTTP
+ * 500 panels — the exact state the banner exists to describe.
+ *
+ * It is now split into four mutually exclusive claims, each one restricted to
+ * something actually observed:
+ *   - a console feed failed        -> say how many, of how many
+ *   - a panel on this screen failed -> say so, and name it (`useScreenFailures`,
+ *     fed by every ErrorState/InlineError mounted underneath this banner)
+ *   - a console feed is still in flight -> claim nothing yet
+ *   - none of the above            -> the only branch allowed to reassure, and
+ *     even then it says "no panel is reporting a failure", which is true at the
+ *     instant it renders, rather than "every panel loaded", which is a claim
+ *     about panels that may still be loading.
+ */
+function DegradedBanner({ degraded, feedCount, failed, pending, fromMemory, unread, onRetry }: {
+  /** The backend's own `degraded_reasons`, rendered verbatim. */
+  degraded: string[];
+  /** How many console-level feeds exist, so "N of M" is a real fraction. */
+  feedCount: number;
+  /** How many of them errored. */
+  failed: number;
+  /** How many have not answered yet. */
+  pending: number;
+  /** Feeds the backend said it recomputed in memory instead of reading back. */
+  fromMemory: string[];
+  /** Feeds it answered for but could not read at all. */
+  unread: string[];
+  onRetry: () => void;
+}) {
+  const screenFailures = useScreenFailures();
+
+  const panelClaim =
+    failed > 0
+      ? ` ${failed} of the ${feedCount} console feeds below did not load — see the errors under this notice.`
+      : screenFailures.length > 0
+        ? ` The ${feedCount} console feeds below loaded, but ${screenFailures.length === 1 ? "a panel" : `${screenFailures.length} panels`} on this screen could not: ${screenFailures.join(", ")}. See the errors under this notice.`
+        : pending > 0
+          ? " The panels below have not finished loading, so nothing under this notice has been checked yet."
+          : ` All ${feedCount} console feeds below loaded, and no panel on this screen is reporting a failure.`;
+
+  return (
+    <div role="status" className="m-4 border border-sev-medium-line bg-sev-medium-bg p-3.5">
+      <div className="flex items-start gap-2.5">
+        <ShieldAlert size={16} className="mt-0.5 shrink-0 text-sev-medium" />
+        <div className="min-w-0 flex-1">
+          <div className="text-[13px] font-bold text-sev-medium">
+            The backend is running in a degraded state
+          </div>
+          <p className="mt-1 text-[12px] leading-relaxed text-text2">
+            It answered, and reported
+            {degraded.length === 1 ? " this problem" : ` these ${degraded.length} problems`} with
+            itself.{panelClaim}
+            {fromMemory.length > 0 &&
+              ` ${fromMemory.join(", ")} came from the running engine rather than from the persisted snapshot: the numbers are real, but they were not read back from the system of record.`}
+            {unread.length > 0 &&
+              ` ${unread.join(", ")} could not be read at all — treat it as unknown, not as empty.`}
+            {" "}Anything durable (snapshots, decisions, the audit trail) may not be being written.
+          </p>
+          <ul className="mono mt-1.5 space-y-0.5 text-[11px] text-text3">
+            {degraded.map((reason) => <li key={reason}>· {reason}</li>)}
+          </ul>
+        </div>
+        <button onClick={onRetry} className="btn-ghost shrink-0 text-xs">Re-check</button>
       </div>
     </div>
   );

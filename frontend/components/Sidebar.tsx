@@ -3,12 +3,12 @@
 import { useSession } from "next-auth/react";
 import {
   Network, ListChecks, GitBranch, MessageSquare, FileText, Plug, Fingerprint,
-  Users, LogOut, Database, History, Rocket, SlidersHorizontal, BarChart3,
+  Users, LogOut, Database, History, Rocket, SlidersHorizontal, BarChart3, ScrollText,
 } from "lucide-react";
 import { Brand, cn } from "./ui";
 import { ThemeToggle } from "./theme";
 
-export type ScreenId = "map" | "risks" | "change" | "staging" | "ask" | "report" | "connectors" | "assets" | "ingest" | "users" | "snapshots" | "tools" | "metrics";
+export type ScreenId = "map" | "risks" | "change" | "staging" | "ask" | "report" | "connectors" | "assets" | "ingest" | "users" | "snapshots" | "tools" | "metrics" | "audit";
 
 type NavDef = { id: ScreenId; label: string; icon: typeof Network };
 
@@ -30,6 +30,11 @@ const ADMIN: NavDef[] = [
   { id: "ingest", label: "Ingested data", icon: Database },
   { id: "snapshots", label: "Snapshots", icon: History },
   { id: "users", label: "Manage users", icon: Users },
+  // The governance reader. Admin-only like the rest of this group: the whole
+  // ADMIN block is rendered only for role === "admin" below, which is the same
+  // gate every other admin screen already relies on. The API is admin-only too —
+  // this hides the door, it does not replace the lock.
+  { id: "audit", label: "Audit trail", icon: ScrollText },
 ];
 
 /** "Mehul Puri" -> "MP"; "purimehul2003@x.com" -> "PU". */
