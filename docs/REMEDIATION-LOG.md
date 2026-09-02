@@ -267,3 +267,73 @@ installed tree; build, typecheck, lint and 1107 tests all green.
 - **`next-auth` / `@auth/core` critical advisory** — config errors can make existence-based auth checks *fail open*. The fix is a beta-to-beta bump on the auth path and needs the login/SSO flows re-verified, so it is queued rather than slipped in.
 - `next >= 16` advisories (Image Optimizer DoS, RSC deserialization) require a major upgrade.
 - Three frontend honesty defects: `classify` 500s with no DB (unguarded `get_conn()`); the degraded banner claims *"Every panel below loaded"* above two 500 panels; a dead backend is misreported as an API error because the Next rewrite turns ECONNREFUSED into a 500.
+
+---
+
+## Phase 2 — System of record ✅ (with two gaps carried forward)
+
+**2026-09-01/02.** The Phase 2 workflow **crashed**: one repair agent stalled after 6 retries, so its last
+fix and the gate never ran. Both were completed by hand. 5 implementers and 9 verifiers had finished;
+2 of 3 repairs had landed. The tree stayed healthy throughout.
+
+**Committed:** `473609c` — 44 files, +8,080 / −609. Tests **1,107 → 1,297** (1,258 offline + 39 real-DB).
+
+### What was delivered
+
+| Area | Change |
+|---|---|
+| Audit trail | `audit()` reads the actor from `request_ctx` **itself** and writes `actor_email`/`actor_sub`/`actor_role`. Every one of 15 call sites previously passed the literal `'user'` — it was an event log, not an audit trail |
+| Migrations | Versioned runner replaces runtime `ensure_*` DDL and its READY flags; 3 migrations |
+| Persistence | `upsert_many` chunked at the 65,535 bind-parameter limit, so a snapshot over ~2,620 rules actually persists |
+| Transactions | No LLM call executes inside an open DB transaction; ranking no longer holds a pooled connection across a model call |
+| Security | Proxy boundary authenticates the **request**, not merely the identity claim; `_require_capability` genuinely fails closed; the authz test no longer subtracts `{GET,HEAD,OPTIONS}` before inspecting; `next-auth` critical advisory closed; host-header injection closed |
+| Observability | Last bare `except Exception` handlers logged; callers can distinguish "genuinely empty" from "failed to load" |
+| Testing | **39 real-database governance tests** — the first in this repo — plus 10 mutation guards |
+
+### The stalled repair was the most interesting finding of the phase
+A verifier refuted *"callers can distinguish empty from failed"* with a precise catch: `EmbeddingResult`
+was built, documented against this exact scenario — and **wired to nothing**. `embed_texts` had zero
+callers; `entity_suggest` still used the legacy `embed()`, which returns `[]` for both "nothing asked" and
+"every provider down".
+
+So a dead embedding server rendered as the positive claim **"these two PCI assets do not resemble each
+other"** — `name_similarity: 0.0`, payload byte-identical to a real measurement. Fixed: degraded rows carry
+`name_similarity: null`, `similarity_available: false` and a reason; confidence rests on tag evidence
+instead of being halved by a fabricated zero. **All 6 new guards verified to fail against the pre-fix code.**
+
+### Governance survival — proven under six independent attacks
+The gate ignored the shipped tests and drove the **real HTTP routes** against real Postgres:
+
+| Attack | Result |
+|---|---|
+| All four paths (recompute, dataset switch, merge/unmerge, reset ×2) through real routes | **0 rows lost** across 12 operations |
+| 3,006 rows incl. 1,500 pre-archived, whole-row byte comparison | 0 lost; survivors byte-identical; `audit_log` append-only; original retirement dates preserved |
+| Fresh install from `schema.sql` | correct without migrations |
+| **An actual pre-remediation database**, migrated | FK flipped to SET NULL, columns added, all paths pass |
+| **A deploy that forgot the migration** | fails **loudly** in one transaction, destroys nothing — no DELETE fallback |
+| Repo-wide sweep for any other destruction path | none; no triggers, no rules; every write funnels through two functions |
+
+Also confirmed the tests genuinely run rather than skipping into a false green: 39 pass with a database,
+39 skip without, and a **RuntimeError if `NPR_TEST_DATABASE_URL` is set but unreachable** — so a CI that
+asks for a database and is denied one goes red.
+
+### ⚠️ Two criteria still FAIL after repair — carried into the next phase
+
+**1. `degraded_analyzers` has no consumers — a silent under-report presented as complete. (blocker-class)**
+`run_all.py` populates and logs it; `grep -rn degraded_analyzers backend/app frontend db` returns nothing.
+Reproduced against real Postgres: with `shadowing` and `transport_exposure` raising, `POST /api/recompute`
+returns `200 {"ok": true, "findings": 7}` (was 30), persists **only 2 of 4 finding types under the same
+snapshot_id — overwriting the good 30-finding rows** — writes `snapshots.status='complete'`, and then
+`/api/health` reports `status:"ok"` with empty `degraded_reasons`, `/api/findings` says
+`served_from:"database"`, and `/api/report` publishes the truncated severity breakdown.
+**No caller can distinguish "no shadowing findings exist" from "shadowing crashed."**
+
+**2. `_require_capability` — docstring vs code, and kill-switch coverage.**
+The three behavioural clauses hold under real attack. But the docstring asserts the operator keeps
+`GET /api/admin/tools` during a `tool_settings` outage; in fact that route and `POST /api/admin/tools/{key}`
+both 500 — so the operator loses the Tools screen and the ability to re-enable a capability at exactly the
+moment fail-closed has taken everything away.
+
+**3. The archived compliance record has no reader.** `GET /api/change-decisions` hard-codes
+`WHERE archived_at IS NULL` with no `include_archived` parameter, so reset-demo's archived governance rows
+are retained but unreadable.
