@@ -86,10 +86,29 @@ def _canon(r: EngineResult, name: str) -> str:
 
 def snapshot_row(r: EngineResult) -> dict:
     """The `ztpa.snapshots` row. No `created_at`: the database defaults it, so a
-    projection cannot know it (and inventing `now()` would break determinism)."""
+    projection cannot know it (and inventing `now()` would break determinism).
+
+    `status` used to be the constant "complete" -- for every run, including one
+    whose path enumeration stopped at the scan cap. The snapshot timeline is the
+    one screen that says which runs are trustworthy, so a run that analyzed a
+    bounded sample of its own estate must not sit in it wearing the same word as
+    a run that analyzed all of it. A `partial` run is recorded as `failed` and
+    the reason goes in `notes`, because the timeline's CHECK admits only
+    running/complete/failed; `db/schema.sql` wants a `partial` value and a
+    `degraded_reasons` column, which is a migration outside this module's reach
+    (see the remediation report). "failed" over-states in the SAFE direction --
+    it makes an operator look -- while "complete" under-states in the direction
+    every defect in this product's audit went.
+
+    A `degraded` run never reaches here at all: `persist_engine_result` refuses
+    it outright."""
+    notes = f"{len(r.records)} canonical rules, {len(r.assets)} assets, {len(r.findings)} findings"
+    if not r.complete:
+        notes += " -- INCOMPLETE ANALYSIS: " + "; ".join(r.integrity_reasons())
     return {
-        "snapshot_id": r.snapshot_id, "label": r.label, "status": "complete",
-        "notes": f"{len(r.records)} canonical rules, {len(r.assets)} assets, {len(r.findings)} findings",
+        "snapshot_id": r.snapshot_id, "label": r.label,
+        "status": "complete" if r.complete else "failed",
+        "notes": notes,
     }
 
 
@@ -204,7 +223,35 @@ def snapshot_counts(r: EngineResult) -> dict[str, int]:
     }
 
 
+class DegradedSnapshotError(RuntimeError):
+    """A snapshot that lost an entire finding class was offered to the system of
+    record. Raised, never logged-and-continued: this is the exact write the
+    audit measured destroying 30 findings' worth of healthy rows with 7."""
+
+
 def persist_engine_result(cur: psycopg.Cursor, r: EngineResult) -> dict:
+    """Write an EngineResult to the system of record -- if it is fit to be one.
+
+    THE GUARD IS HERE, at the lowest layer, and not only in the API. `app.main`
+    already refuses to publish a degraded rebuild, but this function is also
+    called by `scripts/precompute.py`, by the merge/reset routes and by anything
+    written next; a rule enforced at four call sites is a rule that is missing
+    from the fifth. `delete_snapshot_children` on the first line is what makes
+    the stakes total rather than partial -- it CLEARS the snapshot's rows before
+    re-inserting, so persisting a degraded result does not merely add a bad row,
+    it deletes the good ones first.
+
+    Truncated (`partial`) results ARE written: they are the best answer that
+    exists for those inputs and refusing them would leave a large estate with no
+    snapshot at all. They are written under their own id (the engine folds the
+    truncation into the fingerprint), marked in `snapshot_row`, and reported by
+    /api/health -- surfaced, not suppressed."""
+    if r.degraded:
+        raise DegradedSnapshotError(
+            "refusing to persist a degraded snapshot: "
+            + "; ".join(r.integrity_reasons())
+            + ". The findings for the failed analyzer(s) do not exist in this result, and "
+              "writing it would clear the rows of the last complete run for this snapshot id.")
     sid = r.snapshot_id
     # No `ensure_finding_types(cur)` here any more: the widened findings.type
     # CHECK is in db/schema.sql and db/migrations/0002. See the module docstring.
@@ -224,9 +271,14 @@ def persist_engine_result(cur: psycopg.Cursor, r: EngineResult) -> dict:
     # warm-engine thread at boot where there is no request and no actor at all.
     # The actor columns still fill in from request_ctx when a human pressed
     # Recompute, so the row says both "the system wrote it" and "she asked".
+    # `complete` and `truncations` are in the audit detail because the trail is
+    # where a compliance function reconstructs what was known when: "30 findings"
+    # and "30 findings out of a scan that hit its cap" are different claims and
+    # the row has to be able to tell them apart years later.
     audit(cur, "precompute_snapshot", actor_kind="system", subject=sid, snapshot_id=sid, detail={
         "records": len(r.records), "assets": len(r.assets), "findings": len(r.findings),
         "forced_critical": sum(1 for f in r.findings if f.forced_critical),
+        "complete": r.complete, "truncations": r.truncations,
     })
 
     return {
@@ -234,6 +286,10 @@ def persist_engine_result(cur: psycopg.Cursor, r: EngineResult) -> dict:
         "correlations": len(r.correlations), "resolved": len(r.resolved),
         "nodes": r.graph.number_of_nodes(), "edges": r.graph.number_of_edges(),
         "findings": len(r.findings),
+        # Every caller of this returns the summary to a human or an audit row.
+        # A count with no completeness flag beside it is the thing that read as
+        # authoritative when it was not.
+        "complete": r.complete, "truncations": r.truncations,
     }
 
 

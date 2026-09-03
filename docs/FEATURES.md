@@ -41,6 +41,35 @@ and reach sensitive assets — e.g. `Internet → lb-public-01 → app-server-07
 db-prod-01`, a path across **3 tools** into PCI/customer data that **no single console can
 show**. Each hop is labelled with the tool that enforces it.
 - *Where:* `backend/src/graph/reachability.py`, `backend/src/analyzers/path_trace.py`.
+- ⚠️ **On the bundled fixture this detector currently reports ZERO findings, by design.** That
+  seeded chain pivots through `internal-app`, an AlgoSec network object `10.40.0.0/16`, and
+  `_valid_traversal` refuses to pivot *through* an abstract node — a subnet is an address range,
+  not a machine you can land on. The path returns when CIDR-membership expansion lands (Phase 3,
+  [ENGINE.md §10.2](ENGINE.md)); until then `scripts/verify_engine.py` asserts the zero on
+  purpose (`P5`), `docs/REMEDIATION-LOG.md` records when and why it changed, and `DEMO.md` §2 says
+  what to present instead. **Do not quote a cross-tool-path count from the demo as evidence the
+  detector works** — build the case on `over_permissive` (100/critical/forced, RDP internet →
+  `db-prod-01`) and the QUIC blind spot (78/critical/forced) instead.
+- ✅ *Entry point is address space, not a string.* The search starts from **every** node the
+  graph classifies as internet — `reachability.internet_entries` reads the zone `graph.build`
+  stamped from each node's **resolved** `ip_set`, so `0.0.0.0/0`, `any`, `ANY-EXTERNAL` and a
+  named group dereferencing to public space are all entry points. This matters because real
+  AlgoSec / Palo / Check Point exports write the internet source as `any` or as a named object
+  in what `normalizers/algosec.py` itself calls "the overwhelming majority of rules"; a
+  string lookup returned **zero paths** for those estates, and zero paths renders as *"no
+  internet-to-crown-jewel path exists."* `change/simulate.py` calls the same function, so the
+  analyzer a buyer sees and the gate an operator is judged by cannot disagree about where the
+  internet is.
+- ⚠️ *Scope of the claim — three limits, all disclosed in [ENGINE.md §10](ENGINE.md).*
+  **(a)** A chain that pivots *through* a subnet or group object is **not** reported:
+  `_valid_traversal` allows an abstract node as a path endpoint but never as an intermediate
+  hop, and CIDR-membership expansion is not built, so multi-hop paths transiting a subnet are
+  under-counted (§10.2). **(b)** Effective policy is the union of `allow` edges — a
+  non-shadowed `deny` that should cut a path is invisible (§10.1). **(c)** It does not hold at
+  the advertised scale: on a realistic 5,000-rule multi-tool export `path_trace` took **~21
+  minutes** synchronously on the request path and returned 0 findings, and the enumeration cap
+  bounds paths *yielded* rather than search *performed*, so a target that never yields is
+  never capped (§10.3 and the scale table under §10).
 
 ### 1.4 ✅ Deterministic risk findings with an explicit severity vector
 **Five** detectors — over-permissive rules, CIDR overlap/redundancy, rule shadowing,
@@ -56,6 +85,15 @@ application reachable from the internet.
   per distinct problem — `transport_exposure`'s QUIC check most visibly — so one underlying
   issue can produce several findings. Read ENGINE.md §6.5 before treating a finding total as
   a count of distinct problems.
+- ⚠️ *One published guardrail clause has a known escape, and it is disclosed rather than
+  worked around.* Clause 3 — "a regulated asset reachable from the internet", the
+  port-independent one a compliance reader leans on — tests the destination **label's** tags.
+  Aiming the identical rule at the subnet object that *contains* the regulated host drops D
+  to the untagged default, so `0.0.0.0/0 → DC-SUBNETS tcp/1433` scores **57/medium, not
+  forced** while the strictly narrower `0.0.0.0/0 → db-prod-01 tcp/1433` scores
+  **100/critical/forced**. Both numbers are reproducible from `severity.score_over_permissive`.
+  Full write-up, propagation into the posture report, and why the fix is not a one-liner:
+  [ENGINE.md §10.5](ENGINE.md).
 
 ### 1.5 ✅ Local-first AI advisory layer — **10 capabilities**, 5 of them agentic
 
@@ -165,6 +203,11 @@ tool misses.
   from `(protocol, port)` via a fixed `APP_BY_PORT` map (e.g. `udp/443 → quic`,
   `udp/53 → dns`, `tcp/443 → tls`). Every L7 tag is marked `declared` vs `inferred` so the
   provenance is auditable — inference is a deterministic table lookup, **not** a model call.
+  - ⚠️ *Inference reads the **first** port interval's start port only.* `udp/443` infers
+    `quic`; `udp/1-65535` — which opens 443 — infers nothing, so **widening a rule deletes its
+    QUIC blind-spot finding**, and `udp/80,443` is titled `http3-discovery` after port 80.
+    Declared App-IDs are unaffected, and so is the `tls_fallback_not_blocked` check (it works
+    on decoded intervals, not on `l7_app`). Full write-up: [ENGINE.md §10.8](ENGINE.md).
 
 **What "reason" means (new analyzers + reachability):**
 - **QUIC blind-spot finding:** `udp/443` reachable from a lower-trust zone (especially
@@ -250,3 +293,28 @@ byte-identically) rather than a total.
   The residency claim ("data never leaves the host") is qualified everywhere it appeared:
   `ADVISORY_PROVIDER=auto` falls back to a hosted provider silently, `render.yaml` pins
   `openai`, and the system of record is cloud Postgres regardless.
+
+- **2026-09-02** — **Second documentation-accuracy pass**, against `PROD-READINESS-AUDIT-2.md`
+  (workstream D6). No feature change; every edit is a claim brought back into line with the
+  code, or a gap that was real and undisclosed. §1.3 now states **where the cross-tool path
+  search starts** — `reachability.internet_entries`, every node the graph classifies as
+  internet by resolved address space, so `any` and a named group are entry points and the
+  change gate reads the same definition — and scopes the claim with the three limits that
+  remain (no pivot through a subnet/group object, `deny` does not subtract, and the measured
+  ~21-minute cost of path tracing on a realistic 5,000-rule export). §1.4 discloses the one
+  known escape from guardrail clause 3: destination sensitivity reads the destination
+  **label's** tags, so `0.0.0.0/0 → DC-SUBNETS tcp/1433` scores 57/medium while the strictly
+  narrower rule naming the host inside that subnet scores 100/critical/forced. Both point at
+  [ENGINE.md §10](ENGINE.md), whose "Fixed, and no longer gaps" block was itself corrected:
+  it had declared the literal-internet defect closed while citing two of the five call sites
+  that ask the question, and the three it omitted were the ones that decide what a buyer is
+  shown and what an operator may approve. ENGINE.md §10 also gains the destination
+  containment gap, the unmodelled `enabled`/`negate` rule state, a **measured** scale table,
+  and two more gaps that fail toward a clean bill of health (a malformed address object
+  scoring E = 0.1 so an internet-to-PCI grant produces no finding; `l7_app` inferred from the
+  first port interval, so *widening* a service deletes the QUIC blind-spot finding).
+  **The most consequential correction is that §1.3's flagship detector currently reports
+  zero on the bundled fixture** — the seeded chain's only pivot is a `/16` network object and
+  the traversal rule correctly refuses it. That was recorded in `REMEDIATION-LOG.md` when it
+  happened and pinned by `verify_engine.py`, but `README.md`, `DEMO.md` and this file all went
+  on promising the animation. They no longer do.

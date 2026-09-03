@@ -8,6 +8,7 @@ memory for live reachability/simulation (identical data to the persisted snapsho
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import contextvars
 import json
@@ -258,12 +259,28 @@ _ACTIVE_SCENARIO = _DEFAULT_SCENARIO
 
 # What the last engine build could and could not do. Read by /api/health so a
 # degraded snapshot is reported rather than served as if it were authoritative.
+#
+# Everything about the snapshot BEING SERVED is read off `_ENGINE` itself
+# (`EngineResult.complete` / `.integrity_reasons()`), never mirrored here: a
+# second copy of "is this analysis complete?" is a second copy that can go
+# stale, and a stale copy of that particular fact reads as a clean estate. What
+# lives here is only what the result cannot know about itself -- whether its
+# INPUTS loaded, whether it was written, and whether a LATER build was refused.
+#
+# Every read of a key added after the original five uses `.get()`: several test
+# modules replace this dict wholesale with the five they know about, and a
+# KeyError in /api/health would turn the honesty endpoint into a 500.
 _ENGINE_STATE: dict = {
     "inputs_ok": True,        # confirmed merges + pushed changes actually loaded
     "inputs_error": None,     # why they didn't, if they didn't
     "persisted": None,        # True/False/None(not attempted) for the active snapshot
     "persist_error": None,
     "build_error": None,      # the last engine BUILD that raised, if one did
+    # The last build that COMPLETED but was refused publication -- a degraded
+    # analysis, or one computed without the operator's merges. The process keeps
+    # serving the previous complete snapshot, which is invisible without this.
+    "rejected_snapshot": None,
+    "rejected_reason": None,
 }
 
 
@@ -336,6 +353,11 @@ def _run_engine(scenario: str, inputs: EngineInputs | None = None) -> EngineResu
         inputs_ok=not missing,
         inputs_error=("could not load " + " and ".join(missing) + " from the database") if missing else None,
         persisted=None, persist_error=None,
+        # A new build supersedes the last refusal: a degraded state that cannot
+        # clear is its own lie, and the banner would stay up after one transient
+        # bad file. Set again by `_require_publishable_snapshot` if this build is
+        # refused too.
+        rejected_snapshot=None, rejected_reason=None,
     )
     if missing:
         log.error("engine rebuilt on incomplete inputs", extra={
@@ -372,13 +394,58 @@ def _build_engine(scenario: str, inputs: EngineInputs | None = None) -> EngineRe
     return built
 
 
-def _require_trustworthy_inputs() -> None:
-    """Refuse to PERSIST a snapshot computed without the operator's confirmed
-    merges / pushed changes. Recomputing them away and writing that to the system
-    of record is the failure the audit called the worst one in the product:
-    identical pixels for "clean estate" and "the database blinked"."""
-    if not _ENGINE_STATE["inputs_ok"]:
-        raise HTTPException(503, f"refusing to persist a degraded snapshot: {_ENGINE_STATE['inputs_error']}")
+def _publication_block(built: EngineResult) -> str | None:
+    """Why this result may not be published as the authoritative snapshot -- or
+    None when it may.
+
+    ONE predicate for the two halves of the same question, because they were
+    two: the INPUT half ("did the operator's confirmed merges actually load?")
+    was fail-closed from Phase 2, and the ANALYSIS half ("did every analyzer
+    actually run?") was not gated at all. Phase 1 had replaced "one malformed
+    rule aborts the snapshot" with per-analyzer isolation, which is right, but
+    the partial result then flowed through the SAME writes as a healthy one --
+    and because the snapshot id was a hash of the INPUTS, it landed on the
+    healthy run's own rows. Measured: 30 findings replaced by 7 under one id,
+    `/api/health` `ok`, `/api/findings` `served_from: "database"`, the compliance
+    report 23 findings short, and nothing on any screen saying so.
+
+    A TRUNCATED (`partial`) run is deliberately NOT blocked. Its findings are
+    real, it is the only answer that exists for those inputs, and blocking it
+    would leave a large estate with no snapshot at all -- so it is written under
+    its own id, marked `failed` in the timeline by `persist.snapshot_row`, and
+    listed on /api/health. Suppressed nowhere, trusted as a total nowhere.
+
+    `built` is REQUIRED, with no default. An optional result would let a call
+    site check the input half and skip the analysis half by omission -- a
+    signature whose easiest use is the incomplete check is the same defect this
+    function exists to close, one level up.
+    """
+    if not _ENGINE_STATE.get("inputs_ok", True):
+        return _ENGINE_STATE.get("inputs_error") or "the engine's database-backed inputs did not load"
+    if built.degraded:
+        return ("; ".join(built.integrity_reasons())
+                + ". Publishing it would clear the rows of the last complete run")
+    return None
+
+
+def _require_publishable_snapshot(built: EngineResult) -> None:
+    """Refuse to PERSIST a snapshot that is not a complete analysis of the
+    operator's real inputs -- and record the refusal so it is visible.
+
+    Called BEFORE `_ENGINE` (or `_ACTIVE_SCENARIO`) is rebound on every write
+    path, which is what makes the exit criterion hold: the 503 leaves the
+    previous complete snapshot both SERVED and PERSISTED, rather than leaving the
+    process holding a partial one it has already refused to write."""
+    blocked = _publication_block(built)
+    if blocked is None:
+        return
+    _ENGINE_STATE.update(rejected_snapshot=built.snapshot_id, rejected_reason=blocked)
+    log.error("refusing to publish a snapshot that is not authoritative", extra={
+        "event": "snapshot_publication_refused", "reason": blocked,
+        "snapshot_id": built.snapshot_id,
+        "degraded_analyzers": sorted(d["analyzer"] for d in built.degraded_analyzers),
+    })
+    raise HTTPException(503, f"refusing to persist a degraded snapshot: {blocked}")
 
 
 def engine() -> EngineResult:
@@ -392,11 +459,19 @@ def engine() -> EngineResult:
                         exc_info=True, extra={"event": "write_scenario_failed",
                                               "scenario": _ACTIVE_SCENARIO, "error": str(exc)})
         _ENGINE = _build_engine(_ACTIVE_SCENARIO)
-        if not _ENGINE_STATE["inputs_ok"]:
+        blocked = _publication_block(_ENGINE)
+        if blocked:
             # Live-only degraded mode: serve the snapshot but never write it, so a
             # transient DB error cannot overwrite the real one with a truncated
-            # recompute. /api/health reports the degradation.
-            _ENGINE_STATE.update(persisted=False, persist_error=_ENGINE_STATE["inputs_error"])
+            # recompute, and a run that lost a finding class cannot overwrite one
+            # that did not. /api/health reports the degradation, and every read
+            # payload carries `analysis_complete` / `degraded_analyzers`.
+            #
+            # This is the one path that SERVES a degraded result: it is the cold
+            # build, so there is no previous complete snapshot to fall back to and
+            # the alternative is a process that answers nothing. Disclosed
+            # everywhere, written nowhere -- the write paths refuse it outright.
+            _ENGINE_STATE.update(persisted=False, persist_error=blocked)
             return _ENGINE
         try:
             with get_conn() as conn, conn.cursor() as cur:
@@ -541,6 +616,31 @@ def health() -> JSONResponse:
     if _ENGINE_STATE["persist_error"]:
         reasons.append(f"snapshot persistence failed: {_ENGINE_STATE['persist_error']}")
 
+    # Is the ANALYSIS behind the snapshot we are serving complete? Read off the
+    # result itself rather than a mirror of it (see `_ENGINE_STATE`). This is the
+    # gap the audit measured: with two analyzers raising, this endpoint answered
+    # 200 `"status":"ok"` `degraded_reasons: []` over a snapshot missing 23 of its
+    # 30 findings, because `degraded_analyzers` was populated, logged, and read by
+    # nothing. A missing finding class and a path scan that ran out of budget are
+    # both listed, in the served result's own words.
+    served = _ENGINE
+    analysis: dict = {"complete": None, "degraded_analyzers": None, "truncated": None}
+    if served is not None:
+        reasons.extend(served.integrity_reasons())
+        analysis = {
+            "complete": served.complete,
+            "degraded_analyzers": sorted(d["analyzer"] for d in served.degraded_analyzers),
+            "truncated": served.partial,
+        }
+    # A build that came back incomplete and was refused publication: reads keep
+    # working off the last complete snapshot -- which is the correct thing to
+    # serve, and completely invisible without this line.
+    if _ENGINE_STATE.get("rejected_reason"):
+        reasons.append(
+            f"the last engine rebuild was refused publication and the previous complete snapshot "
+            f"is still being served ({_ENGINE_STATE['rejected_snapshot']}): "
+            f"{_ENGINE_STATE['rejected_reason']}")
+
     try:
         ai = provider_status()
     except Exception as exc:                                  # never let the status page 500
@@ -553,7 +653,12 @@ def health() -> JSONResponse:
         "snapshot_id": snapshot_id,
         "ai": ai,
         "scenario": _ACTIVE_SCENARIO,
-        "snapshot": {"persisted": snapshot_persisted, "inputs_ok": _ENGINE_STATE["inputs_ok"]},
+        "snapshot": {"persisted": snapshot_persisted, "inputs_ok": _ENGINE_STATE["inputs_ok"],
+                     # The completeness of the ANALYSIS, beside the completeness
+                     # of its inputs -- the two halves of "is this snapshot worth
+                     # believing?", which used to have one half answered.
+                     "analysis": analysis,
+                     "rejected_snapshot": _ENGINE_STATE.get("rejected_snapshot")},
         # False = the x-npr-* identity headers are trusted with no shared secret.
         "proxy_auth": request_ctx.proxy_auth_enabled(),
         "degraded_reasons": reasons,
@@ -576,8 +681,14 @@ def recompute(_: None = Depends(require_operator)):
         log.warning("scenario regeneration failed; recomputing from the data/mock files on disk",
                     exc_info=True, extra={"event": "write_scenario_failed",
                                           "scenario": _ACTIVE_SCENARIO, "error": str(exc)})
-    _ENGINE = _build_engine(_ACTIVE_SCENARIO)
-    _require_trustworthy_inputs()
+    # Built into a LOCAL first: `_ENGINE = _build_engine(...)` published the new
+    # result before anything had checked it, so a rebuild that lost an analyzer
+    # became the snapshot this process served even though the 503 below refused
+    # to write it -- the served estate and the system of record then disagreed,
+    # silently, in the under-reporting direction.
+    built = _build_engine(_ACTIVE_SCENARIO)
+    _require_publishable_snapshot(built)
+    _ENGINE = built
     snap = _ENGINE.snapshot_id
     with get_conn() as conn, conn.cursor() as cur:
         summary = persist_engine_result(cur, _ENGINE)
@@ -617,8 +728,12 @@ def switch_dataset(body: DatasetBody, _: None = Depends(require_admin)):
     # engine()/recompute calls write_scenario(_ACTIVE_SCENARIO) first, which
     # regenerates the one still active -- so the failed switch leaves no residue.)
     built = _build_engine(body.scenario)
+    # The publication gate runs BEFORE the rebind, for the same reason the build
+    # does: a scenario whose analysis came back incomplete must leave no residue
+    # either, or the failing dataset becomes the active one and every later lazy
+    # rebuild reproduces it.
+    _require_publishable_snapshot(built)
     _ACTIVE_SCENARIO, _ENGINE = body.scenario, built
-    _require_trustworthy_inputs()
     snap = _ENGINE.snapshot_id
     with get_conn() as conn, conn.cursor() as cur:
         summary = persist_engine_result(cur, _ENGINE)
@@ -693,6 +808,37 @@ def _narrow(rows: list[dict], cols: tuple[str, ...]) -> list[dict]:
     """Project full table rows down to the columns a query SELECTs. A wider dict
     out of the fallback is a contract drift only the degraded path would show."""
     return [{c: row[c] for c in cols} for row in rows]
+
+
+def _analysis_block(t: str) -> dict:
+    """How complete the analysis behind snapshot `t` was, for the payload.
+
+    `degraded_analyzers` was populated by the engine, logged, and read by
+    NOTHING -- `grep -rn degraded_analyzers backend/app frontend db` returned
+    zero hits, so a compliance report 23 findings short rendered exactly like a
+    complete one. It is carried here on every read that makes a claim about the
+    estate as a whole.
+
+    THREE-VALUED ON PURPOSE. `null` is not `[]`. The in-memory result describes
+    the ACTIVE snapshot only, so a read of a HISTORICAL one gets `null` --
+    "this process cannot say", which is true -- rather than `[]`, which would be
+    a positive claim that a snapshot it has never analyzed was complete. (The
+    `snapshots` table has no column for this yet; a client that needs it for a
+    historical run needs the migration named in the remediation report.)"""
+    live = _ENGINE
+    if live is None or t != live.snapshot_id:
+        return {"analysis_complete": None, "degraded_analyzers": None, "truncations": None}
+    block = {
+        "analysis_complete": live.complete,
+        "degraded_analyzers": sorted(d["analyzer"] for d in live.degraded_analyzers),
+        "truncations": live.truncations,
+    }
+    if _ENGINE_STATE.get("rejected_reason"):
+        # This payload is complete, and it is also not the newest analysis: a
+        # later rebuild was refused. Both facts, or the reader concludes the
+        # estate is current when it is deliberately frozen.
+        block["last_build_rejected"] = _ENGINE_STATE["rejected_reason"]
+    return block
 
 
 _RULE_COLS = ("source_tool", "source_device", "raw_rule_id", "rule_order", "action",
@@ -828,8 +974,9 @@ def snapshot_meta(snapshot: str | None = None):
         # null rather than a fabricated now(), which would also break determinism.
         return {"snapshot": {**snapshot_row(live), "created_at": None},
                 "counts": snapshot_counts(live), "viewing": t, "active": live.snapshot_id,
-                **provenance}
-    return {"snapshot": snap, "counts": counts, "viewing": t, "active": sid(), "served_from": _DB_SOURCE}
+                **_analysis_block(t), **provenance}
+    return {"snapshot": snap, "counts": counts, "viewing": t, "active": sid(),
+            **_analysis_block(t), "served_from": _DB_SOURCE}
 
 
 # The node/edge column lists the two graph queries SELECT, named once so the
@@ -892,16 +1039,112 @@ def graph(snapshot: str | None = None):
 _FINDING_COLS = ("finding_id", "type", "severity", "severity_band", "forced_critical",
                  "signals", "involved", "raw_refs", "source_tools", "explanation")
 
+# --- /api/findings paging --------------------------------------------------
+# The endpoint had no limit at all. Measured on a 51-node mesh: 57.8 MB in one
+# response, 975 MB process RSS, and a browser that stops being able to render
+# the console at all -- while /api/health answered `ok` in 3.5 s. A page bounds
+# the blast radius of an estate this API cannot yet analyze in bounded time
+# (that is workstream C1); it does not pretend the estate is smaller, which is
+# what `total` is for.
+#
+# 500 rows is the page. Measured: a demo finding serializes to 962 bytes on
+# average and 1,261 at its widest (500 -> 0.63 MB), and the mesh findings behind
+# the 57.8 MB measurement average ~2.9 KB because `signals.path` carries a whole
+# chain (500 -> ~1.5 MB). Both clear the audit's "< 2 MB by default" bar, and 500
+# is far more than the demo's 31 -- so the demo, and any estate of a realistic
+# size, is unpaged and byte-identical to what this endpoint returned before.
+_FINDINGS_LIMIT_DEFAULT = 500
+_FINDINGS_LIMIT_MAX = 5000
+
+# The total order both sources page on. `ORDER BY forced_critical DESC, severity
+# DESC, type` is NOT a total order -- the demo alone has 31 findings across 5
+# types, so ties are the norm, and a keyset cursor over a non-total order silently
+# skips and repeats rows across pages. `finding_id` breaks every tie; the SQL
+# says so explicitly rather than leaving the tiebreak to the planner (the
+# in-memory fallback has always sorted this way, so this also removes a real
+# disagreement between the two sources).
+_FINDINGS_ORDER = "ORDER BY forced_critical DESC, severity DESC, type, finding_id"
+
+
+def _finding_sort_key(row: dict) -> tuple:
+    """`_FINDINGS_ORDER` as a Python key, so the memory fallback pages the same
+    rows in the same order the database would have returned."""
+    return (not row["forced_critical"], -row["severity"], row["type"], row["finding_id"])
+
+
+def _encode_cursor(row: dict) -> str:
+    """The last row of a page, as an opaque continuation token.
+
+    Keyset, not OFFSET: an offset over a table the engine re-writes on every
+    recompute walks a moving list, so page 2 can skip a critical finding that
+    page 1 already pushed down. The token carries the WHOLE sort key, so the
+    continuation is exact rather than positional, and a token whose shape no
+    longer matches fails the decode below loudly rather than resuming from an
+    arbitrary place."""
+    payload = json.dumps([bool(row["forced_critical"]), int(row["severity"]),
+                          str(row["type"]), str(row["finding_id"])], separators=(",", ":"))
+    return base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii").rstrip("=")
+
+
+def _decode_cursor(cursor: str) -> tuple[bool, int, str, str]:
+    """The token back into its sort key -- or a 400 that names the field.
+
+    A malformed cursor must never fall back to "page 1": a client looping until
+    `next_cursor` is null would then loop forever over the first page and read it
+    as the whole estate. Every failure here is the caller's, and is answered as
+    one."""
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        forced, severity, type_, finding_id = json.loads(base64.urlsafe_b64decode(padded))
+        return bool(forced), int(severity), str(type_), str(finding_id)
+    except Exception:
+        # `from None`: the base64/JSON error is about the token, not about this
+        # API, and chaining it would put a decoder traceback in the 400's context
+        # for something the caller can fix by resending `next_cursor` verbatim.
+        raise HTTPException(400, "cursor is not a continuation token from a previous "
+                                 "/api/findings page (pass the response's next_cursor "
+                                 "verbatim)") from None
+
 
 @app.get("/api/findings")
-def findings(snapshot: str | None = None):
+def findings(snapshot: str | None = None,
+             limit: int = Query(_FINDINGS_LIMIT_DEFAULT, ge=1, le=_FINDINGS_LIMIT_MAX),
+             cursor: str | None = None):
+    """One page of findings, worst first, with the size of the whole set.
+
+    `{findings, total, limit, next_cursor, has_more}`: `total` is the count for
+    the snapshot, so a page is never mistakable for the estate -- a screen that
+    cannot say "500 of 20,431" invites the reader to assume they are seeing
+    everything, which is this product's characteristic failure. `next_cursor` is
+    null exactly when this page is the last one: the query asks for `limit + 1`
+    rows and returns `limit`, so "is there more?" is answered by a row that
+    exists rather than by comparing against a `total` counted in a separate
+    statement.
+
+    Also carries `analysis_complete` / `degraded_analyzers` / `truncations`: a
+    count of findings is only as meaningful as the analysis behind it, and this
+    is the payload that publishes the count."""
     t = view_sid(snapshot)
+    after = _decode_cursor(cursor) if cursor else None
     try:
         with get_conn() as conn, conn.cursor() as cur:
-            rows = fetch_all(cur, """
+            total = int((fetch_one(cur, "SELECT count(*) AS n FROM ztpa.findings WHERE snapshot_id=%s",
+                                   [t]) or {}).get("n", 0) or 0)
+            # Row-wise comparison on the ASCENDING spelling of the sort key, so
+            # one predicate expresses "everything after this row" across all four
+            # columns -- the alternative (a nest of OR'd equalities) is where
+            # keyset paging bugs live. `NOT forced_critical` and `-severity` turn
+            # the two DESC columns into ASC ones; false sorts before true, so a
+            # forced-critical row is `false` here and pages first.
+            where, params = "snapshot_id=%s", [t]
+            if after is not None:
+                where += " AND (NOT forced_critical, -severity, type, finding_id) > (%s,%s,%s,%s)"
+                params += [not after[0], -after[1], after[2], after[3]]
+            rows = fetch_all(cur, f"""
                 SELECT finding_id,type,severity,severity_band,forced_critical,signals,involved,raw_refs,
-                       source_tools,explanation FROM ztpa.findings WHERE snapshot_id=%s
-                ORDER BY forced_critical DESC, severity DESC, type""", [t])
+                       source_tools,explanation FROM ztpa.findings WHERE {where}
+                {_FINDINGS_ORDER} LIMIT %s""", params + [limit + 1])
+        provenance = {"served_from": _DB_SOURCE}
     except HTTPException:
         raise
     except Exception as exc:
@@ -909,11 +1152,22 @@ def findings(snapshot: str | None = None):
         # The SQL's ORDER BY, plus finding_id as the tiebreak Postgres leaves to
         # the planner -- this API's answer has to be byte-stable, so nothing may
         # be left to an arbitrary order.
-        rows = sorted(_narrow(finding_rows(live), _FINDING_COLS),
-                      key=lambda row: (not row["forced_critical"], -row["severity"],
-                                       row["type"], row["finding_id"]))
-        return {"findings": rows, **provenance}
-    return {"findings": rows, "served_from": _DB_SOURCE}
+        every = sorted(_narrow(finding_rows(live), _FINDING_COLS), key=_finding_sort_key)
+        total = len(every)
+        if after is not None:
+            every = [row for row in every
+                     if _finding_sort_key(row) > (not after[0], -after[1], after[2], after[3])]
+        rows = every[:limit + 1]
+    # The overshoot row is the answer to "is there more?", and it never leaves
+    # this function. Computing it from `total` instead would be wrong on the
+    # persisted path, where the count and the page are two statements with a
+    # possible recompute between them.
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    next_cursor = _encode_cursor(rows[-1]) if has_more and rows else None
+    return {"findings": rows, "total": total, "limit": limit,
+            "next_cursor": next_cursor, "has_more": has_more,
+            **_analysis_block(t), **provenance}
 
 
 @app.get("/api/findings/{fid}")
@@ -1378,7 +1632,7 @@ def _merge_and_repersist(write, action: str, a: str, b: str) -> dict:
     with get_conn() as conn, conn.cursor() as cur:
         write(cur)
         built = _build_engine(_ACTIVE_SCENARIO, inputs=(load_asset_merges(cur), load_applied_changes(cur)))
-        _require_trustworthy_inputs()
+        _require_publishable_snapshot(built)
         snap = built.snapshot_id
         persist_engine_result(cur, built)
         cur.execute("DELETE FROM ztpa.ranked_actions WHERE snapshot_id=%s", [snap])
@@ -1471,7 +1725,7 @@ def classify(body: ClassifyBody, _: None = Depends(require_approver)):
                             requested_by="custom", justification=body.justification)
     else:
         raise HTTPException(400, "provide request_id or source+destination+service")
-    delta = simulate_change(e.records, e.assets, e.alias_map, req.proposed)
+    delta = simulate_change(e.records, e.assets, e.alias_map, req.proposed, e.resolved)
     decision = classify_change.classify_change(req, delta, ctx=e)
     # The ruling is computed from the engine in memory and needs no database. The
     # RECORD of it does, and that write is the one thing here that can fail on its
@@ -1771,7 +2025,7 @@ def reset_demo(_: None = Depends(require_admin)):
     with get_conn() as conn, conn.cursor() as cur:
         cleared = reset_change_workflow(cur)
         built = _build_engine(_ACTIVE_SCENARIO, inputs=(load_asset_merges(cur), load_applied_changes(cur)))
-        _require_trustworthy_inputs()
+        _require_publishable_snapshot(built)
         snap = built.snapshot_id
         summary = persist_engine_result(cur, built)
         summary["timings"] = built.timings
@@ -1966,11 +2220,19 @@ def _ranked_cached() -> RankedActions:
 @app.get("/api/report")
 def report():
     """Instant, deterministic report (visuals + numbers + a deterministic narrative).
-    The richer LLM narrative is fetched separately so the page never hangs."""
+    The richer LLM narrative is fetched separately so the page never hangs.
+
+    Carries the analysis block for the bluntest reason in the product: this is
+    the compliance artefact. The audit's measured case had it reporting
+    `total_findings: 7` for an estate whose complete analysis found 30 -- a
+    document 23 findings short, with nothing on it to say so. A report that
+    cannot state the completeness of the analysis behind its own numbers is not
+    a compliance artefact."""
     _require_capability("report")
     e = engine()
     ranked = _ranked_cached()
-    return orchestrator.posture_facts(e.findings, e.assets, ranked)
+    return {**orchestrator.posture_facts(e.findings, e.assets, ranked),
+            **_analysis_block(e.snapshot_id)}
 
 
 @app.get("/api/report/narrative")

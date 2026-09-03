@@ -51,18 +51,31 @@ normalize → resolve identities → build graph → analyze (5 detectors) → s
    transport_exposure` (`run_all.py:_analyzers`). Each runs **isolated**: an
    exception costs that detector's finding class and nothing else, and is
    recorded by name on `EngineResult.degraded_analyzers` (and logged) rather
-   than swallowed. **An empty `degraded_analyzers` list is the only clean
-   state** — a non-empty one means the snapshot is missing an entire finding
-   class and must not be read as "nothing found there". `reanalyze()`
-   deliberately does *not* isolate: it exists to prove a proposed fix introduces
-   no new critical, so it must fail closed rather than return a quietly smaller
-   answer.
+   than swallowed. A non-empty list means the snapshot is missing an entire
+   finding class and must not be read as "nothing found there". The phase also
+   captures every `path_scan_truncated` event the graph layer emits into
+   `EngineResult.truncations`, so a bounded scan stops dying in the log stream.
 5. **Score + finalize** — assign deterministic ids, sort by a fixed key.
+
+**Two grades of "this run is not the whole answer", and they are not the same
+thing.** `EngineResult` exposes both as properties, and `complete` is
+`not degraded and not partial`:
+
+| Grade | Set by | Means | Consequence |
+|---|---|---|---|
+| `degraded` | `degraded_analyzers` non-empty | an analyzer raised — an entire finding **class** is absent | may never overwrite or be published over a complete run; `persist_engine_result` refuses it |
+| `partial` | `truncations` non-empty | at least one path enumeration stopped at `_PATH_SCAN_CAP` — the findings present are a bounded **sample** | still the best available answer, so it is persisted — but every count is a lower bound and every absence is "not found within budget", and the snapshot row is written `failed` with the reason in `notes` rather than `complete` |
+
+`integrity_reasons()` renders either state in a sentence a human reads on
+`/api/health`. **Empty is the only clean state for both lists.** `reanalyze()`
+deliberately does *not* isolate: it exists to prove a proposed fix introduces no
+new critical, so it must fail closed rather than return a quietly smaller answer.
 
 The snapshot id is a content hash of **everything the run reads** — every
 canonical record, the entity/object catalog, the confirmed manual merges and the
-applied-changes overlay — so the same inputs always yield the same `snap_…` id,
-and any change that could move a finding moves the id too (§9).
+applied-changes overlay — **plus an integrity digest of anything that made the
+run less than a complete analysis**, so the same inputs always yield the same
+`snap_…` id, and any change that could move a finding moves the id too (§9).
 
 Findings are sorted by a **stable total order** (`run_all.py:run`):
 
@@ -259,6 +272,15 @@ grant is as exposed as the widest address it admits.
 > network's own `.version`. A prefix length means a completely different amount
 > of space in the two families: `2001:db8::/32` holds 2⁹⁶ addresses and the IPv4
 > table would score it 0.1, the score of a single host.
+>
+> **IPv4-mapped v6 is unwrapped before banding**, by the same rule `netaddr`
+> publishes for `is_public`: `::ffff:10.0.0.0/104` *is* `10.0.0.0/8`, and
+> `::ffff:0.0.0.0/96` *is* `0.0.0.0/0`. Every mapped block is /96 or longer, so
+> without unwrapping the v6 table put the whole internet in its bottom row at
+> E = 0.1 while `is_public` called the same token public — two halves of one
+> published rule disagreeing. `severity._net_of` parses *and* unwraps, and both
+> `exposure_score` and `prefixlen_of` read through it, so a mapped `/96` prints
+> prefix length **0** beside E = 1.0 rather than 96 beside 0.1.
 
 **P — port/service sensitivity** (`severity.py:port_score`). The *kind* of access
 granted — the **max class over every port the service opens**, not the class of
@@ -277,6 +299,18 @@ and *admin* is pinned to one answer for all time:
 | infra control plane | contains 6443 or 2379 | 0.85 |
 | unknown / ephemeral | contains any port in no named class (also: no readable port) | 0.5 |
 | general app / web | every port is one of 80, 443, 8080, 8443, 53, 123 | 0.4 |
+
+> **The wildcard vocabulary applies per comma element, not only to the whole
+> token.** `tcp/any`, `tcp/all`, `tcp/*` and the Azure NSG `port: "*"` shape are
+> how Palo Alto, Check Point, AlgoSec and Azure spell "every port of this
+> protocol"; each such element decodes to the full `(1, 65535)` interval via the
+> same `netaddr.is_any` the whole-service token and the src/dst tokens already
+> use. They used to fall through to `int("any")`, be rejected, and leave the
+> record with **no interval set at all** — so `tcp/any`, the widest TCP grant it
+> is possible to write, scored P_UNKNOWN (0.5) and produced no finding, while the
+> byte-equivalent `tcp/1-65535` scored 90/critical and guardrail clause 2 fired.
+> Narrowing a grant from "every protocol" to "every port of one protocol" must not
+> be able to silence the engine. `tcp/443,any` is the union, i.e. every port.
 
 Two consequences of the ordering, both deliberate:
 
@@ -364,6 +398,20 @@ rather than string facts:
 The clause *list* is the same three it has always been — they simply fire on
 strictly more inputs now, which is the only direction a floor is allowed to move.
 
+> **A floor is only as strong as what runs in front of it.** `over_permissive`
+> used to consult a *cheaper* internet test (`_reasons`, `E >= 1.0`) **before**
+> scoring, and skip the record when it produced no reason — so a rule this floor
+> forces critical could be discarded before the floor ran. That gate now calls
+> `is_internet_source` itself, and forced findings are emitted whatever it thinks
+> (§6.1). One concept, one predicate: `netaddr.is_public` over resolved address
+> space, shared by `zone_of`, this floor, that gate, `reachability.internet_entries`
+> and the change gate.
+>
+> **Where the floor is still escapable, and it is clause 3.** `dest_tags` is read
+> off the destination *label*, so aiming the same rule at a subnet that *contains*
+> the regulated asset drops D to the untagged default and clause 3 never fires.
+> This is a real, measured gap, not a theoretical one — see §10.5.
+
 ### 5.5 Worked example — RDP from the internet to a PCI database
 
 Rule: `allow 0.0.0.0/0 → db-prod-01 tcp/3389`, db tagged `pci`,
@@ -394,15 +442,40 @@ The five detector names are exactly `FindingType` in `models.py`:
 `transport_exposure`.
 
 ### 6.1 Over-permissive (`over_permissive.py`)
-Iterates `allow` records and flags a rule if **any** predicate holds
-(`_reasons`):
+**Score first, filter second.** Every `allow` record is scored by the full formula
+(§5.2) *and* the guardrail floor (§5.4) before anything decides whether to report
+it. A rule the floor forces critical is emitted **unconditionally**. `_reasons` is
+consulted only for the rest, and answers only the question a cheap heuristic is
+qualified to answer — is this non-forced rule worth an operator's attention:
 
 - `protocol == "any"` (any/any)
-- internet source (`E ≥ 1.0`) with `P ≥ 0.85` *or* a sensitive dest
+- **internet source** — `severity.is_internet_source`, the *same* predicate the
+  floor uses, over the same resolved address space — with `P ≥ 0.85` *or* a
+  sensitive dest
 - sensitive dest reachable from wider than a single host (`E ≥ 0.3`, i.e. ⊇ /27)
 - admin/data port (`P ≥ 0.85`) open to a broad source (`E ≥ 0.5`, i.e. ⊇ /23)
 
-Flagged rules are scored by the **full formula** (§5.2) plus the guardrail floor.
+The three remaining `E` thresholds stay thresholds on purpose: they are genuinely
+questions about *breadth* ("wider than a single host", "a broad source range"), and
+a band cut is the honest way to ask those. Only the internet arm was a
+classification question wearing a threshold's clothes.
+
+> **Why the order is load-bearing.** `_reasons` used to run *before* the scorer,
+> with the loop `continue`ing when it returned `[]` — so it was a **gate on
+> scoring**, not a filter on reporting — and its internet arm was `E ≥ 1.0`, true
+> only for a `/0`. `allow 52.20.10.0/24 → app-01 tcp/3389`, a partner's public /24
+> with RDP to a prod host, was scored 52 **and forced critical** by the published
+> floor, and then thrown away by the cheaper test standing in front of it. Not
+> down-ranked: never emitted, by this analyzer or any other. A floor a gate can
+> silence is not a floor, and §5.4's promise that "no downstream model error can
+> bury a true emergency" was untrue of the layer directly above it. Both halves are
+> closed: the control flow is inverted, and the two private definitions of "the
+> internet" became one function call.
+>
+> `_is_wildcard_source` is deliberately **not** unified with it. That one drives the
+> finding's display label, and writing "open from the internet" above a rule sourced
+> from a single partner's public /24 would be a false statement in the most-read
+> line of the finding. Narrow is right there; narrow in the gate was the defect.
 
 ### 6.2 CIDR overlap / redundancy (`cidr_overlap.py`)
 Groups `allow` rules by `(tool, destination, service)`; for each pair compares
@@ -435,6 +508,36 @@ single console can see. Scored with the full formula
 last-hop service as P, the path's boundary multiplier as B. **Force-critical**
 when the path crosses `internet → internal` *and* reaches a sensitive asset.
 
+**Where the search starts is a graph fact, not a string.** The entry set is
+`reachability.internet_entries(g)` — *every* node `graph.build` stamped
+`ZONE_INTERNET`, which `zones.zone_of` decides from the node's resolved address
+space. So `0.0.0.0/0`, `any`, `ANY-EXTERNAL` and a named group dereferencing to
+public space are all entry points, paths from every entry are unioned and deduped
+by node tuple, and the whole set is sorted. This is not a nicety: the entry used
+to be the literal key `0.0.0.0/0`, guarded by `if source not in g: return []`, and
+real AlgoSec / Palo / Check Point exports write the internet source as `any` or as
+a named object in what `normalizers/algosec.py` calls "the overwhelming majority
+of rules". Those estates got an **empty list** from the analyzer this product is
+sold on — and an empty list renders as *"no internet-to-crown-jewel path exists."*
+`change/simulate.py` calls the same function (§8), so the finding a buyer is shown
+and the ruling an operator is given cannot disagree about where the internet is.
+
+**The entry is scored on its resolved space too.** `describe_path` emits
+`entry_cidrs` (the entry node's `ip_set`, sorted), and `score_cross_tool_path`
+reads it before falling back to the label. Until that key was produced, a chain
+entered through a named object scored `E_IDENTITY` = 0.1 — the exposure of a single
+host — for a path beginning at the whole internet.
+
+Its two hard limits are §10.2 (a chain that pivots *through* a subnet or group
+object is not reported) and §10.3 plus the scale table in §10 (enumeration is
+worst-case exponential and the cap bounds yields, not work).
+
+> **On the shipped fixture this detector reports zero findings**, because the
+> seeded chain's only pivot is a `/16` network object and §10.2 forbids that hop.
+> That is the correct answer to the question asked, and it is also the reason the
+> headline count is 0 — see §10.2 for both halves, and `DEMO.md` §2 for what to
+> show instead.
+
 ### 6.5 Transport-/application-layer exposure (`transport_exposure.py`)
 The fifth detector, and the one the formula reference used to omit. It reasons
 about the **decoded L7 application** (`PolicyRecord.l7_app`, populated by
@@ -446,7 +549,10 @@ constants live in one place, `config.TRANSPORT_CONFIG`.
 `l7_app` is in `config.INSPECTION_BLIND_APPS`
 (`quic`, `http3`, `doq`, `dns-over-quic`, `http3-discovery`). These ride UDP
 and/or encrypt their handshake, so a legacy enforcement point cannot inspect
-them: a reachable allow is an inspection blind spot. Scored on the **full
+them: a reachable allow is an inspection blind spot. **Read §10.8 before you rely
+on this check**: `l7_app` is inferred from the *first* port interval's start port,
+so `udp/1-65535` — which opens 443 — infers no app and produces no blind-spot
+finding, i.e. widening the rule removes the finding. Scored on the **full
 formula** (§5.2) plus a flat bump:
 
 ```
@@ -464,7 +570,19 @@ single pair `tcp/443` + `udp/443`). An inspectable TLS path exists, but QUIC can
 silently win it, so inspection cannot be *forced*. "Allowed on" is **interval
 containment over the whole service**, not scalar equality: `tcp/443`,
 `tcp/443-8443` and `tcp/80,443` all open tcp/443 and all trip the pair, and a
-rule whose protocol is `any` opens the port on every transport. This is a
+rule whose protocol is `any` opens the port on every transport.
+
+> **That last clause is now true of the code, and was not.** The analyzer filtered
+> its input to `r.port is not None`, so an `any` service — protocol `any`, no port,
+> the widest grant an export can express — was excluded from the very check whose
+> sentence above promises to cover it. `data/mock/algosec_export.json` ships such a
+> rule (`ALGO-001`, `0.0.0.0/0 → 10.0.0.0/8 any`), so the detector was skipping the
+> broadest rule in the product's own demo. `_opens` is now the single place that
+> decides what a rule grants: a rule naming no port opens every port exactly when
+> it names no protocol either — the same reading `severity.port_score` gives it. A
+> *protocol-bearing* rule whose service failed to decode still opens nothing:
+> "port unknown" is not evidence that 443 is reachable, and inventing a grant is
+> the mirror-image error. This is a
 control gap rather than an exposure, so it uses **fixed** scoring and is
 **never** force-critical:
 
@@ -498,12 +616,21 @@ out-rank a real internet exposure.
 `graph/reachability.py`. All path logic is real `networkx.all_simple_paths` over
 the directed allow graph — never re-derived by a model.
 
-- **`cross_tool_paths(g, sensitive_tags)`** — for each sensitive target reachable
-  from `0.0.0.0/0`, enumerate simple paths (cutoff = 8 hops), keep those spanning
-  ≥ 2 tools, dedupe, sort by `(length, path)`.
+- **`internet_entries(g)`** — every node whose zone is `ZONE_INTERNET`, sorted.
+  The module's single definition of *where the internet is*, derived from resolved
+  address space rather than from a node key, and the one all three consumers below
+  (plus `change.simulate`) call so they cannot drift apart.
+- **`cross_tool_paths(g, sensitive_tags)`** — for each internet entry, and each
+  sensitive target reachable from it, enumerate simple paths (cutoff = 8 hops),
+  keep those spanning ≥ 2 tools, dedupe by node tuple across entries, sort by
+  `(length, path)`. A `sources` argument exists as a probe hatch; production passes
+  nothing and gets the full entry set.
 - **`reachable(src, dst, port)`** — yes/no + the path(s); optional port filter.
 - **`who_can_reach(target)`** — effective-policy view: which nodes can reach a
-  target, and whether the internet can.
+  target, and whether *any* internet node can. It returns `internet_entries` —
+  the entries that actually reach this target, named — beside the boolean, so the
+  claim ships the evidence for itself; `internet_path` is the shortest of them,
+  ties broken by the path, so it stays deterministic when several entries qualify.
 
 Two bounds / simplifications worth knowing:
 
@@ -515,7 +642,10 @@ Two bounds / simplifications worth knowing:
   `reachable()` returns a **`truncated`** flag alongside its verdict and logs a
   warning naming the pair, so the change gate can tell a proven "no" from an
   exhausted budget. The yes/no itself comes from `_bfs_witnesses`, which is
-  O(V+E) and never enumerates.
+  O(V+E) and never enumerates. `cross_tool_paths` and `find_paths` still return
+  bare lists, so `run_all` captures their `path_scan_truncated` events instead
+  and marks the whole run **`partial`** (§1): counts from a partial snapshot are
+  lower bounds and absences in it are not proofs.
 - **`_valid_traversal`** rejects paths that **pivot *through* an abstract node**
   (a subnet/internet node may be an endpoint but never an intermediate hop):
   reaching hosts inside a range doesn't let you *originate* as that range.
@@ -545,6 +675,19 @@ The delta sets **`forced_escalate = True`** when any of:
 - it trips an over-permissive guardrail reason (§5.4),
 - it introduces an any/any rule,
 - it creates new `internet → internal` exposure.
+
+> **The first clause is a diff, so what counts as "the internet" decides it.**
+> `_internet_sensitive_paths` takes its entry set from
+> `reachability.internet_entries` — the same zone-derived answer §6.4 shows the
+> buyer. It used to be `find_paths(g, "0.0.0.0/0", t)`, which meant an estate whose
+> pre-existing internet ingress is spelled `any` or `ANY-EXTERNAL` had an empty map
+> on **both sides of the diff**: a proposed *internal* rule completing a chain from
+> the internet to a PCI database flipped `forced_escalate` from `True` to `False`
+> purely on the spelling of a rule the operator did not write. And because
+> `classify_change` short-circuits to `escalate` on `forced_escalate` **before any
+> model call**, a `False` there sent the decision to the LLM under a delta that
+> read "no new internet paths". Entries and targets are both iterated sorted, so
+> `new_paths` order on the wire is stable.
 
 The advisory layer's `classify_change` then applies **three layers**: (1) a
 guardrail that force-escalates the catastrophic patterns up front
@@ -614,11 +757,24 @@ adding a field to `PolicyRecord` without adding it here is a deliberate decision
 rather than a silent narrowing — and `test_analyzers.py::test_fingerprint_covers_every_record_field`
 fails if the two drift apart.
 
-> **Still true, and worth knowing:** the id is a hash of *inputs*, not of
-> findings. It tells you the same inputs were analyzed; it does not by itself
-> prove the same analyzer code produced them. That is what the byte-identical
-> re-run check in `verify_engine.py` and the cross-process determinism test are
-> for.
+**The id also covers the *completeness* of the run, not only its inputs.** It is
+minted **after** the analyzers, over the input fingerprint plus
+`run_all._integrity_digest(degraded, truncations)` — the analyzer names, the
+exception *types*, and the truncated (fn, src, dst, cap) tuples. A **complete**
+run's digest is the empty string and no extra blob is added at all, so every
+existing snapshot id, explanation-cache key and governance row is byte-identical
+to what it was before this existed. An **incomplete** run is therefore a
+*different* snapshot from the complete one over the same export, and cannot
+collide with it — which is what stops it upserting partial findings over
+complete ones under a shared id. (The exception *message* is deliberately left
+out of the hash: a repr can carry a heap address, and the id must be a function
+of the posture, never of the process.)
+
+> **Still true, and worth knowing:** the id is a hash of *inputs plus integrity*,
+> not of findings. It tells you the same inputs were analyzed to the same degree
+> of completeness; it does not by itself prove the same analyzer code produced
+> them. That is what the byte-identical re-run check in `verify_engine.py` and
+> the cross-process determinism test are for.
 
 No `random`, no timestamps anywhere in the fact path.
 
@@ -627,15 +783,50 @@ No `random`, no timestamps anywhere in the fact path.
 ## 10. Known simplifications (claim vs. reality)
 
 These are the deliberate shortcuts and open gaps where the engine is narrower
-than the general claim. None affect the demo's correctness, but they matter for
-real data — so they are listed here rather than left for you to find.
+than the general claim. **All but one of them are invisible on the seeded demo**,
+and that is not luck: 27 rules is three orders of magnitude below where the scale
+limits bite, `seed_demo.py` writes the internet literally `0.0.0.0/0`, and the one
+rule that *does* aim at a subnet containing a regulated asset
+(`ALGO-001: 0.0.0.0/0 → 10.0.0.0/8 any`, which contains `db-prod-01`) is forced
+critical by the any/any clause before the containment gap in §10.5 can matter. A
+fixture that demonstrates a product is not a fixture that stresses it — so the gaps
+are written down here rather than left for you to meet on real data.
+
+The exception is **§10.2**, which is visible as a zero: the demo's flagship
+cross-tool path is not reported at all. It is called out there rather than buried,
+because a headline count of 0 with no explanation beside it is exactly the kind of
+silence this section exists to break.
+
+Where a gap has been measured, the measurement is printed instead of an adjective,
+and the input shape that produced it is named so you can reproduce it.
+
+Item numbers are stable: §10.1 … §10.4 are the original four and are referenced
+from `REQUIREMENTS.md` and §7. New disclosures are appended, never renumbered.
 
 1. **Deny precedence not implemented** (`graph/build.py:build_graph`) — effective
    policy = union of allow edges; a non-shadowed deny that should subtract an
    allow path is invisible to reachability and the change-delta.
-2. **No CIDR-membership expansion** (`reachability.py:_valid_traversal`) — a
-   host inside a broad allowed range isn't treated as a reachable pivot, so
-   paths transiting a subnet can be under-counted.
+2. **No CIDR-membership expansion in traversal** (`reachability.py:_valid_traversal`)
+   — a host inside a broad allowed range isn't treated as a reachable pivot, so
+   paths transiting a subnet can be under-counted. This is only the *path* half
+   of the containment gap; the *scoring* half is §10.5, and the two are
+   independent — fixing traversal would not fix D.
+
+   **This one is not invisible on the demo — it *is* the demo's zero.** The seeded
+   3-tool chain `Internet → lb-public-01 → app-server-07 → internal-app →
+   db-prod-01` pivots through `internal-app`, an AlgoSec network object
+   `10.40.0.0/16`. Marking network objects abstract (correctly) removed the only
+   legal pivot, so `cross_tool_paths` returns `[]` on the shipped fixture and the
+   product's flagship finding count is **0**. `scripts/verify_engine.py` asserts
+   that state deliberately (`P5`), and `REMEDIATION-LOG.md` records when and why it
+   changed. Two things are true at once and both belong in the same sentence:
+   refusing to route an attack path through an address range is correct, and the
+   headline number is currently zero because of it. The chain returns when
+   membership expansion makes the concrete hosts inside `10.40.0.0/16` the real
+   pivots — Phase 3. (A second, independent cause also holds it down: the
+   `appsrv-07` ↔ `app-server-07` merge is withheld as an unscoped IP collision,
+   §2. Forcing that merge does *not* bring the path back; this item is the
+   dominant cause.)
 3. **The path scan cap bounds paths *yielded*, not search *performed*.**
    `_PATH_SCAN_CAP = 4000` is applied as `islice(nx.all_simple_paths(...), cap)`.
    `all_simple_paths` is a DFS generator: the cap stops us *consuming*
@@ -646,34 +837,249 @@ real data — so they are listed here rather than left for you to find.
    never enumerates; and `reachable()` now reports **`truncated`** alongside its
    verdict and logs a warning naming the pair, so a caller can tell a proven
    "no path" from an exhausted scan budget instead of silently trusting the
-   smaller answer.
+   smaller answer. **What this costs at the scale the product is sold on is
+   measured below** — and the mitigation does not cover the worst case, because
+   a target that never yields a path never trips a cap that counts yields.
 4. **Sub-scores are categorical lookups, by design** — E/P/D and the
    overlap/shadowed-allow constants are table lookups, not formulas; only the
    *combination* in §5.2 is a computed formula. This is intentional (BUILD_SPEC
    §6): the numbers are tunable policy knobs, the shape is the engineering.
+5. **Destination sensitivity (D) reads the destination *label's* tags — the
+   engine is containment-blind on the destination side.** `severity.dest_score`
+   is fed `PolicyRecord.dest_tags`, and nothing expands a destination object into
+   the assets it contains. Phase 1 made the **source** side address-aware (E reads
+   the resolved `source_cidrs`, and the guardrail's internet test reads
+   `netaddr.is_public`); the destination side was not converted. The consequence
+   is a monotonicity violation **in the under-reporting direction**: writing the
+   destination as the object that *contains* a regulated asset scores lower than
+   naming the asset.
+
+   ```
+   db-prod-01 = 10.10.5.9, tags [pci, crown-jewel]
+   DC-SUBNETS = 10.10.0.0/16, untagged network object — and it contains db-prod-01
+
+   allow 0.0.0.0/0 -> db-prod-01 tcp/1433   E=1.0 P=0.9 D=1.0 B=1.5 -> 100 critical, FORCED
+   allow 0.0.0.0/0 -> DC-SUBNETS tcp/1433   E=1.0 P=0.9 D=0.4 B=1.5 ->  57 medium,  not forced
+   ```
+
+   The second rule opens MSSQL from the whole internet to 65,534 addresses
+   *including the crown jewel*, and scores two bands below the strictly narrower
+   rule. Because D falls back to the untagged default it also walks straight past
+   **guardrail clause 3** (§5.4) — the port-independent "regulated asset reachable
+   from the internet" floor, which is the clause a compliance reader leans on
+   hardest. It propagates: `advisory/report.py:build_summary` computes
+   `internet_reaches_regulated_data` from `forced_critical AND dest_tags ∩
+   SENSITIVE_TAGS` (or a cross-tool path), so with the subnet spelling the
+   posture report answers **no** while still listing `db-prod-01` under
+   `sensitive_assets`.
+
+   **It is already in the shipped demo, masked.** `ALGO-001`
+   (`allow 0.0.0.0/0 -> 10.0.0.0/8 any`) aims at a /8 that contains `db-prod-01`
+   (10.50.0.10, `pci` + `customer-data`). It scores D = 0.4, and it is
+   force-critical anyway — by clause **1** (internet + any/any), not clause 3.
+   Narrow the service to `tcp/1433` and the same rule, still opening the crown
+   jewel to the whole internet, drops out of the floor entirely.
+
+   Three edges of the same gap worth knowing separately:
+
+   - **`dest_tags` is the *emitting tool's* tag list, not the merged asset's.** An
+     AlgoSec rule naming `db-prod-01` directly still scores D = 0.4 when only Wiz
+     tagged that host — no subnet involved. The graph node carries the merged tags
+     (`build.py` unions them); `over_permissive` scores from `rec.dest_tags`.
+   - **The engine proves the containment and then ignores it.** With the broad rule
+     ordered first, `shadowing` fires on the narrow one — `cidr_overlap.covers`
+     establishes destination-CIDR containment from `dest_cidrs` — and reports it as
+     dead config. The machinery for the fix already exists one module over, and the
+     finding it currently produces reads as *reassurance* about the host now exposed.
+   - **The property is enforced for proposed rules and not for ingested ones.**
+     `change/simulate.resolve_dest_tags` aggregates tags by containment, and
+     `test_change_simulate.py::test_a_wider_cidr_never_narrows_the_tag_set` pins the
+     exact inverse invariant ("a caller cannot dilute a regulated destination by
+     aiming at its whole subnet"). That invariant holds at the change gate and
+     nowhere else in the engine.
+6. **Rule state the canonical model does not carry — `enabled` / `disabled` and
+   negated address fields — is now REFUSED rather than honoured.** `PolicyRecord`
+   still has no enable flag and no negation flag, and honouring the semantics is
+   scheduled work (`REQUIREMENTS.md` `FUT-P3-2` / `FUT-P3-4`, the same phase as the
+   ingest path). What changed is the failure mode: both were **silently dropped**,
+   and the two wrong answers that produced point in opposite directions —
+
+   - a **disabled** rule was scored as if it were live: a measured **100/critical**
+     on a rule that is switched off, *plus* a fabricated `shadowed_rule` beneath it
+     reading "dead deny: blocked traffic is actually allowed" (over-reporting a
+     grant that does not exist);
+   - a **negated** source was read as its own complement. `allow NOT 10.0.0.0/8 →
+     db-prod-01 tcp/3389` — a rule whose source *is* the internet — was read as
+     `10.0.0.0/8` and reported **85/critical, "RDP open from INTERNAL"**: the exact
+     inverse of the truth, and the under-reporting direction.
+
+   `profile.require_rule` now raises `NormalizeError` naming the rule when a row
+   carries a truthy `disabled`/`inactive`, a falsy `enabled`/`active`, or any key
+   whose canonical spelling contains `negate` (so `srcNegate`, `negate_source` and
+   `dst-negate` are one rule); `require_token` refuses the inline spelling
+   `!10.0.0.0/8` that pf / iptables / some Palo exports write in the column itself.
+   All four normalizers route their rows through it. This is the module's own
+   published contract — "what it is never allowed to be is *normalize something
+   else and say nothing*" — finally applied to rule state.
+
+   **So the gap that remains is a modelling gap, not a silence:** a real export
+   using either construct now fails loudly at ingest instead of producing a
+   confident wrong number. Nothing bundled today reaches it — there is no upload
+   path and no API client, `normalize_all()` reads three fixed files from
+   `data/mock/`, `app.main` rewrites those from `scenarios.py` before every lazy
+   engine build and every `/api/recompute`, and no generated fixture carries either
+   key.
+
+7. **A malformed address object lowers the reported risk instead of raising it.**
+   `profile.object_cidrs` returns `cidrs == []` for an unparseable value
+   (`10.0.0.0/33`, `300.1.1.1/24` — typos that are almost always in a *broad*
+   rule), the record carries `source_cidrs == []`, and `exposure_score` falls back
+   to `E_IDENTITY` = **0.1**, the exposure of a single host. Measured:
+   `allow BAD-OBJ -> db-prod-01 tcp/22` with the db tagged `pci`+`prod` scores
+   **41, not forced**, and clears none of `sensitive_dest_min_E` (0.3) or
+   `broad_source_E` (0.5) — so **SSH to a PCI database produces no finding at
+   all.** Two mitigations exist and neither changes the number: the object is
+   marked `abstract` (fail-closed for *traversal*, so it cannot become a path
+   pivot), and `profile.token_audit` writes one `malformed: true` audit row per
+   affected rule so the defect is at least visible in `resolved_objects`. The
+   scoring outcome is unchanged, and that is the direction that matters.
+
+   *Check it rather than trusting this paragraph:*
+   `score_over_permissive(source="BAD-OBJ", source_kind="identity", protocol="tcp",
+   port=22, dest_tags=["pci","prod"], src_zone="internal", dst_zone="internal",
+   source_cidrs=[])` → `severity 41, forced_critical False`. If that returns a
+   forced critical when you run it, this item is closed and should be moved into
+   the "Fixed" block below with its call sites named.
+
+8. **L7 application identity is inferred from the FIRST port interval's start
+   port** (`normalizers/common._infer_l7`, called with `pstart`) — the same
+   "scored as its start port" shape `port_score` eliminated for P, still live for
+   `l7_app`. Widening a service can therefore *remove* a finding:
+
+   ```
+   udp/443       -> l7='quic'              quic_blind_spot fires
+   udp/443-8443  -> l7='quic'              fires, but only because 443 is first
+   udp/400-500   -> l7=None                *** the QUIC blind spot disappears ***
+   udp/1-65535   -> l7=None                *** disappears, and this opens 443 ***
+   udp/80,443    -> l7='http3-discovery'   fires, titled after port 80
+   any           -> l7=None                no L7 at all
+   ```
+
+   It propagates: `reachability._grant_matches` answers an app-scoped query by
+   `grant["l7_app"] == app`, so *"what can reach X over QUIC?"* also misses a
+   `udp/1-65535` grant, and `l7_app` is written in exactly one place and never
+   enriched afterwards. The `tls_fallback_not_blocked` half of §6.5 is **not**
+   affected — it works on decoded intervals, not on `l7_app`.
+
+
+### Scale — measured, not estimated
+
+The product is sold on "a real 5,000-rule AlgoSec export" (`db.py:206` says so in
+as many words). On a **realistic multi-tool export at that size**, `run()` does not
+finish in a usable time, and the analyzer that costs the most returns nothing:
+
+| rules | nodes / edges | over_perm | cidr_overlap | shadowing | **path_trace** | total | peak RSS |
+|---|---|---|---|---|---|---|---|
+| 1,000 | 224 / 886 | 0.007 | 0.006 | 0.127 | 0.094 | **0.26 s** | 51 MB |
+| 2,000 | 401 / 1,813 | 0.016 | 0.014 | 0.538 | 7.83 | **8.5 s** | 58 MB |
+| 3,000 | 573 / 2,747 | 0.024 | 0.020 | 1.234 | 40.9 | **42.3 s** | 64 MB |
+| 5,000 | 926 / 4,645 | 0.038 | 0.030 | 3.13 | **1,265.7** | **1,269 s (21 min)** | 78 MB |
+| 10,000 | 1,821 / 9,322 | 0.085 | 0.085 | 14.08 | *aborted at 900 s* | — | 112 MB |
+
+`path_trace` consumed **99.7%** of the runtime at 5,000 rules and returned **0
+findings** at every size in that table. It runs **synchronously on the request
+path** with no timeout, no progress and no partial result. Of the 18
+internet-reachable sensitive targets at 5,000 rules, nine hit the 4,000-path cap in
+0.2–2.5 s each and nine yielded *zero* paths within a 20 s budget while never
+tripping the cap (§10.3: the cap counts yields, so a target that never yields is
+unbounded); one of those, given 600 s, took **142.9 s to produce its first path**.
+The BFS reachability closure over the same graph answers in **0.000 s**.
+
+Two further limits on the same curve:
+
+- **`cidr_overlap` emits O(n²) *findings*, not merely O(n²) work.** On the ordinary
+  "every branch office to the DC on 443" shape — nested sources, one destination
+  group, one service — 5,000 rules produced **12,497,500 findings and 12 GB peak
+  RSS** (1,000 rules: 499,500 findings / 1.3 GB). Nothing caps the output.
+- **`shadowing` is clean O(n²)**: 0.40 s at 1,000 rules, 6.8 s at 4,000, **27.0 s
+  at 8,000**, extrapolating to ≈11 minutes at 40,000. This is the *correct*
+  analyzer being expensive — it simply does not bucket by destination and service
+  before the ordered-pair scan.
+
+**The bundled scale fixture does not exercise any of this.** `scenarios._scale` /
+`scripts/seed_scale.py` completes 5,000 rules in **0.51 s** where the realistic
+export takes **1,269 s** — 2,480× apart at identical rule count, because the
+generated shape produces few candidate paths. The 27-rule demo fixture is two to
+three orders of magnitude below the cliff, and `scripts/verify_engine.py` passes in
+0.34 s while asserting nothing about scale. **Do not read a green
+`verify_engine.py` as evidence that the engine holds at the advertised size.**
 
 > **Fixed, and no longer gaps.** This section previously confessed five defects
 > that no longer exist, and §9 confessed a sixth (the narrow snapshot
 > fingerprint). They are listed here so that a reader who greps a cited line,
-> finds working code, and reasonably starts doubting everything else on this
-> page has the answer in front of them:
+> finds working code, and reasonably starts doubting everything else on this page
+> has the answer in front of them. **Every bullet names all of its call sites,
+> and each is a grep you can run.** The previous edition of the third bullet named
+> two of five and read as a closure; that is precisely the failure this block
+> exists to prevent, so the correction is written into the bullet itself.
 >
 > - *"Port match is substring, not numeric"* — `reachable()`'s filter used to
 >   match `f"/{port}"` inside the service string, so `port=3` matched `tcp/3389`.
 >   `reachability.py:_grant_matches` / `_edge_matches` now do structured
->   protocol / port-range / L7-app matching per grant, with `start <= port <= end`.
-> - *"A port range is scored from its start port"* — `port_score` now takes the
->   whole interval set and returns the max class over it (§5.1).
-> - *"'The internet' is the literal string `0.0.0.0/0`"* — both `zone_of` and the
->   guardrail floor now classify address space through `netaddr.is_public`
->   (§4, §5.4).
+>   protocol / port-range / L7-app matching per grant, with `start <= port <= end`,
+>   and every filtered call in the module routes through them.
+>   *Grep:* `grep -rn 'f"/{port}"' backend/src` → nothing.
+> - *"A port range is scored from its start port"* — `severity.port_score` takes
+>   the whole interval set (`ports: list[tuple[int, int]]`), returns the max class
+>   over it by walking `PORT_CLASS_P` most-severe-first, and treats a span wider
+>   than `PORT_SPAN_ANY` as any-port (§5.1). `port_score_from_service` hands it
+>   every interval `parse_service` decoded, so the string and structured paths
+>   agree. *Grep:* `grep -n "def port_score" backend/src/analyzers/severity.py`.
+> - *"'The internet' is the literal string `0.0.0.0/0`"* — **closed in all five
+>   places that ask the question**, each now delegating to the one address-space
+>   classifier instead of holding a private answer:
+>   1. `graph.zones.zone_of` → `netaddr.is_public` (§4);
+>   2. the guardrail floor, `severity.is_internet_source` → `netaddr.is_public` (§5.4);
+>   3. the reporting gate standing in front of that floor —
+>      `over_permissive._reasons` now calls the same `is_internet_source`. It was
+>      still `E >= 1.0`, so a rule the floor forced critical could be discarded
+>      *before* the floor ever ran (§6.1);
+>   4. the entry point of path tracing — `reachability.cross_tool_paths` and
+>      `who_can_reach` take their entry set from `reachability.internet_entries(g)`,
+>      every node the graph stamped `ZONE_INTERNET`, instead of keying on
+>      `INTERNET_CIDR` (§6.4, §7);
+>   5. the change gate's force-escalation arm —
+>      `change.simulate._internet_sensitive_paths` calls that same
+>      `internet_entries` (§8).
+>
+>   *Grep:* `grep -rn 'INTERNET_CIDR\|"0\.0\.0\.0/0"' backend/src` — the surviving
+>   hits are the constant's definition (`netaddr.ANY_V4`,
+>   `normalizers.common.INTERNET_CIDR`), the Wiz normalizer *writing* an internet
+>   entity, a fixture, prose, and **one display-only test that is not a decision**:
+>   `advisory/explain.py:32` labels a finding "the internet (0.0.0.0/0)" only on
+>   the literal spelling, so the deterministic fallback sentence for a rule sourced
+>   from `ANY-EXTERNAL` prints the object name instead. The score, the band, the
+>   force-critical flag and the gate ruling are unaffected — but it is the same
+>   class, so it is named here rather than left to be found.
+>
+>   The earlier edition of this bullet cited only (1) and (2), and was true about
+>   both. It was still an over-claim, because (3), (4) and (5) are the sites that
+>   decide what a buyer is shown and what an operator may approve — and a reader
+>   who greps a cited line, finds `is_public`, and reasonably stops checking would
+>   have been misled by a sentence in which every individual word was accurate.
 > - *"A named network object is a concrete node and can pivot"* — a
->   `network`/`group`/`range`/`subnet` object is now marked `abstract` by the
->   normalizer (and any object spanning more than one address), so
->   `_valid_traversal` treats `DC-SUBNETS` and the literal `10.0.0.0/8` alike.
-> - *"A mixed IPv4/IPv6 record set raises TypeError"* — `cidr_overlap._covers` /
->   `_overlaps` and `shadowing`'s coverage tests guard on `same_family` and
->   report incomparable families as disjoint rather than crashing.
+>   `network`/`group`/`range`/`subnet` object (and any object resolving to more
+>   than one address) is marked abstract by `normalizers.profile.object_is_abstract`,
+>   `graph.build` stamps `kind="abstract"` on the node, and
+>   `reachability._valid_traversal` therefore treats `DC-SUBNETS` and the literal
+>   `10.0.0.0/8` alike: a legitimate path endpoint, never an intermediate hop.
+>   *Grep:* `grep -n "_valid_traversal" -A8 backend/src/graph/reachability.py`.
+> - *"A mixed IPv4/IPv6 record set raises TypeError"* — `cidr_overlap.covers` and
+>   `cidr_overlap._overlaps` guard every comparison with `netaddr.same_family` and
+>   report incomparable families as disjoint rather than crashing; `shadowing` does
+>   not do its own arithmetic — it imports that same `covers`
+>   (`from .cidr_overlap import covers`), so one guard covers both analyzers.
+>   *Grep:* `grep -n "same_family" backend/src/analyzers/cidr_overlap.py`.
 
 ---
 

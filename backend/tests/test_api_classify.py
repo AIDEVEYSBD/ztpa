@@ -122,9 +122,13 @@ def spy_simulate(monkeypatch):
     seen: list = []
     real = main.simulate_change
 
-    def _spy(records, assets, alias_map, proposed):
+    # *args/**kwargs rather than a fixed arity: this spy exists to observe the
+    # PROPOSED record, and it should not break every time simulate_change gains
+    # another engine-derived input (it gained `resolved`, the object catalog,
+    # when the gate stopped ruling on source spelling).
+    def _spy(records, assets, alias_map, proposed, *args, **kwargs):
         seen.append(proposed)
-        return real(records, assets, alias_map, proposed)
+        return real(records, assets, alias_map, proposed, *args, **kwargs)
 
     monkeypatch.setattr(main, "simulate_change", _spy)
     return seen

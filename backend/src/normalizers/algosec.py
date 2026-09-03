@@ -50,8 +50,8 @@ from .common import (
     scope_identifiers,
 )
 from .profile import (
-    object_cidrs, object_is_abstract, require_action, require_mapping, require_rows,
-    require_rule, require_token, service_audit, token_audit, token_cidrs,
+    object_cidrs, object_is_abstract, object_netmask, require_action, require_mapping,
+    require_rows, require_rule, require_token, service_audit, token_audit, token_cidrs,
 )
 
 TOOL = "algosec"
@@ -76,6 +76,12 @@ class _Resolved:
     tags: list[str]
     entity: ObservedEntity
     warnings: list[str]             # token/value defects, for the audit trail
+    # Address space was CLAIMED (an address notation, or a catalog object whose
+    # value/members claim to be one) and did not resolve. `cidrs == []` alone
+    # cannot say that: a user group legitimately denotes no address space, and
+    # scoring the two the same way is what let a typo'd broad rule score as a
+    # single host. See `PolicyRecord.source_unresolved`.
+    unresolved: bool = False
 
 
 def _resolve(token: str, objects: dict) -> _Resolved:
@@ -93,8 +99,16 @@ def _resolve(token: str, objects: dict) -> _Resolved:
 
     Case 3 also covers the wildcard vocabulary: `any` / `all` / `*` resolve to
     ``0.0.0.0/0`` through `token_cidrs`, so four spellings of one rule finally
-    score identically. A named `ANY-EXTERNAL` / `INTERNET` object resolves the
-    same way through case 2, from its catalog value.
+    score identically -- as do a Check Point range (`0.0.0.0-255.255.255.255`)
+    and an ASA address+mask pair (`0.0.0.0 0.0.0.0`), which used to resolve to
+    nothing at all. A named `ANY-EXTERNAL` / `INTERNET` object resolves the same
+    way through case 2, from its catalog value.
+
+    Case 2 hands the WHOLE CATALOG to `object_cidrs`, which is what makes a
+    group whose members are the names of other groups dereference instead of
+    reporting every member unresolvable (audit-2 B8). That is the shape real
+    AlgoSec / Panorama / FortiManager catalogs are actually organised in, and it
+    is the layer the previous round's fix stopped one level above.
     """
     if is_cidr(token):
         cidr = normalize_cidr(token)
@@ -116,11 +130,12 @@ def _resolve(token: str, objects: dict) -> _Resolved:
             cidrs=list(cidrs) if abstract else [],
             identifiers={"malformed_address": True} if warnings else {},
         )
-        return _Resolved(token, None, cidrs, [], ent, warnings)
+        return _Resolved(token, None, cidrs, [], ent, warnings, bool(warnings))
 
     value, otype = obj.get("value"), obj.get("type")
     tags = obj.get("tags", []) or []
-    cidrs, warnings = object_cidrs(value)
+    cidrs, warnings = object_cidrs(value, netmask=object_netmask(obj), objects=objects,
+                                   seen=frozenset({token}))
     abstract = object_is_abstract(otype, cidrs, warnings)
     # The namespace the catalog object declares (a VRF, a tenant), when it
     # declares one. An address is only an identity inside the namespace that
@@ -133,7 +148,7 @@ def _resolve(token: str, objects: dict) -> _Resolved:
         ent = ObservedEntity(name=token, kind="identity", tool=TOOL, ip=value, tags=list(tags),
                              identifiers=identifiers)
         return _Resolved(token, value if isinstance(value, str) else None,
-                         cidrs, list(tags), ent, warnings)
+                         cidrs, list(tags), ent, warnings, bool(warnings))
     # A group resolves to several blocks; `ObservedEntity.cidr` holds one string
     # (the identity layer does `ips.add(e.cidr)`), so only a single-block object
     # populates it. `cidrs` carries the WHOLE space, and it has to: the record's
@@ -147,7 +162,7 @@ def _resolve(token: str, objects: dict) -> _Resolved:
         cidrs=list(cidrs),
         identifiers={**scope, "malformed_address": True} if warnings else dict(scope),
     )
-    return _Resolved(token, None, cidrs, list(tags), ent, warnings)
+    return _Resolved(token, None, cidrs, list(tags), ent, warnings, bool(warnings))
 
 
 def normalize(export: dict) -> NormalizeResult:
@@ -161,7 +176,11 @@ def normalize(export: dict) -> NormalizeResult:
     for name in sorted(objects):
         obj = objects[name] if isinstance(objects[name], dict) else {}
         value, otype = obj.get("value"), obj.get("type")
-        cidrs, warnings = object_cidrs(value)
+        # The same dereference the rule path uses -- catalog and mask column
+        # included -- so the Ingest Inspector shows the address space a NESTED
+        # group actually denotes rather than a row of unresolvable member names.
+        cidrs, warnings = object_cidrs(value, netmask=object_netmask(obj), objects=objects,
+                                       seen=frozenset({name}))
         row = {"value": value, "type": otype, "tags": obj.get("tags", []),
                "cidrs": cidrs, "abstract": object_is_abstract(otype, cidrs, warnings)}
         if warnings:
@@ -177,7 +196,15 @@ def normalize(export: dict) -> NormalizeResult:
         dst = _resolve(require_token(rule, "dst", tool=TOOL, where=where), objects)
         merge_entities(entities, src.entity)
         merge_entities(entities, dst.entity)
-        svc = parse_service(rule.get("service"), app=rule.get("app"))
+        # The service column, and the SEPARATE port/protocol columns some
+        # exports use instead of it (Panorama CSV, FortiManager). Those were not
+        # read at all: a rule carrying `port: 3389, protocol: "tcp"` and no
+        # `service` decoded to a bare `tcp` with no port -- P_UNKNOWN (0.5) --
+        # and produced no finding, with no warning either. `parse_service`
+        # prefers `service` when it is present, so a rule that has both is
+        # unaffected; this only fills in the rules that had nothing.
+        svc = parse_service(rule.get("service"), port=rule.get("port"),
+                            protocol=rule.get("protocol"), app=rule.get("app"))
         res.resolved.extend(service_audit(TOOL, ref, svc, device))
         # A malformed src/dst is recorded against the RULE, not the object, so
         # the audit row points at the line an operator has to go and fix.
@@ -190,6 +217,7 @@ def normalize(export: dict) -> NormalizeResult:
             dest_tags=dst.tags, order=rule.get("order"),
             source_ip=src.ip, dest_ip=dst.ip, note=rule.get("comment"),
             source_cidrs=src.cidrs, dest_cidrs=dst.cidrs,
+            source_unresolved=src.unresolved,
         ))
 
     res.entities = list(entities.values())

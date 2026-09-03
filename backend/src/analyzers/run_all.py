@@ -4,7 +4,8 @@ graph -> analyze -> score. Produces an EngineResult that precompute.py persists.
 Everything here is deterministic and reproducible: same inputs -> byte-identical
 snapshot id, findings, and ordering. No model, no randomness.
 
-Two Phase 1 changes live in this module.
+Two Phase 1 changes live in this module, and two Phase D corrections to
+them. Each section below names the defect it closes.
 
 **The snapshot id is now a content hash of everything that determines the
 result** (audit gap theme 4a). `_fingerprint` used to hash
@@ -36,15 +37,52 @@ analyzer is now isolated, and a failure is RECORDED on the result
 (`EngineResult.degraded_analyzers`) and logged rather than swallowed -- a
 degraded analyzer that silently returned fewer findings would be the same
 "failure rendered as clean" pattern the audit is full of.
+
+**THE SNAPSHOT ID NOW COVERS THE COMPLETENESS OF THE ANALYSIS, NOT ONLY ITS
+INPUTS** (audit-2 H8 / phase D1). That isolation shipped with the wrong half of
+the guarantee: the id was minted from the INPUTS alone and minted BEFORE the
+analyzers ran, so a run that lost an entire finding class hashed to the id of
+the healthy run over the same export and `persist_engine_result` upserted the
+partial rows straight over the complete ones. Measured against real Postgres: a
+healthy recompute wrote 30 findings; the same export with two analyzers raising
+wrote 7 under the SAME snapshot id, destroying the 30 -- and every endpoint
+reported `status: "ok"`, `served_from: "database"`. A loud crash had been
+converted into a quiet, durable, authoritative under-report, which is a strictly
+worse failure than the one it replaced.
+
+So the id is minted AFTER the analyzers, over the input fingerprint PLUS an
+integrity digest (`_integrity_digest`) of everything that made this run less
+than a complete analysis. A complete run hashes exactly as before -- the digest
+is the empty string and the extra blob is not added at all, so every existing
+snapshot id, explanation-cache key and governance row is byte-identical -- while
+an incomplete run is a DIFFERENT snapshot that cannot collide with, and
+therefore cannot overwrite, the complete one. `app.main` refuses to publish or
+persist it on top of that, and `persist.persist_engine_result` refuses at the
+lowest layer.
+
+**A BOUNDED SCAN IS ALSO AN INCOMPLETE ANALYSIS** (audit-2 D1, second half).
+`graph.reachability` caps path enumeration at `_PATH_SCAN_CAP` candidates per
+target and already logs a structured `path_scan_truncated` warning at each cut,
+but `cross_tool_paths` and `find_paths` return bare lists, so every truncation
+died in the log stream: on a 51-node mesh the reported cross-tool finding count
+is literally `cap x sensitive_targets` and carries no information about the
+estate, while health said `ok`. `_record_truncations` collects those events for
+the duration of the analyzer phase and folds them into the result the same way a
+degraded analyzer is folded in. It is a BRIDGE, deliberately: the durable fix is
+for `cross_tool_paths`/`find_paths` to return the flag their own docstrings
+describe, and `test_degraded_publication.py` fails loudly if the bridge ever
+stops firing -- a silent bridge would be this file's own bug class.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
+import threading
 from dataclasses import dataclass, field
 from time import perf_counter
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Iterator
 
 import networkx as nx
 
@@ -76,9 +114,18 @@ _FS, _RS = "\x1f", "\x1e"
 # somebody makes here; `test_analyzers.py::test_fingerprint_covers_every_record_field`
 # fails if a new field is added to the model and not to this list, which is the
 # guard that stops the id silently narrowing again.
+#
+# `source_unresolved` is the newest entry and it is not cosmetic: the normalizer
+# sets it when a source token CLAIMED address space and failed to resolve, and
+# `severity.exposure_score` reads it to apply a conservative floor. Two records
+# identical in every other field -- one whose source is a user group (no address
+# space, correctly E_IDENTITY) and one whose source is a typo'd `10.0.0.0/33`
+# (broad, and now floored) -- produce different severities and different
+# findings. Omitting it would put two postures with different answers under one
+# snapshot id, which is the exact defect the widening above exists to close.
 _RECORD_FIELDS: tuple[str, ...] = (
     "id", "source_tool", "raw_ref", "order", "action",
-    "source", "source_kind", "source_cidrs", "source_ip",
+    "source", "source_kind", "source_cidrs", "source_ip", "source_unresolved",
     "destination", "destination_kind", "dest_cidrs", "dest_ip", "dest_tags",
     "service", "protocol", "port", "port_end", "l7_app", "l7_source", "note",
 )
@@ -148,6 +195,154 @@ class EngineResult:
     # THE ONLY CLEAN STATE -- a non-empty list means this result is missing an
     # entire finding class and must not be read as "nothing found there".
     degraded_analyzers: list[dict] = field(default_factory=list)
+    # One entry per (function, src, dst) whose path enumeration hit
+    # `_PATH_SCAN_CAP`: {fn, src, dst, cap}. Same rule -- empty is the only clean
+    # state. A non-empty list means the findings PRESENT are a bounded sample of
+    # the findings that exist, so no count taken from this result is a total and
+    # no absence in it is a proof.
+    truncations: list[dict] = field(default_factory=list)
+
+    # --- what this result is allowed to claim about itself -----------------
+    # Two distinct failure grades, because they have two different remedies and
+    # collapsing them would either block a large estate from ever persisting a
+    # snapshot or let a missing finding class through as "just bounded".
+
+    @property
+    def degraded(self) -> bool:
+        """An entire finding CLASS is missing: an analyzer raised and its findings
+        do not exist in this result at all. Unfixable by reading more of it, so
+        this result may never replace or overwrite a complete one."""
+        return bool(self.degraded_analyzers)
+
+    @property
+    def partial(self) -> bool:
+        """The findings present are a bounded SAMPLE: at least one path
+        enumeration stopped at the scan cap. The result is still the best
+        available answer for these inputs -- it is persisted -- but every count
+        in it is a lower bound and every absence is "not found within budget"."""
+        return bool(self.truncations)
+
+    @property
+    def complete(self) -> bool:
+        """The only state in which this result may be published as authoritative."""
+        return not self.degraded and not self.partial
+
+    def integrity_reasons(self) -> list[str]:
+        """Why this result is not a complete analysis, in words a human reads on
+        /api/health. Sorted and deterministic like everything else here."""
+        reasons: list[str] = []
+        if self.degraded_analyzers:
+            names = ", ".join(sorted(d["analyzer"] for d in self.degraded_analyzers))
+            reasons.append(
+                f"the analysis is incomplete: {names} failed, so this snapshot is missing "
+                f"every finding of that class (it is not 'nothing found there')")
+        if self.truncations:
+            pairs = ", ".join(sorted(f"{t['src']} -> {t['dst']}" for t in self.truncations))
+            reasons.append(
+                f"path enumeration hit its scan cap for {len(self.truncations)} target(s) "
+                f"({pairs}), so cross-tool findings are a bounded sample: counts are lower "
+                f"bounds and absences are not proofs")
+        return reasons
+
+
+# --- bounded-scan capture --------------------------------------------------
+# `graph/reachability.py` cuts every path enumeration off at `_PATH_SCAN_CAP`
+# candidates and logs one structured WARNING per cut -- and that was the end of
+# it: `cross_tool_paths` and `find_paths` both return a bare `list[dict]`, so
+# `path_trace.analyze` (and therefore this module, and therefore /api/health and
+# every payload) could not tell "no cross-tool path exists" from "the scan ran
+# out of budget before it found one". On the audit's 51-node mesh the reported
+# count is exactly `cap x sensitive_targets` and health said `ok`.
+#
+# Until those two functions return the flag their own docstrings promise, the
+# events themselves are the channel: they are structured (`event`, `fn`, `cap`
+# and the pair), they are emitted at every cut site, and they are already
+# WARNING. Two guards keep this from over-reporting:
+#
+#   * only records from THIS thread are taken, so a background agent tool call
+#     answering `reachable()` on another thread cannot mark the engine's run
+#     truncated (the engine's own analyzer phase is single-threaded);
+#   * the graph logger's level is forced to WARNING for the duration, so
+#     `NPR_LOG_LEVEL=ERROR` cannot silently switch the signal off -- an
+#     environment variable that turns a safety net into a false all-clear is
+#     precisely the defect class this file is being fixed for.
+_TRUNCATION_LOGGER = "npr.api.graph"
+_TRUNCATION_EVENT = "path_scan_truncated"
+
+
+class _TruncationRecorder(logging.Handler):
+    """Collects `path_scan_truncated` events raised on one thread.
+
+    A `logging.Handler` rather than a `caplog`-style hook because it has to work
+    in production, not only under pytest. `emit` is total by construction: a
+    handler that raised would be swallowed by `logging.Handler.handleError` and
+    the truncation would vanish, which is the failure it exists to prevent."""
+
+    def __init__(self, thread_ident: int) -> None:
+        super().__init__(level=logging.WARNING)
+        self._thread_ident = thread_ident
+        self._seen: dict[tuple[str, str, str], dict] = {}
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if getattr(record, "event", None) != _TRUNCATION_EVENT:
+            return
+        if record.thread != self._thread_ident:
+            return
+        # `cross_tool_paths` names the pair source/target, `reachable` names it
+        # src/dst. One shape out, so a consumer never has to know which cut site
+        # fired, and `str()`/`int()` so an exotic extra cannot poison the digest.
+        fn = str(getattr(record, "fn", "unknown"))
+        src = str(getattr(record, "source", None) or getattr(record, "src", "") or "")
+        dst = str(getattr(record, "target", None) or getattr(record, "dst", "") or "")
+        try:
+            cap = int(getattr(record, "cap", 0) or 0)
+        except (TypeError, ValueError):
+            cap = 0
+        self._seen[(fn, src, dst)] = {"fn": fn, "src": src, "dst": dst, "cap": cap}
+
+    def markers(self) -> list[dict]:
+        """One entry per truncated (fn, src, dst), sorted -- never set order."""
+        return [self._seen[key] for key in sorted(self._seen)]
+
+
+@contextlib.contextmanager
+def _record_truncations() -> Iterator[_TruncationRecorder]:
+    """Capture the graph layer's truncation events for the enclosed block."""
+    graph_log = logging.getLogger(_TRUNCATION_LOGGER)
+    recorder = _TruncationRecorder(threading.get_ident())
+    previous_level = graph_log.level
+    if not graph_log.isEnabledFor(logging.WARNING):
+        graph_log.setLevel(logging.WARNING)
+    graph_log.addHandler(recorder)
+    try:
+        yield recorder
+    finally:
+        graph_log.removeHandler(recorder)
+        graph_log.setLevel(previous_level)
+
+
+def _integrity_digest(degraded: list[dict], truncations: list[dict]) -> str:
+    """A stable digest of everything that made a run less than a complete
+    analysis -- or "" when it was complete.
+
+    "" is load-bearing: `run` adds no blob at all in that case, so a complete run
+    hashes to exactly the id it hashed to before this existed. Every persisted
+    snapshot, explanation-cache key and governance row keeps its identity.
+
+    What is hashed is deliberately narrower than what is REPORTED. The analyzer
+    NAME and the exception TYPE go in; the exception MESSAGE does not, because a
+    message can carry a repr with an object address in it and the snapshot id
+    must be a function of the posture, never of the heap. Two different failures
+    of the same class in the same analyzer therefore share an id -- which is
+    fine, because the only property this id needs is that no incomplete run can
+    ever collide with the COMPLETE one it would otherwise overwrite."""
+    if not degraded and not truncations:
+        return ""
+    return content_fingerprint(
+        _RS.join(sorted(f"{d['analyzer']}{_FS}{d['error']}" for d in degraded)),
+        _RS.join(sorted(f"{t['fn']}{_FS}{t['src']}{_FS}{t['dst']}{_FS}{t['cap']}"
+                        for t in truncations)),
+    )
 
 
 # --- analyzer isolation ----------------------------------------------------
@@ -198,14 +393,43 @@ def _run_analyzers(records: list[PolicyRecord], graph: nx.DiGraph, alias_map: di
     return findings, degraded
 
 
+class TruncatedAnalysisError(RuntimeError):
+    """A validation re-analysis ran on a path scan that hit its cap.
+
+    Separate from the analyzer exceptions `reanalyze` already lets through
+    because the cause is different -- nothing failed, the search ran out of
+    budget -- and the consequence is identical: the finding set is a lower
+    bound, so "this fix introduces no new critical" is unproven rather than
+    proven."""
+
+
 def reanalyze(records: list[PolicyRecord], assets: list[Asset],
               alias_map: dict[str, str]) -> list[Finding]:
     """Re-run the analyzers on modified records (no persistence, no id finalize).
 
     Used by the remediation layer to PROVE a proposed fix resolves a finding
-    without introducing new criticals -- the deterministic validation step."""
+    without introducing new criticals -- the deterministic validation step.
+
+    FAILS CLOSED ON A TRUNCATED SCAN, for the same reason it fails closed on an
+    analyzer exception. The whole output of this function is a comparison of two
+    finding sets, and the claim built from it -- `introduces_new_criticals: []`
+    -- is a claim about ABSENCE. A bounded scan cannot support one: the new
+    internet-to-PCI path this fix opens may be candidate 4,001. `_validate` in
+    `advisory/remediation.py` turns the raise into `resolves: False` plus the
+    reason, so the fix is simply not certified, which is the correct answer to
+    "we could not prove it"; the campaign planner turns it into a
+    `needs_review` step. Both are strictly better than quietly certifying a fix
+    against a partial view of its own consequences."""
     graph = build_graph(records, assets, alias_map)
-    findings, _degraded = _run_analyzers(records, graph, alias_map, isolate=False)
+    with _record_truncations() as truncated:
+        findings, _degraded = _run_analyzers(records, graph, alias_map, isolate=False)
+    markers = truncated.markers()
+    if markers:
+        pairs = ", ".join(f"{m['src']} -> {m['dst']}" for m in markers)
+        raise TruncatedAnalysisError(
+            f"path enumeration hit its scan cap for {pairs}, so this validation compared two "
+            f"BOUNDED finding sets. A fix cannot be certified as introducing no new critical "
+            f"against a search that did not finish.")
     return findings
 
 
@@ -326,11 +550,20 @@ def run(label: str = "seed-demo", manual_merges: list[tuple[str, str]] = (),
     t3 = perf_counter()
     # Hashed over the POST-overlay records and the POST-augmentation entities:
     # the id has to describe the state that was actually analyzed.
-    sid = make_snapshot_id(label, _fingerprint(records, entities, nr.resolved,
-                                              manual_merges, applied_changes))
+    fingerprint = _fingerprint(records, entities, nr.resolved, manual_merges, applied_changes)
 
-    findings, degraded = _run_analyzers(records, graph, idr.alias_map, isolate=True)
+    with _record_truncations() as truncated:
+        findings, degraded = _run_analyzers(records, graph, idr.alias_map, isolate=True)
+    truncations = truncated.markers()
     t4 = perf_counter()
+
+    # The id is minted HERE, after the analyzers, not before them. An incomplete
+    # run is a different snapshot from the complete one over the same inputs, so
+    # it cannot upsert over it -- see the module docstring. A complete run adds
+    # no blob and keeps the id it always had.
+    integrity = _integrity_digest(degraded, truncations)
+    sid = make_snapshot_id(label, content_fingerprint(fingerprint, integrity) if integrity
+                           else fingerprint)
 
     # finalize snapshot-scoped deterministic ids from the stable local keys
     for f in findings:
@@ -352,8 +585,18 @@ def run(label: str = "seed-demo", manual_merges: list[tuple[str, str]] = (),
             "event": "snapshot_degraded", "snapshot_id": sid,
             "analyzers": [d["analyzer"] for d in degraded],
         })
+    if truncations:
+        # ERROR, not warning: from here on every count in this snapshot is a
+        # lower bound. The graph layer already logged each individual cut; this
+        # line is the one that says the SNAPSHOT is affected, with its id, so the
+        # log and /api/health agree about the same run.
+        log.error("snapshot completed with a truncated path scan", extra={
+            "event": "snapshot_truncated", "snapshot_id": sid,
+            "targets": [f"{t['src']} -> {t['dst']}" for t in truncations],
+        })
     return EngineResult(
         snapshot_id=sid, label=label, records=records, assets=idr.assets,
         correlations=idr.correlations, resolved=nr.resolved, alias_map=idr.alias_map,
         graph=graph, findings=findings, timings=timings, degraded_analyzers=degraded,
+        truncations=truncations,
     )

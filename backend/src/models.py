@@ -60,6 +60,43 @@ class PolicyRecord(BaseModel):
     # tag, an application group, an object missing from the export's catalog).
     source_cidrs: list[str] = Field(default_factory=list)
     dest_cidrs: list[str] = Field(default_factory=list)
+    # WHY `source_cidrs == []` IS NOT ONE FACT BUT TWO.
+    #
+    # `[]` above is a claim, and the claim covers two different worlds:
+    #
+    #   "this token names no address space"   a user group, a tag, an
+    #                                         application group, an object the
+    #                                         export simply does not define.
+    #                                         E_IDENTITY (0.1) is the RIGHT
+    #                                         answer -- a label is not exposure.
+    #
+    #   "this token claims address space      `10.0.0.0/33` (a fat-finger for
+    #    and it did not resolve"               `/3`), `10.0.0.0-9.0.0.0`, an
+    #                                         object group whose members do not
+    #                                         dereference. E_IDENTITY is the
+    #                                         WORST answer available: a typo in
+    #                                         what is nearly always a BROAD rule
+    #                                         scores as a single host, so bad
+    #                                         input LOWERS the reported risk and
+    #                                         the finding disappears entirely.
+    #
+    # This flag is the second world, set by the normalizer, which is the only
+    # layer that ever sees the raw token and the object catalog together.
+    # `severity.exposure_score` reads it and applies a conservative floor, so an
+    # unresolvable NETWORK can no longer be scored as a host.
+    #
+    # It is deliberately consistent with `normalizers.profile.object_is_abstract`,
+    # which already fails CLOSED on the identical signal ("we have no evidence it
+    # is a host, and calling it one is precisely how a typo'd broad rule came to
+    # score as a single host"). Abstractness and exposure now read the same fact
+    # the same way; they used to disagree, and exposure was the half that failed
+    # open.
+    #
+    # It is NOT evidence of internet exposure: `severity.is_internet_source`
+    # ignores it on purpose. An unreadable token means "unknown breadth", not
+    # "the whole internet", and forcing every typo critical would be the
+    # mirror-image defect.
+    source_unresolved: bool = False
     dest_tags: list[Tag] = Field(default_factory=list)
     service: str                                      # e.g. "tcp/3389", "quic", "tcp/8000-8100"
     port: Optional[int] = None                        # single port, or range start

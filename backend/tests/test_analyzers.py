@@ -22,6 +22,7 @@ import dataclasses
 import pytest
 
 from src.analyzers import cidr_overlap, over_permissive, run_all, shadowing, transport_exposure
+from src.analyzers.severity import score_over_permissive
 from src.graph.build import build_graph
 from src.identity import resolve_identities
 from src.models import Asset, PolicyRecord
@@ -270,6 +271,144 @@ def test_a_range_is_not_named_after_its_first_port():
     assert "tcp/22-2000" in findings[0].title
 
 
+# --- 4a. the guardrail floor has to reach the ANALYZER, not just the scorer -
+#
+# Every guardrail test in `test_severity.py` calls `score_over_permissive`
+# DIRECTLY, and all of them passed for the whole of the release in which
+# `over_permissive.analyze` -- the only caller that reports on an ingested
+# rulebase -- threw the forced findings away before it ever scored them
+# (PROD-READINESS-AUDIT-2 B2). `_reasons` ran first, the loop `continue`d when it
+# was empty, and its internet test was `E >= 1.0`, which is true only for a /0.
+# So the floor fired, said "categorically unacceptable", and nothing was emitted.
+#
+# These drive `analyze`. One minimal input per PUBLISHED clause, each built so
+# the other two clauses cannot fire, so deleting a clause fails exactly one row
+# and the row names what was lost. Every source is public address space NARROWER
+# than a /0 -- which is the entire gap the defect lived in.
+
+GUARDRAIL_CLAUSE_CASES = [
+    # id, source, service, dest tags, the forced reason it alone must produce
+    #
+    # Clause 1 is included even though it survived the defect (its `_reasons`
+    # arm is the any/any one, which never looked at E): the row set is the
+    # published clause LIST, not the subset that happened to break, or the next
+    # regression in an untested clause is invisible again.
+    ("clause-1-internet-any-any", "45.60.70.0/24", "any", [],
+     "internet any/any"),
+    ("clause-2-admin-port-from-the-internet", "52.20.10.0/24", "tcp/3389", [],
+     "admin/lateral-movement port exposed to the internet"),
+    ("clause-3-regulated-asset-from-the-internet", "45.60.70.0/29", "tcp/443", ["pci"],
+     "regulated/crown-jewel asset reachable from the internet"),
+]
+
+
+@pytest.mark.parametrize("case_id,source,service,dest_tags,forced_reason",
+                         GUARDRAIL_CLAUSE_CASES,
+                         ids=[c[0] for c in GUARDRAIL_CLAUSE_CASES])
+def test_every_guardrail_clause_produces_a_finding_from_the_analyzer(
+        case_id, source, service, dest_tags, forced_reason):
+    """Exit criterion (A3). Each published clause, through `analyze`.
+
+    The assertions are ordered the way the failure would be diagnosed: the
+    finding exists at all; it is critical; it is critical for the RIGHT clause;
+    and it says why in prose. The last one matters because a finding that is
+    forced critical for an internet reason while its human-readable reasons never
+    mention the internet contradicts its own floor -- see M56 in
+    `test_mutation_guards.py`.
+    """
+    rec = make_rec("R1", source, "app-01", service,
+                   source_cidrs=[source], dest_cidrs=["10.90.4.4/32"],
+                   dest_tags=list(dest_tags))
+    findings = over_permissive.analyze([rec], graph_for([rec]), {})
+
+    assert len(findings) == 1, (
+        f"{case_id}: the guardrail floor forces this critical and the analyzer "
+        f"emitted {len(findings)} findings. A floor that no analyzer reports is "
+        "not a floor.")
+    finding = findings[0]
+    assert finding.forced_critical is True, case_id
+    assert finding.severity_band == "critical", case_id
+    assert forced_reason in finding.signals["forced_reasons"], (
+        f"{case_id}: forced for {finding.signals['forced_reasons']!r}, which does not "
+        f"include {forced_reason!r} -- this row is no longer isolating its clause.")
+    assert finding.signals["reasons"], (
+        f"{case_id}: emitted with an empty `reasons` list. `analyze` may report a "
+        "forced rule the reasons cannot explain, but the prose and the floor are "
+        "two renderings of one fact and should not be able to disagree.")
+    # The fixture is positioned INSIDE the gap the old `E >= 1.0` gate created:
+    # if any source here ever becomes a /0 the row passes for the wrong reason.
+    assert finding.signals["severity_vector"]["E"] < 1.0, (
+        f"{case_id}: source {source!r} scores E=1.0, so this row no longer "
+        "exercises the sub-/0 public space where the defect lived.")
+
+
+def test_a_partner_public_slash_24_with_rdp_to_a_prod_host_is_critical():
+    """Exit criterion (A3), the audit's named failure scenario, end to end.
+
+        allow 52.20.10.0/24 -> app-01 tcp/3389
+
+    A partner/vendor public /24 with RDP to a prod host -- the single most common
+    real over-permissive shape -- produced ZERO findings from all five analyzers.
+    E = 0.3, so the reason gate's `E >= 1.0` dropped it; the floor had already
+    scored it 52 and forced it critical, and nothing downstream ever saw that.
+
+    Built from raw export JSON through `algosec.normalize` (see `_score_end_to_end`),
+    because the audit's second reproduction was through the real ingest path and a
+    hand-built record could hide a normalizer that never produces this shape.
+    """
+    finding, node = _score_end_to_end("52.20.10.0/24", {}, "tcp/3389", ["prod"])
+
+    assert finding.forced_critical is True
+    assert finding.severity_band == "critical"
+    assert finding.severity == 52          # the floor raises the BAND, not the number
+    assert finding.signals["severity_vector"] == {"E": 0.3, "P": 1.0, "D": 0.6, "B": 1.5}
+    assert finding.signals["forced_reasons"] == [
+        "admin/lateral-movement port exposed to the internet"]
+    assert node["zone"] == "internet"
+    # The display label stays NARROW on purpose. `_is_wildcard_source` was not
+    # unified with `is_internet_source`: "open from the internet" above a grant
+    # from one partner's /24 would be a false sentence in the most-read line of
+    # the finding. The source is named; the internet claim lives in the reasons.
+    assert finding.title == "RDP open from 52.20.10.0/24 to db-prod-01"
+    assert "the internet" not in finding.title
+    assert "exposed directly to the internet" in finding.signals["reasons"]
+
+
+def test_an_ordinary_internal_rule_is_still_not_a_finding():
+    """The other half of A3, and the reason `_reasons` still exists.
+
+    Inverting the control flow must not turn the analyzer into "report every
+    allow": a floor that fires on everything protects nothing, and a console that
+    lists every internal grant is one nobody reads. An internal /24 to one app
+    port trips no clause and no reason, and is still silently clean.
+    """
+    rec = make_rec("R1", "10.20.5.0/24", "app-01", "tcp/443",
+                   source_cidrs=["10.20.5.0/24"], dest_cidrs=["10.90.4.4/32"],
+                   dest_tags=["prod"])
+    assert over_permissive.analyze([rec], graph_for([rec]), {}) == []
+
+
+def test_the_analyzer_reports_exactly_what_the_scorer_scored():
+    """`_reasons` reads the scorer's own E and P rather than recomputing them.
+
+    Two functions computing one sub-score from one record is how the two
+    predicates drifted apart in the first place; this pins that the prose and the
+    published vector are derived from a single evaluation.
+    """
+    rec = make_rec("R1", "0.0.0.0/0", "app-01", "tcp/3389",
+                   source_cidrs=["0.0.0.0/0"], dest_cidrs=["10.90.4.4/32"],
+                   dest_tags=["pci"])
+    finding = over_permissive.analyze([rec], graph_for([rec]), {})[0]
+    vector = finding.signals["severity_vector"]
+    scored = score_over_permissive(
+        source=rec.source, source_kind=rec.source_kind, protocol=rec.protocol,
+        port=rec.port, dest_tags=rec.dest_tags,
+        src_zone=finding.signals["src_zone"], dst_zone=finding.signals["dst_zone"],
+        port_end=rec.port_end, ports=None, source_cidrs=rec.source_cidrs)
+    assert (vector, finding.severity) == (scored["vector"], scored["severity"])
+    assert vector["E"] == scored["E"] and vector["P"] == scored["P"]
+
+
 # --- 4b. the four encodings, END TO END, with nothing hand-built ------------
 #
 # The four spellings of ONE address space, as a real AlgoSec export writes them:
@@ -478,6 +617,46 @@ def test_fallback_pair_ignores_a_range_that_misses_the_port():
     tcp = make_rec("R1", "10.0.0.0/8", "host-a", "tcp/400-442", source_cidrs=["10.0.0.0/8"])
     udp = make_rec("R2", "10.0.0.0/8", "host-a", "udp/443", source_cidrs=["10.0.0.0/8"])
     findings = transport_exposure.analyze([tcp, udp], graph_for([tcp, udp]), {})
+    assert [f for f in findings if f.signals["subtype"] == "tls_fallback_not_blocked"] == []
+
+
+def test_an_any_service_rule_opens_both_halves_of_the_fallback_pair():
+    """Quick win 3. The widest grant expressible was excluded from the check.
+
+    `transport_exposure` filtered its input to `r.port is not None` -- and an
+    `any` service is protocol "any" with NO port -- so a rule granting every
+    protocol and every port was the one rule the fallback-pair check could not
+    see, while `_opens`'s own docstring said "a rule whose protocol is `any`
+    opens the port on every transport". One such rule ships in
+    `data/mock/algosec_export.json` (ALGO-001), so the analyzer was skipping the
+    worst rule in the product's own demo.
+
+    One record is enough here: it opens BOTH halves by itself, which is exactly
+    what makes it worse than the two-rule case the check was written for.
+    """
+    any_rule = make_rec("R1", "0.0.0.0/0", "host-a", "any", source_cidrs=["0.0.0.0/0"])
+    assert (any_rule.protocol, any_rule.port) == ("any", None)     # the excluded shape
+    findings = transport_exposure.analyze([any_rule], graph_for([any_rule]), {})
+    fallback = [f for f in findings if f.signals["subtype"] == "tls_fallback_not_blocked"]
+    assert len(fallback) == 1
+    assert fallback[0].signals["tcp_refs"] == ["R1"]
+    assert fallback[0].signals["udp_refs"] == ["R1"]
+
+
+def test_a_port_that_failed_to_decode_is_not_treated_as_every_port():
+    """The mirror-image error, pinned so the fix above cannot overshoot.
+
+    Dropping the `port is not None` filter must not mean "a rule with no port
+    opens everything". A `tcp` rule whose service did not decode is PORT UNKNOWN
+    -- mid-risk, scored P_UNKNOWN -- and inventing a tcp/443 grant nobody wrote
+    is the same class of error as hiding one, pointed the other way. Only a rule
+    that also names no PROTOCOL is a grant of every port.
+    """
+    undecoded = make_rec("R1", "10.0.0.0/8", "host-a", "tcp/not-a-port",
+                         source_cidrs=["10.0.0.0/8"])
+    udp = make_rec("R2", "10.0.0.0/8", "host-a", "udp/443", source_cidrs=["10.0.0.0/8"])
+    assert (undecoded.protocol, undecoded.port) == ("tcp", None)
+    findings = transport_exposure.analyze([undecoded, udp], graph_for([undecoded, udp]), {})
     assert [f for f in findings if f.signals["subtype"] == "tls_fallback_not_blocked"] == []
 
 

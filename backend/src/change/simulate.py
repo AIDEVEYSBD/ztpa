@@ -21,6 +21,16 @@ reasons and the same gate ruling. Scoring the label made the named spelling
 score as a single host (E_IDENTITY, 0.1) instead of a /8 (0.9) -- a free
 auto-approve for anyone whose export happens to use object names.
 
+And it applies to THE INTERNET ITSELF. The force-escalation arm below is the
+diff of `_internet_sensitive_paths` before and after the rule, and that used to
+start from the literal node ``0.0.0.0/0``. An estate whose internet ingress is
+spelled ``any`` or ``ANY-EXTERNAL`` therefore had no internet paths on either
+side of the diff, so a proposed INTERNAL rule that completes a chain from the
+internet to a PCI database came back `forced_escalate=False` -- the gate
+disarmed by the spelling of a rule the operator did not write. The entry set now
+comes from `reachability.internet_entries`, the same zone-derived answer
+`path_trace` shows the buyer.
+
 And a DENY is not a grant. `graph.build.build_graph` adds edges for allows only,
 so a proposed deny subtracts nothing and adds nothing; running it through the
 over-permissive predicates anyway read "deny any from 0.0.0.0/0" as an any/any
@@ -38,20 +48,44 @@ from ..analyzers.over_permissive import _reasons as _overpermissive_reasons
 from ..analyzers.severity import exposure_score, is_internet_source, port_score, score_over_permissive
 from ..config import SENSITIVE_TAGS
 from ..graph.build import build_graph
-from ..graph.reachability import find_paths
+from ..graph.reachability import find_paths, internet_entries
 from ..graph.zones import boundary_label, crosses_boundary, zone_of
 from ..models import Asset, PolicyRecord
-from ..normalizers.common import cidrs_for_token, parse_service
+from ..normalizers.common import ResolvedObject, cidrs_for_token, parse_service
 
 _Network = Union[ipaddress.IPv4Network, ipaddress.IPv6Network]
 
 
 def _internet_sensitive_paths(g) -> dict[tuple, dict]:
+    """Every internet -> sensitive-asset path in `g`, keyed by its node tuple.
+
+    The gate's whole force-escalation arm is the DIFF of this map before and
+    after the proposed rule, so what counts as "the internet" here decides
+    whether an operator may auto-approve. It used to be the literal string
+    ``find_paths(g, "0.0.0.0/0", t)``, which meant an estate whose pre-existing
+    internet ingress is spelled ``any`` or ``ANY-EXTERNAL`` -- a NAMED object,
+    how most real exports write it -- produced an empty map on BOTH sides. An
+    internal rule that newly exposes a PCI database then flipped
+    `forced_escalate` True -> False purely on the spelling of somebody else's
+    rule, and `advisory.classify_change` short-circuits to escalate on
+    `forced_escalate` BEFORE any model call, so with it False the decision went
+    to the LLM under a delta that read "no new internet paths".
+
+    `internet_entries` is the graph's own zone answer and the same one
+    `path_trace` uses, so the finding a buyer is shown and the ruling an operator
+    is given can no longer disagree about where the internet is. Entries and
+    targets are both iterated in sorted order, so the insertion order of this
+    dict -- which becomes the order of `new_paths` on the wire -- is stable.
+    """
+    entries = internet_entries(g)
     targets = sorted(n for n, d in g.nodes(data=True) if set(d.get("tags", [])) & SENSITIVE_TAGS)
     out: dict[tuple, dict] = {}
-    for t in targets:
-        for p in find_paths(g, "0.0.0.0/0", t):
-            out[tuple(p["path"])] = p
+    for entry in entries:
+        for t in targets:
+            if t == entry:
+                continue          # a zero-edge "path" traverses no grant
+            for p in find_paths(g, entry, t):
+                out[tuple(p["path"])] = p
     return out
 
 
@@ -132,9 +166,11 @@ def resolve_dest_tags(destination: str, assets: list[Asset], alias_map: dict[str
 
 
 def resolve_cidrs(token: str, assets: list[Asset], alias_map: dict[str, str],
-                  declared: Iterable[str] = ()) -> list[str]:
+                  declared: Iterable[str] = (),
+                  resolved: Iterable[ResolvedObject] = ()) -> list[str]:
     """Derive the ADDRESS SPACE a source/destination token denotes, from the
-    ENGINE's asset set. The address-space twin of `resolve_dest_tags`.
+    ENGINE's asset set AND the export's own object catalog. The address-space
+    twin of `resolve_dest_tags`.
 
     `PolicyRecord.source_cidrs` is what every exposure decision now reads, and a
     proposal that arrives through the change gate has nobody to fill it: the
@@ -150,6 +186,19 @@ def resolve_cidrs(token: str, assets: list[Asset], alias_map: dict[str, str],
       - the wildcard vocabulary ("any"/"all"/"*")       -> 0.0.0.0/0
       - a canonical asset key, a tool alias of one, or an asset display name
         -> that asset's `ip_set`
+      - a NAMED OBJECT in the export's catalog ("ANY-EXTERNAL", "INTERNET", an
+        address group) -> that object's resolved `cidrs`
+
+    The catalog arm is not an optimisation, it is the difference between the
+    gate working and not. `normalizers/algosec.py` emits an entity only for a
+    token some EXISTING rule references, so a perimeter object that is defined
+    in the catalog but not currently used resolves to nothing in the asset set.
+    Before this arm existed, "allow tcp/22 from ANY-EXTERNAL to db-prod-01
+    (pci)" was gated with E = 0.1 -- one host -- and came back
+    forced_escalate=False with no reasons, while the byte-identical request
+    written `0.0.0.0/0` was forced_escalate=True. `advisory.classify_change`
+    short-circuits on forced_escalate before any model call, so that gap was an
+    auto-approve of internet-to-PCI SSH decided purely by spelling.
 
     Everything found is UNIONED, never intersected, and the caller's own
     `declared` list is one more contribution rather than the answer. Union is the
@@ -174,6 +223,15 @@ def resolve_cidrs(token: str, assets: list[Asset], alias_map: dict[str, str],
     for a in assets:
         if a.asset_key in names or (a.display_name and a.display_name in names):
             out += list(a.ip_set)
+    # The export's own catalog, which knows objects the asset set does not.
+    # Matched case-insensitively because object names are operator-typed and
+    # vendors do not agree on case ("ANY-EXTERNAL" vs "Any-External").
+    lowered = {n.lower() for n in names}
+    for obj in resolved:
+        if obj.object_kind != "address" or obj.object_name.lower() not in lowered:
+            continue
+        cidrs = (obj.resolved or {}).get("cidrs") or []
+        out += [str(c) for c in cidrs]
     return out
 
 
@@ -214,7 +272,8 @@ def _proposed_summary(p: PolicyRecord) -> dict:
 
 
 def simulate_change(records: list[PolicyRecord], assets: list[Asset], alias_map: dict[str, str],
-                    proposed: PolicyRecord) -> dict:
+                    proposed: PolicyRecord,
+                    resolved: Iterable[ResolvedObject] = ()) -> dict:
     # Re-derive from the engine BEFORE anything is built or scored -- the
     # destination's sensitivity TAGS and the ADDRESS SPACE behind both endpoints
     # -- and judge that record from here on. Rebuilding through
@@ -227,8 +286,8 @@ def simulate_change(records: list[PolicyRecord], assets: list[Asset], alias_map:
     proposed = PolicyRecord.model_validate({
         **proposed.model_dump(),
         "dest_tags": resolve_dest_tags(proposed.destination, assets, alias_map, proposed.dest_tags),
-        "source_cidrs": resolve_cidrs(proposed.source, assets, alias_map, proposed.source_cidrs),
-        "dest_cidrs": resolve_cidrs(proposed.destination, assets, alias_map, proposed.dest_cidrs),
+        "source_cidrs": resolve_cidrs(proposed.source, assets, alias_map, proposed.source_cidrs, resolved),
+        "dest_cidrs": resolve_cidrs(proposed.destination, assets, alias_map, proposed.dest_cidrs, resolved),
     })
     # A deny is not a grant. `build_graph` adds edges for allows only, so a
     # proposed deny subtracts nothing and adds nothing -- the path diff below is

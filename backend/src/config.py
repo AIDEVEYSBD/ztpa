@@ -219,6 +219,23 @@ EXPOSURE_BANDS_BY_VERSION: dict[int, list[tuple[int, float]]] = {
 }
 E_IDENTITY = 0.1          # single identity / label source
 
+# A source the export DECLARED as an address (a network object, a range, a
+# group) but which the engine could not resolve -- a malformed CIDR, a broken
+# catalog reference, a syntax this build does not decode yet.
+#
+# It is deliberately NOT E_IDENTITY. Scoring an unreadable *network* object as
+# a single host is how bad input LOWERS reported risk, which is the worst
+# failure direction available to a security tool: `allow BAD-OBJ -> db-prod-01
+# tcp/22` against a pci database used to clear no guardrail at all and produce
+# no finding of any type.
+#
+# 0.5 is the `broad_source_E` band (/23 or broader). It is a conservative
+# floor, not a maximum: enough that the rule is REPORTED and an operator can
+# see the object failed to resolve, without asserting internet exposure the
+# engine cannot evidence. `object_is_abstract` already fails closed on this
+# identical warning -- this is the scoring half of the same decision.
+E_UNRESOLVED = 0.5
+
 # --------------------------------------------------------------------------
 # Zones + boundary crossing (B) — multiplier, not an additive term.
 # --------------------------------------------------------------------------

@@ -24,6 +24,20 @@ service, which is the same arithmetic `severity.port_score` uses. Scoring gained
 the resolved source space and the full interval set for the same reason it did
 in `over_permissive`: a QUIC allow from a named object that dereferences to
 0.0.0.0/0 must score like one written `0.0.0.0/0`.
+
+What THIS round changed here (PROD-READINESS-AUDIT-2, quick win 3)
+------------------------------------------------------------------
+The fallback-pair check filtered its input to `r.port is not None` and `_opens`
+re-tested the same thing, so an `any` service -- protocol "any", no port, the
+widest grant an export can express -- was excluded from the one check whose own
+docstring says "a rule whose protocol is `any` opens the port on every
+transport". `data/mock/algosec_export.json` ships such a rule (ALGO-001,
+`0.0.0.0/0 -> 10.0.0.0/8 any`), so the analyzer was skipping the worst rule in
+the product's own demo. Both tests are now one: a rule that names no port opens
+every port exactly when it names no protocol either, which is how
+`severity.port_score` already scores it (PORT_CLASS_ANY_PORT). A `tcp` rule whose
+service failed to decode still opens nothing -- "port unknown" is not evidence
+that 443 is reachable, and inventing a grant is the mirror-image error.
 """
 
 from __future__ import annotations
@@ -74,9 +88,19 @@ def _opens(rec: PolicyRecord, protocol: str, port: int) -> bool:
     Interval containment, not scalar equality: `tcp/443`, `tcp/443-8443` and
     `tcp/80,443` all open tcp/443 and all must trip the fallback pair. A rule
     whose protocol is `any` opens the port on every transport.
+
+    A rule carrying NO port at all is a grant of every port only when it names no
+    protocol either -- an `any` service. That is the same reading
+    `severity.port_score` gives it (`_class_applies` returns PORT_CLASS_ANY_PORT
+    for `protocol == "any"`), and it is what the sentence above has always
+    claimed. A protocol-bearing rule with `port is None` is a service the decoder
+    could not read: mid-risk, but not evidence that this port is open, so it
+    stays False rather than manufacturing a grant nobody wrote.
     """
-    if rec.port is None or (rec.protocol != protocol and rec.protocol != "any"):
+    if rec.protocol != protocol and rec.protocol != "any":
         return False
+    if rec.port is None:
+        return rec.protocol == "any"
     intervals = _service_ports(rec) or \
         [(rec.port, rec.port_end if rec.port_end is not None else rec.port)]
     return any(lo <= port <= hi for lo, hi in intervals)
@@ -125,7 +149,9 @@ def analyze(records: list[PolicyRecord], g: nx.DiGraph, alias_map: dict[str, str
         ))
 
     # --- 2. TLS fallback not blocked -- one finding per destination per pair ---
-    allows = [r for r in records if r.action == "allow" and r.port is not None]
+    # No `r.port is not None` filter: `_opens` is the one place that decides
+    # what a rule grants, and an `any/any` rule grants this pair.
+    allows = [r for r in records if r.action == "allow"]
     for (a, b) in TRANSPORT_CONFIG["fallback_pairs"]:
         by_dest: dict[str, dict[tuple[str, int], list[PolicyRecord]]] = {}
         for r in allows:

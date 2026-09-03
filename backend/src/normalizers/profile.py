@@ -14,10 +14,29 @@ here only because `common.py` is this phase's frozen shared contract. Keeping
 ONE copy is the point -- "compute the resolved CIDR and then throw it away" got
 into three normalizers independently precisely because each one had its own
 private `_resolve`.
+
+Two responsibilities this round added, both because the previous fix stopped one
+layer above the shape a real export has:
+
+  `object_cidrs` DEREFERENCES RECURSIVELY. A group whose members are the NAMES
+  of other objects is how every real AlgoSec / Panorama / FortiManager catalog
+  is organised, and every member used to come back "unresolvable object value"
+  -- so `source_cidrs` was `[]`, E collapsed to the score of one host, and an
+  internet-to-PCI RDP grant produced zero findings. Cycles and depth are bounded
+  and REPORTED, because a bound that silently returns less address space than
+  the catalog names would be the same defect wearing a different hat.
+
+  `require_rule` REFUSES UNMODELLED RULE STATE. `disabled` / `enabled` / any
+  `*negate*` key were read by nobody and refused by nobody, so a switched-off
+  rule scored 100/critical and a negated source was reported as its own exact
+  complement. Neither semantics is in the canonical model yet, and the contract
+  in `NormalizeError`'s docstring is that this module may refuse but may never
+  "normalize something else and say nothing".
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Optional
 
 from pydantic import BaseModel
@@ -25,8 +44,8 @@ from pydantic import BaseModel
 from ..netaddr import parse_net
 from .common import (
     NormalizeResult, ObservedEntity, ResolvedObject, cidrs_for_token, is_cidr,
-    merge_entities, normalize_cidr, parse_service, record_from_service,
-    scope_identifiers,
+    looks_like_address_space, merge_entities, normalize_cidr, parse_service,
+    record_from_service, scope_identifiers,
 )
 
 
@@ -139,19 +158,100 @@ def object_is_abstract(otype: object, cidrs: list[str], warnings: list[str]) -> 
             or bool(warnings))
 
 
-def object_cidrs(value: object) -> tuple[list[str], list[str]]:
+# Vendor spellings of the separate MASK column, normalized the way
+# `common._scope_key` normalizes a scope key (lowercased, non-alphanumerics
+# stripped), so `netMask`, `net_mask` and `NETMASK` are one entry. A catalog row
+# that keeps the address and its width in two columns -- `{"value": "10.0.0.0",
+# "netmask": "255.0.0.0"}` -- is an ASA/FortiManager staple and resolved to a
+# /32 HOST before this, which is the same "bad shape lowers the score" failure
+# as an unparseable CIDR. `prefixlen`/`prefixlength` carry an integer width; both
+# forms are handed to `cidrs_for_token`, which reads either.
+#
+# Deliberately narrow: only keys that can ONLY be a mask. Bare `prefix` and
+# `cidr` are absent because they are how some exports spell the VALUE, and
+# reading a value as a mask would be the same category error in reverse. (A
+# wrong mask is not catastrophic -- `_cidrs_for_value` falls back to the bare
+# token -- but a table that cannot be wrong is better than one that recovers.)
+_NETMASK_ALIASES: frozenset[str] = frozenset({
+    "netmask", "mask", "subnetmask", "wildcard", "wildcardmask", "inversemask",
+    "prefixlen", "prefixlength", "masklen", "masklength", "maskbits",
+})
+
+# How deep a group-of-groups may nest before we stop and say so. Real catalogs
+# nest two or three deep; sixteen is far past any of them and small enough that
+# a pathological export cannot burn the request on recursion.
+MAX_OBJECT_DEPTH = 16
+
+
+def object_netmask(obj: object) -> Optional[str]:
+    """The separate mask/prefix column a catalog row carries, if any.
+
+    Deterministic: source keys are visited in sorted order, so a row that spells
+    the mask twice resolves the same way every time rather than by JSON key
+    order. Returns None for a row that declares no mask -- which is every row in
+    every bundled fixture, so this cannot change an existing answer.
+    """
+    if not isinstance(obj, dict):
+        return None
+    for raw_key in sorted(k for k in obj if isinstance(k, str)):
+        if "".join(ch for ch in raw_key.lower() if ch.isalnum()) not in _NETMASK_ALIASES:
+            continue
+        value = obj[raw_key]
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if isinstance(value, int) and not isinstance(value, bool):
+            return str(value)
+    return None
+
+
+def object_cidrs(value: object, *, netmask: Optional[str] = None,
+                 objects: Optional[dict] = None, value_key: str = "value",
+                 seen: frozenset[str] = frozenset(), depth: int = 0
+                 ) -> tuple[list[str], list[str]]:
     """An object-catalog `value` -> (canonical CIDRs, warnings). Never raises.
 
-    Accepts the three shapes real catalogs use: one string, a LIST of strings
-    (an address group -- which used to be written straight into
+    Accepts the shapes real catalogs use: one string, a LIST of strings (an
+    address group -- which used to be written straight into
     `ObservedEntity.cidr` and blow up later inside the identity layer at
-    `ips.add(e.cidr)` with `unhashable type: 'list'`), and a missing value.
+    `ips.add(e.cidr)` with `unhashable type: 'list'`), a missing value, and --
+    when the caller hands over the catalog -- MEMBERS THAT ARE THE NAMES OF
+    OTHER OBJECTS.
 
-    A value that is not address space at all is REPORTED, never dropped and
-    never silently reclassified. `10.0.0.0/33` and `300.1.1.1/24` are typos in
-    what is usually a BROAD rule, and today they quietly become single-host
-    identity assets -- i.e. bad input LOWERS the reported risk, which is the
-    worst failure direction available to a security tool.
+    GROUP OF GROUPS IS THE NORMAL SHAPE, AND IT WAS THE HOLE (audit-2 B8)
+    ---------------------------------------------------------------------
+    The previous round taught this function to dereference a group whose members
+    are literal addresses and stopped there. Every real AlgoSec / Panorama /
+    FortiManager catalog is organised the other way round: `EXTERNAL-SOURCES` is
+    a group whose members are the NAMES of other objects, one of which is the
+    one holding `0.0.0.0/0`. A name is not an address, so every member became
+    "unresolvable object value", `source_cidrs` came back `[]`, and
+    `exposure_score` fell back to E_IDENTITY = 0.1 -- the exposure of ONE HOST.
+    Measured: ``EXTERNAL-SOURCES -> db-prod-01 (pci) tcp/3389`` produced ZERO
+    findings, while the byte-identical grant written ``ANY-EXTERNAL -> db-prod-01
+    tcp/3389`` was 100/critical/forced. The fix that shipped had been narrowed to
+    the shape the probe happened to use.
+
+    So members are now dereferenced RECURSIVELY, with the two bounds a graph
+    walk needs and a warning for each:
+
+      `seen`   the names already on the dereference stack. A catalog is allowed
+               to contain a cycle (operators build them by accident), and
+               `A -> B -> A` must report the cycle, not recurse forever.
+      `depth`  a hard ceiling (`MAX_OBJECT_DEPTH`), so a pathological export
+               cannot turn one rule into unbounded work.
+
+    `netmask` is the separate mask/prefix column (`object_netmask`), applied to
+    every string member. A value that is not address space at all is REPORTED,
+    never dropped and never silently reclassified. `10.0.0.0/33` and
+    `300.1.1.1/24` are typos in what is usually a BROAD rule, and they used to
+    quietly become single-host identity assets -- i.e. bad input LOWERS the
+    reported risk, which is the worst failure direction available to a security
+    tool. That report is now also a SCORED fact: the caller turns a non-empty
+    `warnings` into `PolicyRecord.source_unresolved`.
+
+    Determinism: members are visited in the order the catalog lists them, the
+    resolved blocks are canonicalized and sorted by `PolicyRecord`'s own
+    validator, and nothing here iterates a set.
     """
     values = value if isinstance(value, (list, tuple)) else [value]
     cidrs: list[str] = []
@@ -162,14 +262,75 @@ def object_cidrs(value: object) -> tuple[list[str], list[str]]:
         if not isinstance(item, str):
             warnings.append(f"object value {item!r} is not a string")
             continue
-        if not item.strip():
+        token = item.strip()
+        if not token:
             continue
-        resolved = cidrs_for_token(item)
+        resolved, mask_warning = _cidrs_for_value(token, netmask)
+        if mask_warning is not None:
+            warnings.append(mask_warning)
         if resolved:
             cidrs.extend(resolved)
-        else:
-            warnings.append(f"unresolvable object value {item.strip()!r}")
+            continue
+        member = objects.get(token) if isinstance(objects, dict) else None
+        if isinstance(member, dict) and member:
+            if token in seen:
+                # A cycle is a data defect in the customer's catalog, not ours.
+                # Reporting it (rather than dropping the member) is what makes
+                # the resulting `source_unresolved` honest.
+                warnings.append(f"object group cycle at {token!r}")
+                continue
+            if depth >= MAX_OBJECT_DEPTH:
+                warnings.append(
+                    f"object nesting deeper than {MAX_OBJECT_DEPTH} at {token!r}")
+                continue
+            nested, nested_warnings = object_cidrs(
+                member.get(value_key), netmask=object_netmask(member),
+                objects=objects, value_key=value_key,
+                seen=seen | {token}, depth=depth + 1)
+            cidrs.extend(nested)
+            warnings.extend(nested_warnings)
+            continue
+        warnings.append(f"unresolvable object value {token!r}")
     return cidrs, warnings
+
+
+def _cidrs_for_value(token: str, netmask: Optional[str]
+                     ) -> tuple[list[str], Optional[str]]:
+    """One catalog value (+ its separate mask column, if any) -> (CIDRs, warning).
+
+    With no mask this is exactly `cidrs_for_token`. With one, the two columns
+    are re-joined into the notations `cidrs_for_token` already reads -- the
+    space form (`10.0.0.0 255.0.0.0`, which covers BOTH Cisco mask conventions)
+    first, then the slash form (`10.0.0.0/24`, which covers an integer prefix).
+    Re-joining rather than re-implementing keeps ONE decoder for address space,
+    which is the whole reason `cidrs_for_token` exists.
+
+    AN UNUSABLE MASK IS REPORTED, NOT SHRUGGED OFF. `{"value": "10.0.0.0",
+    "netmask": "<junk>"}` still resolves as the bare token -- which is a /32 --
+    so quietly ignoring the mask turns a network the export declared into a
+    single host, i.e. the same "bad input lowers the reported risk" failure as
+    an unparseable CIDR, arriving through a different column. The address we can
+    read is kept and the loss is carried out as a warning, which the caller turns
+    into `PolicyRecord.source_unresolved`.
+    """
+    if netmask is None:
+        return cidrs_for_token(token), None
+    combined = (cidrs_for_token(f"{token} {netmask}")
+                or cidrs_for_token(f"{token}/{netmask}"))
+    if combined:
+        return combined, None
+    fallback = cidrs_for_token(token)
+    if not fallback or looks_like_address_space(token):
+        # Either the value names no address at all (the caller reports that on
+        # its own -- two warnings for one defect would only obscure it), or the
+        # value ALREADY carries its own width (`10.0.0.0/8`, a range, an inline
+        # mask pair). A mask column beside a value that is already a network is
+        # redundant, not lost, so there is nothing to report.
+        return fallback, None
+    # A bare host address whose declared width could not be applied: the /32 the
+    # fallback yields is NARROWER than what the export meant, which is the
+    # direction that hides exposure.
+    return fallback, f"unusable mask {netmask!r} on object value {token!r}"
 
 
 def token_cidrs(token: str) -> tuple[list[str], list[str]]:
@@ -182,14 +343,18 @@ def token_cidrs(token: str) -> tuple[list[str], list[str]]:
     the silent reclassification the audit filed: the rule then scores as a
     single host (E=0.1) and vanishes from every piece of subnet math.
 
-    Only a token containing "/" is judged malformed. A bare word could be a
-    hostname, a label or a user, and there is no honest way to tell a typo'd
-    address from a name that happens to look numeric.
+    "Looks like an address" is `common.looks_like_address_space`, which now also
+    knows the two notations a range object and an ASA rule are written in -- so
+    `10.0.0.0-9.0.0.0` (inverted) and `10.0.0.0 0.255.0.255` (a discontiguous
+    wildcard, which denotes a set no CIDR list can express) are reported rather
+    than silently becoming labels. It stays deliberately narrow on the bare
+    word: a hostname could be anything, and there is no honest way to tell a
+    typo'd address from a name that happens to look numeric.
     """
     resolved = cidrs_for_token(token)
     if resolved:
         return resolved, []
-    if "/" in token:
+    if looks_like_address_space(token):
         return [], [f"malformed address {token.strip()!r}"]
     return [], []
 
@@ -214,13 +379,136 @@ def require_rows(value: object, *, tool: str, what: str) -> list:
         f"{tool}: {what} must be a list of rules, got {type(value).__name__}")
 
 
+# Keys whose canonical (lowercased, non-alphanumerics stripped) spelling names a
+# rule STATE the canonical model does not carry. Two families, both fatal:
+#
+#   enablement  `disabled: true` / `enabled: false` / `inactive: true`. The rule
+#               grants NOTHING. Scoring it produced a measured 100/critical on a
+#               rule that is switched off, plus a fabricated "dead deny: blocked
+#               traffic is actually allowed" shadowing finding underneath it.
+#   negation    `src_negate`, `negate-destination`, `negate: true`. The rule's
+#               source is the COMPLEMENT of what the field says. Measured:
+#               `allow NOT 10.0.0.0/8 -> db tcp/3389` -- which is the internet --
+#               was read as `10.0.0.0/8` and reported "85 critical, RDP open
+#               from INTERNAL", i.e. the exact inverse of the truth.
+#
+# Both are matched by SUBSTRING on the canonical key so `srcNegate`,
+# `negate_source` and `dst-negate` are one rule, and both are absent from every
+# bundled fixture, so nothing that ships today reaches this.
+_NEGATE_MARK = "negate"
+# The inline spelling: `src: "!10.0.0.0/8"`. One character, unambiguous -- no
+# vendor object name begins with it.
+_TOKEN_NEGATION = "!"
+_DISABLED_KEYS = frozenset({"disabled", "inactive", "isdisabled", "ruledisabled"})
+_ENABLED_KEYS = frozenset({"enabled", "active", "isenabled", "ruleenabled"})
+
+
+def _canon_key(key: object) -> str:
+    """A raw export key -> lowercase alphanumerics, for table comparison."""
+    return "".join(ch for ch in str(key).lower() if ch.isalnum())
+
+
 def require_rule(row: object, *, tool: str, index: int) -> dict:
-    """One row that must be a mapping (a bare string row indexed as a dict was
-    `TypeError: string indices must be integers` from inside the normalizer)."""
+    """One row that must be a mapping, carrying no state we do not model.
+
+    A bare string row indexed as a dict was `TypeError: string indices must be
+    integers` from inside the normalizer; that is the shape half of this guard.
+
+    The other half is UNMODELLED RULE STATE (audit-2 L2 / quick win 5). No
+    normalizer reads `disabled`/`enabled` or any negation flag, and nothing
+    refused them either, so both were silently dropped -- and the two failures
+    that produced are in opposite directions and both wrong:
+
+      a DISABLED broad allow scored 100/critical and fabricated a "dead deny"
+      shadowing finding under it (over-reporting a grant that does not exist);
+
+      a NEGATED source was read as its own complement -- `NOT 10.0.0.0/8`, which
+      IS the internet, reported as "from INTERNAL" at 85 (under-reporting the
+      one thing this product exists to find).
+
+    Honouring the semantics is scheduled work (REQUIREMENTS FUT-P3-2/-4) and
+    needs model fields this phase does not have. Until then the contract this
+    module states in `NormalizeError`'s own docstring applies: "what it is never
+    allowed to be is 'normalize something else and say nothing'". So it refuses,
+    by name, the day a real export first arrives.
+    """
     if not isinstance(row, dict):
         raise NormalizeError(
             f"{tool} rule #{index}: expected an object, got {type(row).__name__}")
+    where = _rule_label(row, index)
+    for key in sorted(k for k in row if isinstance(k, str)):
+        canon = _canon_key(key)
+        if _NEGATE_MARK in canon:
+            raise NormalizeError(
+                f"{tool} {where}: field {key!r} negates a match; negation is not "
+                "modelled yet and a negated source is the COMPLEMENT of the "
+                "address it names, not the address itself")
+        if canon in _DISABLED_KEYS and _is_truthy(row[key]):
+            raise NormalizeError(
+                f"{tool} {where}: field {key!r} marks the rule disabled; rule "
+                "state is not modelled yet and a disabled rule grants nothing")
+        if canon in _ENABLED_KEYS and _is_falsy(row[key]):
+            raise NormalizeError(
+                f"{tool} {where}: field {key!r} marks the rule not enabled; rule "
+                "state is not modelled yet and a disabled rule grants nothing")
     return row
+
+
+# The id columns real exports use, in the order they are tried, so a refusal
+# names the rule an operator has to go and look at rather than only its index.
+_RULE_ID_KEYS: tuple[str, ...] = (
+    "rule_id", "ruleid", "policy_id", "policyid", "exposure_id", "exposureid",
+    "id", "uid", "name", "rule_number", "rulenumber", "number", "seq",
+)
+
+
+def _rule_label(row: dict, index: int) -> str:
+    """`rule 'ALGO-001'` when the row names itself, else `rule #7`.
+
+    Deterministic: source keys are visited in sorted order and the first
+    spelling of a canonical key wins, so a row carrying both `id` and `ID`
+    labels itself the same way every time.
+    """
+    canon: dict[str, str] = {}
+    for key in sorted(k for k in row if isinstance(k, str)):
+        canon.setdefault(_canon_key(key), key)
+    for candidate in _RULE_ID_KEYS:
+        key = canon.get(_canon_key(candidate))
+        if key is None:
+            continue
+        raw = row[key]
+        if isinstance(raw, (str, int)) and not isinstance(raw, bool) and str(raw).strip():
+            return f"rule {str(raw).strip()!r}"
+    return f"rule #{index}"
+
+
+def _is_truthy(value: object) -> bool:
+    """A vendor's "yes". JSON booleans and the string spellings both appear."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "yes", "y", "1", "on", "enable", "enabled"}
+    if isinstance(value, int):
+        return value != 0
+    return False
+
+
+def _is_falsy(value: object) -> bool:
+    """A vendor's explicit "no". ABSENT is not "no" -- only a present false is.
+
+    `enabled` missing from a row means the export does not model enablement at
+    all, which is every fixture in the repo; refusing those would refuse every
+    export we support today. Only an explicit negative is unmodelled state.
+    """
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return not value
+    if isinstance(value, str):
+        return value.strip().lower() in {"false", "no", "n", "0", "off", "disable", "disabled"}
+    if isinstance(value, int):
+        return value == 0
+    return False
 
 
 def require_field(rule: dict, name: str, *, tool: str, where: str) -> Any:
@@ -249,6 +537,17 @@ def require_token(rule: dict, name: str, *, tool: str, where: str) -> str:
     token = str(value).strip()
     if not token:
         raise NormalizeError(f"{tool} {where}: field {name!r} is empty")
+    if token.startswith(_TOKEN_NEGATION):
+        # The INLINE spelling of the negation `require_rule` refuses as a flag
+        # (pf / iptables / some Palo exports write `!10.0.0.0/8` in the column
+        # itself). Same semantics, same refusal: `NOT 10.0.0.0/8` is the
+        # internet, and both reading it as `10.0.0.0/8` and dropping it silently
+        # are false statements about the customer's network. Today it merely
+        # fails `parse_net` and lands as an unresolvable label.
+        raise NormalizeError(
+            f"{tool} {where}: field {name!r} value {token!r} is negated; negation "
+            "is not modelled yet and the complement of an address is not the "
+            "address")
     return token
 
 
@@ -352,61 +651,90 @@ class SourceProfile(BaseModel):
 _KNOWN_TOOLS = ("algosec", "guardicore", "wiz", "sd_wan", "sd_lan")
 
 
+@dataclass
+class _ResolvedToken:
+    """What one profile-mapped src/dst field dereferences to.
+
+    A named record rather than the five-element tuple this used to be, for the
+    reason `algosec._Resolved` gives: a tuple is how a resolved CIDR came to be
+    discarded at the call site behind an underscore, and this one had to grow a
+    sixth element (`unresolved`) that must never be the one silently dropped.
+
+    The node KIND (cidr vs identity) is deliberately absent: `record_from_service`
+    derives it from the token, which is what stops one string being a CIDR at one
+    call site and an identity at the next.
+    """
+
+    name: str                       # display name / node key; "" when unmapped
+    tags: list[str]
+    cidrs: list[str]                # the resolved address space ([] = none exists)
+    warnings: list[str]             # field/token/value defects, for the audit trail
+    entity: Optional[ObservedEntity]
+    # Address space was CLAIMED and did not resolve -- see
+    # `PolicyRecord.source_unresolved`. Strictly narrower than `warnings`: a
+    # field that is absent or multi-valued warns but claims no address space, so
+    # it must not raise the exposure floor.
+    unresolved: bool = False
+
+
 def _resolve(token: object, objects: dict, profile: SourceProfile, tool: str
-             ) -> tuple[str, list[str], list[str], list[str], Optional[ObservedEntity]]:
-    """One src/dst token -> (display, tags, cidrs, warnings, entity).
+             ) -> _ResolvedToken:
+    """One src/dst token -> its display name and the ADDRESS SPACE it denotes.
 
-    The node KIND (cidr vs identity) is deliberately not returned:
-    `record_from_service` derives it from the token, which is what stops one
-    string being a CIDR at one call site and an identity at the next.
+    `name` is what the operator sees and what the graph keys on; `cidrs` is the
+    address space it dereferences to, which is what the analyzers do subnet math
+    on. Returning both is the whole fix: the label alone made a named /0 score
+    as a single host.
 
-    `display` is what the operator sees and what the graph keys on; `cidrs` is
-    the address space it dereferences to, which is what the analyzers do subnet
-    math on. Returning both is the whole fix: the label alone made a named /0
-    score as a single host.
-
-    An ABSENT field returns `("", [], [], [warning], None)`. The
-    empty string is deliberate and load-bearing: `str(None)` used to produce the
-    *truthy* string `"None"`, which sailed straight through
-    `advisory.authoring.validate_profile`'s falsiness check and put a green
-    "validated" badge over a table of `None -> None` rows. An empty source is
-    falsy, so the existing validator now correctly reports the profile invalid.
+    An ABSENT field returns `name == ""`. The empty string is deliberate and
+    load-bearing: `str(None)` used to produce the *truthy* string `"None"`,
+    which sailed straight through `advisory.authoring.validate_profile`'s
+    falsiness check and put a green "validated" badge over a table of
+    `None -> None` rows. An empty source is falsy, so the existing validator now
+    correctly reports the profile invalid.
     """
     if token is None:
-        return "", [], [], ["field is absent from the sample row"], None
+        return _ResolvedToken("", [], [], ["field is absent from the sample row"], None)
     if isinstance(token, (list, tuple, set, dict)):
         # Same rule as the coded normalizers: refuse, rather than normalize
         # `str([...])` into a node name nothing will ever resolve.
-        return ("", [], [],
-                [f"multi-valued field ({type(token).__name__}) is not supported yet"], None)
+        return _ResolvedToken(
+            "", [], [],
+            [f"multi-valued field ({type(token).__name__}) is not supported yet"], None)
 
     text = str(token).strip()
     if not text:
-        return "", [], [], ["field is empty in the sample row"], None
+        return _ResolvedToken("", [], [], ["field is empty in the sample row"], None)
 
     if is_cidr(text):
         cidr = normalize_cidr(text)
         ent = ObservedEntity(name=cidr, kind="cidr", tool=tool, cidr=cidr, cidrs=[cidr],
                              abstract=True)
-        return cidr, [], [cidr], [], ent
+        return _ResolvedToken(cidr, [], [cidr], [], ent)
 
     obj = objects.get(text) if objects else None
     if not isinstance(obj, dict) or not obj:
         # Not an object in the catalog: it may still BE address space (a bare
-        # host ip, or the wildcard vocabulary), and if it merely looks like one
-        # that is a data defect worth reporting rather than a new asset.
+        # host ip, a range, an address+mask pair, or the wildcard vocabulary),
+        # and if it merely looks like one that is a data defect worth reporting
+        # rather than a new asset.
         cidrs, warnings = token_cidrs(text)
         abstract = object_is_abstract(None, cidrs, warnings)
         ent = ObservedEntity(name=text, kind="identity", tool=tool, abstract=abstract,
                              cidr=cidrs[0] if len(cidrs) == 1 and abstract else None,
                              cidrs=list(cidrs) if abstract else [],
                              identifiers={"malformed_address": True} if warnings else {})
-        return text, [], cidrs, warnings, ent
+        return _ResolvedToken(text, [], cidrs, warnings, ent, bool(warnings))
 
     value = obj.get(profile.object_value_key)
     tags = obj.get(profile.object_tags_key, []) or []
     otype = obj.get(profile.object_type_key)
-    cidrs, warnings = object_cidrs(value)
+    # The catalog is passed on, so a member that is the NAME of another object
+    # dereferences instead of becoming "unresolvable object value" -- the
+    # group-of-groups shape every real export uses (audit-2 B8).
+    cidrs, warnings = object_cidrs(value, netmask=object_netmask(obj), objects=objects,
+                                   value_key=profile.object_value_key,
+                                   seen=frozenset({text}))
     abstract = object_is_abstract(otype, cidrs, warnings)
     single = cidrs[0] if len(cidrs) == 1 else None
     ent = ObservedEntity(
@@ -426,7 +754,7 @@ def _resolve(token: object, objects: dict, profile: SourceProfile, tool: str
         identifiers={**scope_identifiers(obj),
                      **({"malformed_address": True} if warnings else {})},
     )
-    return text, list(tags), cidrs, warnings, ent
+    return _ResolvedToken(text, list(tags), cidrs, warnings, ent, bool(warnings))
 
 
 def apply_profile(raw: dict, profile: SourceProfile) -> NormalizeResult:
@@ -441,7 +769,12 @@ def apply_profile(raw: dict, profile: SourceProfile) -> NormalizeResult:
     for name in sorted(objects):
         obj = objects[name] if isinstance(objects[name], dict) else {}
         value = obj.get(profile.object_value_key)
-        cidrs, warnings = object_cidrs(value)
+        # Same dereference the rule path uses -- catalog included -- so the audit
+        # trail shows the address space a NESTED group actually denotes rather
+        # than a row of "unresolvable object value '<member name>'".
+        cidrs, warnings = object_cidrs(value, netmask=object_netmask(obj), objects=objects,
+                                       value_key=profile.object_value_key,
+                                       seen=frozenset({name}))
         row = {"value": value, "type": obj.get(profile.object_type_key),
                "tags": obj.get(profile.object_tags_key, []), "cidrs": cidrs,
                "abstract": object_is_abstract(obj.get(profile.object_type_key),
@@ -455,12 +788,12 @@ def apply_profile(raw: dict, profile: SourceProfile) -> NormalizeResult:
     for i, row in enumerate(rules):
         rule = require_rule(row, tool=tool, index=i + 1)
         ref = str(rule.get(fm.ref)) if fm.ref and rule.get(fm.ref) is not None else f"{tool.upper()}-{i + 1}"
-        s_val, _s_tags, s_cidrs, s_warn, s_ent = _resolve(rule.get(fm.src), objects, profile, tool)
-        d_val, d_tags, d_cidrs, d_warn, d_ent = _resolve(rule.get(fm.dst), objects, profile, tool)
-        if s_ent is not None:
-            merge_entities(entities, s_ent)
-        if d_ent is not None:
-            merge_entities(entities, d_ent)
+        src = _resolve(rule.get(fm.src), objects, profile, tool)
+        dst = _resolve(rule.get(fm.dst), objects, profile, tool)
+        if src.entity is not None:
+            merge_entities(entities, src.entity)
+        if dst.entity is not None:
+            merge_entities(entities, dst.entity)
         app = rule.get(fm.app) if fm.app else None
         if fm.service:
             svc = parse_service(service=rule.get(fm.service), app=app)
@@ -468,7 +801,7 @@ def apply_profile(raw: dict, profile: SourceProfile) -> NormalizeResult:
             svc = parse_service(port=rule.get(fm.port) if fm.port else None,
                                 protocol=rule.get(fm.protocol) if fm.protocol else None, app=app)
         res.resolved.extend(service_audit(tool, ref, svc, profile.device))
-        res.resolved.extend(token_audit(tool, ref, {"src": s_warn, "dst": d_warn},
+        res.resolved.extend(token_audit(tool, ref, {"src": src.warnings, "dst": dst.warnings},
                                         profile.device))
         action = decode_action(rule.get(fm.action) if fm.action else None,
                                default=fm.default_action, where=f"{tool} rule {ref}: ")
@@ -478,9 +811,10 @@ def apply_profile(raw: dict, profile: SourceProfile) -> NormalizeResult:
             # a known claim-overreach (audit: profile.py:90) whose fix lives in
             # models.py, outside this module.
             record_id=ref, source_tool=tool if tool in _KNOWN_TOOLS else "algosec",
-            raw_ref=ref, source=s_val, destination=d_val, svc=svc, action=action,
-            dest_tags=list(d_tags), order=rule.get(fm.order) if fm.order else (i + 1) * 10,
-            source_cidrs=s_cidrs, dest_cidrs=d_cidrs,
+            raw_ref=ref, source=src.name, destination=dst.name, svc=svc, action=action,
+            dest_tags=list(dst.tags), order=rule.get(fm.order) if fm.order else (i + 1) * 10,
+            source_cidrs=src.cidrs, dest_cidrs=dst.cidrs,
+            source_unresolved=src.unresolved,
         ))
 
     res.entities = list(entities.values())

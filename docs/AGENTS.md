@@ -169,6 +169,16 @@ calling the engine tools (ReAct-style), choosing which tool to call next itself.
 1. **Layer 1 — guardrail (deterministic, pre-model):** the engine has already simulated the
    change and computed the delta; catastrophic patterns (new internet→sensitive path,
    any/any, new internet→internal exposure) **force-escalate before any model call**.
+   > *"New internet→sensitive path" is a diff of two path sets, so the definition of "the
+   > internet" is what arms this layer.* `change/simulate._internet_sensitive_paths` derives
+   > its entry set from `graph.reachability.internet_entries` — every node the graph classifies
+   > as internet by **resolved address space** — and not from the literal key `0.0.0.0/0`.
+   > With the string lookup, an estate whose existing internet ingress was spelled `any` or as
+   > a named object had an empty path set on *both* sides of the diff, so an internal rule that
+   > newly exposed a PCI database produced `forced_escalate = False` and this layer never
+   > fired: the decision fell through to the model under a delta reading "no new internet
+   > paths". `path_trace` calls the same function, so what the buyer is shown and what the
+   > operator is judged by cannot disagree. See [ENGINE.md §6.4 and §8](ENGINE.md).
 2. **Investigation (`investigate`)** — a bounded ReAct loop (`MAX_TOOL_CALLS` = 4). Each turn
    the model returns JSON: either `{tool, args}` to gather evidence
    (`effective_policy` / `find_paths` / `reachable` / `resolve` / `risk_findings`) or

@@ -644,6 +644,88 @@ def test_half_the_internet_scores_like_the_internet():
 
 
 # ==========================================================================
+# 8b - IPv4-mapped v6 is ONE address space with two spellings (audit L1).
+# ==========================================================================
+# `netaddr`'s module docstring publishes unwrapping as a decision -- "IPv4-mapped
+# v6 is UNWRAPPED to its embedded v4 network and classified as v4 ...
+# `::ffff:10.0.0.0/104` is therefore 10/8" -- with the stated reason that not
+# doing so "would silently hide an internet-facing v6 rule written in mapped
+# form". It was applied inside `is_public` only. The band tables are indexed by
+# (family, prefix length) and every mapped block is /96 or longer, so
+# `_exposure_of` banded ALL of them in the bottom v6 row at E = 0.1 -- the
+# exposure of a single host -- while `is_public` called the same token public,
+# and `prefixlen_of` printed 96 beside it. Two halves of one published rule.
+#
+# Consequence before the fix, and why it was not merely cosmetic:
+# `::ffff:0.0.0.0/96 -> pci-host tcp/3389` -- the whole internet, RDP, a
+# regulated asset -- scored E = 0.1 and produced NO over-permissive finding at
+# all, while the identical grant written `0.0.0.0/0` was 100/critical/forced.
+#
+# One representative network per row of the v4 band table, so a row that stops
+# agreeing names its own prefix length.
+MAPPED_V6_BAND_ROWS = [
+    ("0.0.0.0/0", 1.0),
+    ("1.0.0.0/8", 0.9),
+    ("1.2.0.0/16", 0.7),
+    ("1.2.0.0/23", 0.5),
+    ("52.20.10.0/24", 0.3),
+    ("52.20.10.0/27", 0.3),
+    ("52.20.10.0/28", 0.1),
+    ("52.20.10.10/32", 0.1),
+]
+
+
+def _mapped(v4: str) -> str:
+    """`52.20.10.0/24` -> `::ffff:52.20.10.0/120`: the same network, in v6 clothes."""
+    address, _, prefixlen = v4.partition("/")
+    return f"::ffff:{address}/{int(prefixlen or 32) + 96}"
+
+
+@pytest.mark.parametrize("v4,expected_e", MAPPED_V6_BAND_ROWS,
+                         ids=[row[0] for row in MAPPED_V6_BAND_ROWS])
+def test_a_mapped_v6_block_scores_exactly_like_its_embedded_v4_network(v4, expected_e):
+    """Every band row, both spellings, all three published answers.
+
+    `expected_e` is pinned to a literal rather than compared against the v4
+    spelling alone, so "both are 0.1" -- the pre-fix state for every row -- fails
+    instead of passing as agreement.
+    """
+    mapped = _mapped(v4)
+    assert exposure_score(v4, "cidr") == expected_e, v4
+    assert exposure_score(mapped, "cidr") == expected_e, mapped
+    assert prefixlen_of(mapped, "cidr") == prefixlen_of(v4, "cidr"), mapped
+    assert is_internet_source(mapped, "cidr") == is_internet_source(v4, "cidr"), mapped
+
+
+def test_the_mapped_spelling_of_a_world_open_rule_scores_like_the_plain_one():
+    """The whole-grant consequence, not just the sub-score.
+
+    Everything `score_over_permissive` returns must be identical: the vector, the
+    severity, the floor and its reasons. Comparing the dicts whole means a future
+    field cannot quietly diverge between the two spellings.
+    """
+    def scored(source: str) -> dict:
+        return score_over_permissive(
+            source=source, source_kind="cidr", protocol="tcp", port=3389,
+            dest_tags=["pci"], src_zone=ZONE_INTERNET, dst_zone=ZONE_INTERNAL)
+
+    assert scored("::ffff:0.0.0.0/96") == scored("0.0.0.0/0")
+    assert scored("::ffff:0.0.0.0/96")["forced_critical"] is True
+    # and the display half agrees: a /0 is a /0, whatever family it is written in
+    assert prefixlen_of("::ffff:0.0.0.0/96", "cidr") == 0
+
+
+def test_a_real_v6_block_is_still_scored_by_the_v6_table():
+    """The fix must not turn v6 into v4. Only the ::ffff:0:0/96 block unwraps;
+    a native global-unicast prefix still lands on its own band row, where a /32
+    holds 2**96 addresses and is nothing like a v4 /32."""
+    assert exposure_score("2000::/3", "cidr") == 0.9
+    assert exposure_score("2001:db8:1::/48", "cidr") == 0.5
+    assert prefixlen_of("2001:db8:1::/48", "cidr") == 48
+    assert exposure_score("2606:4700::1111/128", "cidr") == E_IDENTITY
+
+
+# ==========================================================================
 # 9 - The four-encodings property (Phase 1 exit criterion).
 # ==========================================================================
 # One address space, four ways a real export spells it. The engine must not be

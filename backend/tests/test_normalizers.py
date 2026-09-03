@@ -36,11 +36,14 @@ import json
 
 import pytest
 
+from src.analyzers.severity import exposure_score
+from src.config import E_IDENTITY, OVERPERMISSIVE_CONFIG
 from src.identity import context_of, resolve_identities
 from src.normalizers import algosec, guardicore, wiz
 from src.normalizers.common import SCOPE_KEYS, ObservedEntity, merge_entities, scope_identifiers
 from src.normalizers.profile import (
-    FieldMap, NormalizeError, SourceProfile, apply_profile, field_report,
+    MAX_OBJECT_DEPTH, FieldMap, NormalizeError, SourceProfile, apply_profile, field_report,
+    object_cidrs, object_netmask,
 )
 
 # --- fixtures: the smallest export shape each normalizer accepts -------------
@@ -68,6 +71,52 @@ CATALOG = {
     "typo-net": {"type": "network", "value": "10.0.0.0/33"},
     "ops-team": {"type": "user_group", "value": None},
 }
+
+# --- the catalog shape a REAL export has ------------------------------------
+# The previous round validated the named-object fix against nine FLAT objects
+# and declared it closed. Group-of-groups is how every real AlgoSec / Panorama /
+# FortiManager catalog is actually organised: a group's members are the NAMES of
+# other objects, and `object_cidrs` only dereferenced literal address strings. So
+# every member became "unresolvable object value", `source_cidrs` came back [],
+# `exposure_score` fell back to E_IDENTITY = 0.1 -- the exposure of ONE HOST --
+# and the measured result was that `EXTERNAL-SOURCES -> db-prod-01 (pci)
+# tcp/3389` produced ZERO FINDINGS while the byte-identical grant written
+# `ANY-EXTERNAL -> db-prod-01 tcp/3389` was 100/critical/forced.
+#
+# Alongside it, the three other notations that resolved to nothing: the Check
+# Point range object, the Cisco ASA address+mask pair (both conventions), and an
+# address whose width lives in a separate column.
+NESTED = {
+    "db-prod-01": {"type": "host", "value": "10.50.0.10", "tags": ["pci"]},
+    "ANY-EXTERNAL": {"type": "network", "value": "0.0.0.0/0"},
+    # group -> group -> leaf objects, three levels deep
+    "EXTERNAL-SOURCES": {"type": "group", "value": ["PARTNER-NETS", "ANY-EXTERNAL"]},
+    "PARTNER-NETS": {"type": "group", "value": ["partner-a", "partner-b"]},
+    "partner-a": {"type": "network", "value": "203.0.113.0/24"},
+    "partner-b": {"type": "network", "value": "198.51.100.0/24"},
+    # ...and a nesting whose leaf is the internet alone, for the equivalence table
+    "NESTED-ANY": {"type": "group", "value": ["INNER-ANY"]},
+    "INNER-ANY": {"type": "group", "value": ["ANY-EXTERNAL"]},
+    # a cycle -- operators build these by accident, and a catalog is data
+    "LOOP-A": {"type": "group", "value": ["LOOP-B"]},
+    "LOOP-B": {"type": "group", "value": ["LOOP-A", "10.60.0.0/16"]},
+    # the other notations
+    "CP-INTERNET": {"type": "range", "value": "0.0.0.0-255.255.255.255"},
+    "CP-BRANCHES": {"type": "range", "value": "10.20.0.0-10.20.255.255"},
+    "ASA-ANY": {"type": "network", "value": "0.0.0.0 0.0.0.0"},
+    "ASA-ANY-ACL": {"type": "network", "value": "0.0.0.0 255.255.255.255"},
+    "ASA-TEN-WILDCARD": {"type": "network", "value": "10.0.0.0 0.255.255.255"},
+    "ASA-TEN-NETMASK": {"type": "network", "value": "10.0.0.0 255.0.0.0"},
+    "MASKED-NET": {"type": "network", "value": "10.80.0.0", "netmask": "255.255.0.0"},
+    "PREFIXED-NET": {"type": "network", "value": "10.90.0.0", "prefixlen": 16},
+    # a group where one member is a name nothing defines and one is a typo
+    "BAD-GROUP": {"type": "group", "value": ["MISSING-OBJ", "10.0.0.0/33"]},
+}
+# A chain deeper than the ceiling, so the bound is asserted rather than assumed.
+DEEP = {**NESTED,
+        **{f"G{i}": {"type": "group", "value": [f"G{i + 1}"]}
+           for i in range(MAX_OBJECT_DEPTH + 4)},
+        f"G{MAX_OBJECT_DEPTH + 4}": {"type": "network", "value": "10.70.0.0/16"}}
 
 
 def _one(export):
@@ -146,14 +195,35 @@ def test_a_missing_optional_section_is_an_empty_export_not_a_crash():
 
 # --- 2. the garbage CIDR: the silent case, which is the dangerous one --------
 
-@pytest.mark.parametrize("token", ["10.0.0.0/33", "999.999.999.999/8", "300.1.1.1/24"])
+@pytest.mark.parametrize("token", ["10.0.0.0/33", "999.999.999.999/8", "300.1.1.1/24",
+                                   "10.0.0.0-9.0.0.0", "10.0.0.0 0.255.0.255"])
 def test_a_garbage_cidr_is_recorded_as_malformed_not_reclassified(token):
     """It must not quietly become a single-host asset with E=0.1.
 
-    Three things have to be true at once: the address space is EMPTY (not a
+    Four things have to be true at once: the address space is EMPTY (not a
     fabricated /32), the node is abstract so it can never act as an attack-path
-    pivot, and the defect is written to the `resolved` audit trail where the
-    Ingest Inspector renders it. Empty-and-flagged is honest; a host is a lie.
+    pivot, the defect is written to the `resolved` audit trail where the Ingest
+    Inspector renders it, and -- THE ASSERTION THIS TEST WAS MISSING -- the
+    resulting SCORE is not the score of a single host.
+
+    WHY THE SCORE ASSERTION IS THE POINT (audit-2 H4 / quick win 8)
+    ---------------------------------------------------------------
+    This test opened with the sentence above and then asserted only
+    `source_cidrs == []` -- which is PRECISELY the input that yields E=0.1. It
+    passed for a whole remediation round while the failure it names was live,
+    and that is worse than having no test: it bought false confidence. The
+    measured consequence, all five analyzers, `allow BAD-OBJ -> db-prod-01
+    tcp/22` with the database tagged pci+prod: E=0.1 cleared neither
+    `sensitive_dest_min_E` (0.3) nor `broad_source_E` (0.5), so SSH FROM A
+    MALFORMED BROAD OBJECT TO A PCI DATABASE PRODUCED NO FINDING OF ANY TYPE.
+    Bad input lowered the reported risk, which is the worst failure direction
+    available to a security tool.
+
+    The engine already held the fact it needed -- `object_is_abstract` fails
+    CLOSED on this identical warning, and says so in its own docstring -- while
+    `exposure_score` failed OPEN on it. `PolicyRecord.source_unresolved` is the
+    fact carried where the scorer can read it, and the floor is what makes the
+    two halves agree.
     """
     res, record = _one(_algosec([_rule(src=token)]))
     assert record.source == token          # the operator still sees what they wrote
@@ -165,7 +235,56 @@ def test_a_garbage_cidr_is_recorded_as_malformed_not_reclassified(token):
     assert audit, "the malformed token left no audit row"
     assert audit[0].object_kind == "address"
     assert list(audit[0].resolved["fields"]) == ["src"]
-    assert token in audit[0].resolved["fields"]["src"][0]
+    assert token.strip() in audit[0].resolved["fields"]["src"][0]
+
+    # The claim the docstring has always made, now asserted.
+    assert record.source_unresolved is True
+    e = exposure_score(record.source, record.source_kind, record.source_cidrs,
+                       source_unresolved=record.source_unresolved)
+    assert e > E_IDENTITY, "a malformed BROAD object is still scored as one host"
+    # ...and high enough that the rule is still REPORTED. A floor that does not
+    # clear the narrowest guardrail threshold changes a number nobody sees.
+    assert e >= OVERPERMISSIVE_CONFIG["sensitive_dest_min_E"]
+
+
+def test_an_object_that_names_no_address_is_not_marked_unresolved():
+    """The other half of the same distinction, and the reason it is a flag.
+
+    A user group genuinely denotes no address space, and E_IDENTITY is the RIGHT
+    answer for it -- a label is not exposure. If `source_unresolved` were simply
+    "source_cidrs is empty" the floor would fire on every identity-based rule in
+    a Guardicore estate and the number would stop meaning anything.
+    """
+    _res, record = _one(_algosec([_rule(src="ops-team")], objects=CATALOG))
+    assert record.source_cidrs == []
+    assert record.source_unresolved is False
+    _res, record = _one(_algosec([_rule(src="not-in-the-catalog")], objects=CATALOG))
+    assert record.source_unresolved is False
+    assert exposure_score(record.source, record.source_kind, record.source_cidrs,
+                          source_unresolved=record.source_unresolved) == E_IDENTITY
+
+
+def test_an_unresolvable_catalog_object_is_unresolved_at_the_record():
+    """One level down: the typo is in the object, not in the rule's own token."""
+    _res, record = _one(_algosec([_rule(src="typo-net")], objects=CATALOG))
+    assert record.source_cidrs == []
+    assert record.source_unresolved is True
+
+
+def test_a_group_that_only_partly_resolves_is_still_flagged():
+    """The floor is a LOWER BOUND, not a replacement.
+
+    `BAD-GROUP` names one object nothing defines and one typo'd CIDR; `LOOP-A`
+    resolves one real block and hits a cycle. In both cases part of the claimed
+    address space is missing, so the resolved maximum may be an UNDER-estimate
+    of what the rule grants -- which is exactly when a floor has to apply.
+    """
+    _res, record = _one(_algosec([_rule(src="BAD-GROUP")], objects=NESTED))
+    assert record.source_cidrs == []
+    assert record.source_unresolved is True
+    _res, record = _one(_algosec([_rule(src="LOOP-A")], objects=NESTED))
+    assert record.source_cidrs == ["10.60.0.0/16"]   # what did resolve is kept
+    assert record.source_unresolved is True          # ...and the loss is recorded
 
 
 def test_one_rule_with_two_bad_tokens_writes_exactly_one_audit_row():
@@ -249,6 +368,198 @@ def test_every_spelling_of_the_internet_resolves_to_one_address_space(token):
     """The audit's headline: three of these four produced NO finding at all."""
     _res, record = _one(_algosec([_rule(src=token, dst="db-prod-01")], objects=CATALOG))
     assert record.source_cidrs == ["0.0.0.0/0"]
+
+
+# ...and the spellings ROUND TWO found, one layer below the ones above. Every
+# row here is the same grant -- the whole internet -- written the way a real
+# Check Point / ASA / Panorama export writes it, and every one of them resolved
+# to `[]` and produced zero findings while the row above it was 100/critical.
+SAME_GRANT_ONE_LAYER_DOWN = [
+    ("nested group of groups", "NESTED-ANY"),
+    ("Check Point range object", "CP-INTERNET"),
+    ("Check Point range, written inline", "0.0.0.0-255.255.255.255"),
+    ("ASA object-group netmask form", "ASA-ANY"),
+    ("ASA ACL wildcard form", "ASA-ANY-ACL"),
+    ("ASA address + mask, written inline", "0.0.0.0 0.0.0.0"),
+]
+
+
+@pytest.mark.parametrize("label,token", SAME_GRANT_ONE_LAYER_DOWN,
+                         ids=[c[0] for c in SAME_GRANT_ONE_LAYER_DOWN])
+def test_the_internet_one_layer_down_resolves_to_the_same_address_space(label, token):
+    """audit-2 B8: the previous fix was narrowed to the shape the probe used.
+
+    `exposure_score` is asserted alongside `source_cidrs` deliberately. The
+    resolved list is the normalizer's output, but the number a client sees is
+    E -- and Theme 8 of the audit is that this suite tests functions rather than
+    paths. Both halves, or the equivalence is only half proven.
+    """
+    _res, record = _one(_algosec([_rule(src=token, dst="db-prod-01",
+                                        service="tcp/3389")], objects=NESTED))
+    assert record.source_cidrs == ["0.0.0.0/0"], label
+    assert record.source_unresolved is False
+    assert exposure_score(record.source, record.source_kind, record.source_cidrs) == \
+        exposure_score("0.0.0.0/0", "cidr", ["0.0.0.0/0"])
+
+
+def test_a_group_of_groups_resolves_every_block_its_members_name():
+    """The shape the audit executed, with a partner range beside the internet.
+
+    `EXTERNAL-SOURCES` names two GROUPS; one of them names two network objects
+    and the other is the internet. Three levels, and nothing in the export is an
+    address until the leaves.
+    """
+    _res, record = _one(_algosec(
+        [_rule(src="EXTERNAL-SOURCES", dst="db-prod-01", service="tcp/3389")],
+        objects=NESTED))
+    assert record.source_cidrs == ["0.0.0.0/0", "198.51.100.0/24", "203.0.113.0/24"]
+    assert record.source_unresolved is False
+    # The whole point: a group that CONTAINS the internet is internet exposure.
+    assert exposure_score(record.source, record.source_kind, record.source_cidrs) == 1.0
+
+
+def test_the_catalog_audit_row_shows_the_nested_resolution_too():
+    """The Ingest Inspector renders these rows; a group of groups used to render
+    as a list of "unresolvable object value '<member name>'" warnings, which
+    reads as a broken catalog rather than a normal one."""
+    res = algosec.normalize(_algosec(
+        [_rule(src="EXTERNAL-SOURCES", dst="db-prod-01")], objects=NESTED))
+    row = next(r for r in res.resolved if r.object_name == "EXTERNAL-SOURCES")
+    # Dereference order, which is the CATALOG's own member order and therefore
+    # deterministic for a given export -- this row exists to show an operator the
+    # walk their catalog describes, so it is not re-sorted. (The RECORD's
+    # `source_cidrs` is sorted and canonical; `PolicyRecord`'s validator owns
+    # that, and `test_resolved_cidrs_are_canonical_and_sorted...` pins it.)
+    assert row.resolved["cidrs"] == ["203.0.113.0/24", "198.51.100.0/24", "0.0.0.0/0"]
+    assert "warnings" not in row.resolved
+    assert row.resolved["abstract"] is True
+
+
+NOTATION_CASES = [
+    ("Check Point range object", "CP-BRANCHES", ["10.20.0.0/16"]),
+    ("ASA wildcard mask", "ASA-TEN-WILDCARD", ["10.0.0.0/8"]),
+    ("ASA netmask", "ASA-TEN-NETMASK", ["10.0.0.0/8"]),
+    ("separate netmask column", "MASKED-NET", ["10.80.0.0/16"]),
+    ("separate prefix-length column", "PREFIXED-NET", ["10.90.0.0/16"]),
+]
+
+
+@pytest.mark.parametrize("label,token,expected", NOTATION_CASES,
+                         ids=[c[0] for c in NOTATION_CASES])
+def test_the_other_notations_a_real_catalog_uses(label, token, expected):
+    """Each of these resolved to nothing, so each scored as a single host.
+
+    The two ASA conventions are bit-complements of each other and BOTH appear in
+    one file, so `10.0.0.0 255.0.0.0` and `10.0.0.0 0.255.255.255` must name the
+    same /8 -- asserted together because a decoder that reads only one of them
+    silently halves a customer's rulebase.
+    """
+    _res, record = _one(_algosec([_rule(src=token)], objects=NESTED))
+    assert record.source_cidrs == expected, label
+    assert record.source_unresolved is False
+
+
+def test_a_mask_column_that_cannot_be_applied_is_reported_not_ignored():
+    """A separate mask column exists to WIDEN an address; ignoring a broken one
+    turns a declared network into a /32 host, which is the same "bad input
+    lowers the reported risk" failure arriving through a different column. What
+    can be read is kept; the loss is carried out as a warning and as
+    `source_unresolved`."""
+    catalog = {"BROKEN-MASK": {"type": "network", "value": "10.0.0.0",
+                               "netmask": "not-a-mask"}}
+    res, record = _one(_algosec([_rule(src="BROKEN-MASK")], objects=catalog))
+    assert record.source_cidrs == ["10.0.0.0/32"]     # what the address alone says
+    assert record.source_unresolved is True           # ...and that it is not the whole story
+    row = next(r for r in res.resolved if r.object_name == "BROKEN-MASK")
+    assert row.resolved["warnings"] == [
+        "unusable mask 'not-a-mask' on object value '10.0.0.0'"]
+
+
+def test_a_redundant_mask_beside_a_full_cidr_is_not_a_defect():
+    """`{"value": "10.0.0.0/8", "netmask": "255.0.0.0"}` says one thing twice."""
+    catalog = {"BOTH": {"type": "network", "value": "10.0.0.0/8", "netmask": "255.0.0.0"}}
+    _res, record = _one(_algosec([_rule(src="BOTH")], objects=catalog))
+    assert record.source_cidrs == ["10.0.0.0/8"]
+    assert record.source_unresolved is False
+
+
+def test_a_catalog_cycle_is_reported_rather_than_recursed():
+    """A catalog is customer data and customer data contains loops.
+
+    Terminating is the minimum; REPORTING is the requirement -- a cycle means
+    part of the claimed address space was never resolved, and silently returning
+    the part that did resolve is the same under-report as everything else here.
+    """
+    res, record = _one(_algosec([_rule(src="LOOP-A")], objects=NESTED))
+    assert record.source_cidrs == ["10.60.0.0/16"]
+    row = next(r for r in res.resolved if r.object_name == "LOOP-A")
+    assert row.resolved["warnings"] == ["object group cycle at 'LOOP-A'"]
+    assert record.source_unresolved is True
+
+
+def test_nesting_deeper_than_the_ceiling_stops_and_says_so():
+    """The bound exists so one pathological export cannot burn the request.
+
+    Asserted rather than assumed, and asserted as a WARNING: a silent depth cap
+    would be a resolution that quietly returns less address space than the
+    catalog names, which is the defect class this whole file is about.
+    """
+    res, record = _one(_algosec([_rule(src="G0")], objects=DEEP))
+    assert record.source_cidrs == []
+    assert record.source_unresolved is True
+    row = next(r for r in res.resolved if r.object_name == "G0")
+    assert row.resolved["warnings"] == [
+        f"object nesting deeper than {MAX_OBJECT_DEPTH} at 'G{MAX_OBJECT_DEPTH + 1}'"]
+
+
+def test_nested_resolution_does_not_depend_on_catalog_key_order():
+    """The resolved list is persisted and fingerprinted; a recursive walk that
+    reads a dict in insertion order is exactly where that guarantee would go."""
+    forward = algosec.normalize(_algosec(
+        [_rule(src="EXTERNAL-SOURCES", dst="db-prod-01")], objects=NESTED))
+    backward = algosec.normalize(_algosec(
+        [_rule(src="EXTERNAL-SOURCES", dst="db-prod-01")],
+        objects=dict(reversed(list(NESTED.items())))))
+    assert [r.model_dump() for r in forward.records] == \
+        [r.model_dump() for r in backward.records]
+    assert [r.object_name for r in forward.resolved] == \
+        [r.object_name for r in backward.resolved]
+
+
+def test_object_cidrs_without_a_catalog_is_unchanged():
+    """`guardicore` and `wiz` call it with a bare value and no catalog.
+
+    Their contract is the one this function had before nesting existed, and
+    widening a shared helper is exactly how a fix reaches one caller and breaks
+    another. A member that is a NAME still reports unresolvable when there is no
+    catalog to resolve it against -- which is the honest answer, not a silence.
+    """
+    assert object_cidrs("10.0.0.0/8") == (["10.0.0.0/8"], [])
+    assert object_cidrs(["10.0.0.0/8", "10.1.0.0/16"]) == \
+        (["10.0.0.0/8", "10.1.0.0/16"], [])
+    assert object_cidrs(None) == ([], [])
+    assert object_cidrs("10.0.0.0/33") == ([], ["unresolvable object value '10.0.0.0/33'"])
+    assert object_cidrs(["ANY-EXTERNAL"]) == ([], ["unresolvable object value 'ANY-EXTERNAL'"])
+    assert object_cidrs(["ANY-EXTERNAL"], objects=NESTED) == (["0.0.0.0/0"], [])
+
+
+@pytest.mark.parametrize("row,expected", [
+    ({"value": "10.0.0.0", "netmask": "255.0.0.0"}, "255.0.0.0"),
+    ({"value": "10.0.0.0", "netMask": "255.0.0.0"}, "255.0.0.0"),
+    ({"value": "10.0.0.0", "subnet_mask": "255.0.0.0"}, "255.0.0.0"),
+    ({"value": "10.0.0.0", "prefixLength": 8}, "8"),
+    ({"value": "10.0.0.0", "wildcard": "0.255.255.255"}, "0.255.255.255"),
+    # ...and the keys that are NOT a mask, however mask-ish they look. `cidr`
+    # and `prefix` are how some exports spell the VALUE; reading one as a mask
+    # would be the same category error in reverse.
+    ({"value": "10.0.0.0", "cidr": "10.0.0.0/8"}, None),
+    ({"value": "10.0.0.0", "prefix": "10.0.0.0/8"}, None),
+    ({"value": "10.0.0.0", "netmask": ""}, None),
+    ({"value": "10.0.0.0"}, None),
+    ("not a mapping", None),
+])
+def test_only_a_real_mask_column_counts_as_a_mask(row, expected):
+    assert object_netmask(row) == expected
 
 
 def test_the_same_policy_written_two_ways_carries_the_same_address_space():
@@ -433,6 +744,135 @@ def test_guardicore_labels_resolve_to_nothing_unless_they_carry_a_subnet():
     record = res.records[0]
     assert record.source_cidrs == []
     assert record.dest_cidrs == ["10.60.0.0/16"]
+
+
+def test_separate_port_and_protocol_columns_are_read_when_there_is_no_service():
+    """Panorama CSV and FortiManager write the service in two columns, not one.
+
+    AlgoSec's adapter read only `service`, so such a rule decoded to a bare
+    `tcp` with no port -- P_UNKNOWN (0.5) -- and produced no finding. It was
+    also the only shape in the audit's table that was silent on BOTH channels:
+    no finding AND no warning.
+    """
+    _res, record = _one(_algosec([{"rule_id": "R1", "src": "ANY-EXTERNAL",
+                                   "dst": "db-prod-01", "port": 3389,
+                                   "protocol": "tcp", "action": "allow"}],
+                                 objects=CATALOG))
+    assert (record.protocol, record.port, record.service) == ("tcp", 3389, "tcp/3389")
+
+
+def test_the_service_column_still_wins_when_a_rule_has_both():
+    """Filling in the rules that had nothing must not re-decode the ones that
+    did: `service` is the more specific column and stays authoritative."""
+    _res, record = _one(_algosec([_rule(service="tcp/443", port=3389, protocol="udp")]))
+    assert (record.protocol, record.port, record.service) == ("tcp", 443, "tcp/443")
+
+
+def test_a_rule_with_no_service_at_all_is_audited_instead_of_scored_silently():
+    """The absence is a FACT, and `service_audit` is where facts about a decode
+    go. Nothing about the score changes -- there is nothing else to score -- but
+    "the export said nothing" stops being indistinguishable from "the export
+    said tcp"."""
+    res, record = _one(_algosec([{"rule_id": "R1", "src": "10.0.0.0/8",
+                                  "dst": "10.20.0.0/16", "action": "allow"}]))
+    assert record.port is None
+    row = next(r for r in res.resolved
+               if r.object_name == "rule:R1" and r.object_kind == "service")
+    assert row.resolved["warnings"] == ["no service, port or protocol specified"]
+
+
+# --- 5b. rule STATE the canonical model does not carry ----------------------
+# No normalizer read `disabled`/`enabled` or any negation flag and nothing
+# refused them either, so both were dropped in silence -- and the two failures
+# that produced are in OPPOSITE directions, which is why one guard covers both:
+#
+#   a DISABLED broad allow was measured at 100/critical/forced, plus a
+#   fabricated "dead deny: blocked traffic is actually allowed" shadowing
+#   finding underneath it. The rule grants nothing at all.
+#
+#   a NEGATED source was read as its own complement: `allow NOT 10.0.0.0/8 ->
+#   db-prod-01 tcp/3389` -- which IS the internet -- reported at 85 as "RDP open
+#   from INTERNAL". The one thing this product exists to find, inverted.
+#
+# Honouring the semantics needs model fields this phase does not have
+# (REQUIREMENTS FUT-P3-2 / FUT-P3-4). Until then the contract `NormalizeError`
+# states applies: it may refuse, but it is never allowed to "normalize something
+# else and say nothing".
+RULE_STATE_REFUSALS = [
+    ("disabled: true", _rule(disabled=True), ("algosec", "R1", "disabled", "grants nothing")),
+    ("disabled: 'yes'", _rule(disabled="yes"), ("algosec", "R1", "disabled")),
+    ("is_disabled: 1", _rule(is_disabled=1), ("algosec", "R1", "is_disabled")),
+    ("inactive: true", _rule(inactive=True), ("algosec", "R1", "inactive")),
+    ("enabled: false", _rule(enabled=False), ("algosec", "R1", "enabled", "grants nothing")),
+    ("enabled: 'no'", _rule(enabled="no"), ("algosec", "R1", "enabled")),
+    ("active: 0", _rule(active=0), ("algosec", "R1", "active")),
+    ("src_negate", _rule(src_negate=True), ("algosec", "R1", "src_negate", "COMPLEMENT")),
+    ("negate-destination", _rule(**{"negate-destination": True}),
+     ("algosec", "R1", "negate-destination")),
+    # A negation flag is refused whatever its value: `src_negate: false` is an
+    # export that MODELS negation, and the next row in the same file will use it.
+    ("srcNegate: false", _rule(srcNegate=False), ("algosec", "R1", "srcNegate")),
+    # ...and the inline spelling of the same thing, in the token itself.
+    ("src: '!10.0.0.0/8'", _rule(src="!10.0.0.0/8"),
+     ("algosec", "R1", "src", "negated")),
+]
+
+
+@pytest.mark.parametrize("label,rule,expected", RULE_STATE_REFUSALS,
+                         ids=[c[0] for c in RULE_STATE_REFUSALS])
+def test_unmodelled_rule_state_fails_loudly_and_names_the_rule(label, rule, expected):
+    with pytest.raises(NormalizeError) as excinfo:
+        algosec.normalize(_algosec([rule]))
+    message = str(excinfo.value)
+    for fragment in expected:
+        assert fragment in message, f"{label}: {fragment!r} missing from {message!r}"
+
+
+ACCEPTED_RULE_STATE = [
+    ("disabled: false", _rule(disabled=False)),      # present and negative: the rule IS live
+    ("enabled: true", _rule(enabled=True)),
+    ("enabled absent", _rule()),                     # every fixture in the repo
+    ("a field merely containing 'enable'", _rule(enablement_note="x")),
+]
+
+
+@pytest.mark.parametrize("label,rule", ACCEPTED_RULE_STATE,
+                         ids=[c[0] for c in ACCEPTED_RULE_STATE])
+def test_a_rule_that_is_actually_live_is_still_normalized(label, rule):
+    """The guard must refuse UNMODELLED state, not every export that mentions it.
+
+    An ABSENT `enabled` means the export does not model enablement at all, which
+    is every fixture in this repository; refusing those would refuse every source
+    we support today. Only an explicit negative -- or any negation key at all --
+    is state we cannot honestly interpret.
+    """
+    _res, record = _one(_algosec([rule]))
+    assert record.action == "allow"
+
+
+def test_the_refusal_names_the_rule_even_without_a_rule_id():
+    """`require_rule` runs BEFORE the id is extracted, so the label has to be
+    found in the row itself -- otherwise the operator gets an index into a
+    40,000-row file and nothing else."""
+    with pytest.raises(NormalizeError, match=r"rule 'GC-9'.*disabled"):
+        guardicore.normalize({"labels": {}, "policies": [
+            {"policy_id": "GC-9", "src_label": "a", "dst_label": "b",
+             "port": 443, "protocol": "tcp", "action": "allow", "disabled": True}]})
+    with pytest.raises(NormalizeError, match=r"rule #1.*negat"):
+        algosec.normalize(_algosec([{"src": "10.0.0.0/8", "dst": "10.1.0.0/16",
+                                     "service": "any", "action": "allow",
+                                     "negate_src": True}]))
+
+
+def test_the_declarative_profile_refuses_the_same_state():
+    """`apply_profile` is the path a CUSTOMER export takes, so it is the one that
+    most needs the guard -- and it shares `require_rule` precisely so the rule
+    cannot hold for the coded normalizers and not for the authored ones."""
+    profile = SourceProfile(tool="acme-fw", rules_path="rules",
+                            fields=FieldMap(src="s", dst="d"))
+    with pytest.raises(NormalizeError, match=r"acme-fw.*'ACME-7'.*disabled"):
+        apply_profile({"rules": [{"id": "ACME-7", "s": "0.0.0.0/0", "d": "db",
+                                  "disabled": True}]}, profile)
 
 
 # --- 6. the action vocabulary ------------------------------------------------

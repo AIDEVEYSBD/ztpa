@@ -45,6 +45,29 @@ SERVICE_CASES = [
     # It used to score P=0.5 "unknown" off the range START; the range is now
     # carried whole so the scorer can see it is every port there is.
     ("tcp/1-65535", "tcp", 1, 65535, None, "tcp/1-65535", None, ()),
+    # --- <proto>/<wildcard>: the WIDEST GRANT EXPRESSIBLE, and it was invisible
+    # `tcp/any` is the standard Palo Alto / Check Point / AlgoSec spelling for
+    # "TCP, every port". The codebase built ONE wildcard vocabulary
+    # (`netaddr.is_any`) and applied it to the whole-service token, to src/dst
+    # tokens and to the protocol aliases -- but never inside the port half, so
+    # `any` fell through to `int("any")`, was rejected, and left `port=None` ->
+    # P_UNKNOWN (0.5) with an EMPTY interval set. Measured through all five
+    # analyzers: `ANY-EXTERNAL(0.0.0.0/0) -> app-01 tcp/any` produced NO FINDINGS
+    # while the byte-equivalent `tcp/1-65535` was 90/critical/forced. Narrowing a
+    # grant from "every protocol" (`all`, P=1.0, forced) to "every port of one
+    # protocol" made the engine go silent -- the wrong direction twice over.
+    ("tcp/any", "tcp", 0, 65535, None, "tcp/any", None, ()),
+    ("tcp/all", "tcp", 0, 65535, None, "tcp/all", None, ()),
+    ("tcp/*", "tcp", 0, 65535, None, "tcp/*", None, ()),
+    ("TCP/ANY", "tcp", 0, 65535, None, "TCP/ANY", None, ()),      # case-folded
+    ("udp/any", "udp", 0, 65535, None, "udp/any", None, ()),
+    # ...per COMMA ELEMENT, because the union of a wildcard with anything is the
+    # wildcard. Both orders decode to the same interval, so the position of the
+    # wildcard in the vendor's list cannot change the score.
+    ("tcp/443,any", "tcp", 0, 65535, None, "tcp/443,any", None, ()),
+    ("tcp/any,443", "tcp", 0, 65535, None, "tcp/any,443", None, ()),
+    # the numeric spelling of the same grant, for the equivalence test below
+    ("tcp/0-65535", "tcp", 0, 65535, None, "tcp/0-65535", None, ()),
     # --- comma lists: both ports used to vanish ------------------------------
     ("tcp/80,443", "tcp", 80, None, [(80, 80), (443, 443)], "tcp/80,443", "http", ()),
     ("tcp/80,8000-8100", "tcp", 80, None, [(80, 80), (8000, 8100)],
@@ -112,7 +135,15 @@ def test_clean_decodes_carry_no_warnings():
 # --- the separate port/protocol/app inputs (Guardicore, Wiz, ingest profiles) --
 KWARG_CASES = [
     # (kwargs, protocol, port, label, warning substrings)
-    (dict(), "tcp", None, "tcp", ()),
+    # NOTHING supplied. The decode is unchanged -- there is nothing else to
+    # score -- but the ABSENCE is now recorded. `port=None` scores P_UNKNOWN
+    # (0.5, mid-risk), so a rule whose service column the adapter never read
+    # used to present as a moderate rule rather than as a gap: the audit's row
+    # "no `service` field at all -> NO FINDING, and zero warnings", which is the
+    # only shape in its table that was silent on BOTH channels at once.
+    (dict(), "tcp", None, "tcp", ("no service, port or protocol specified",)),
+    (dict(app="not-a-known-app"), "tcp", None, "tcp",
+     ("no service, port or protocol specified",)),
     (dict(protocol="tcp"), "tcp", None, "tcp", ()),
     (dict(port=443, protocol="udp"), "udp", 443, "udp/443", ()),
     (dict(port=3389, protocol="TCP"), "tcp", 3389, "tcp/3389", ()),
@@ -128,6 +159,14 @@ KWARG_CASES = [
     # an App-ID with an unusable port falls back to the app's fixed transport
     (dict(app="quic", port="nope"), "udp", 443, "quic", ("unparseable port",)),
     (dict(service="tcp/443", app="not-an-app"), "tcp", 443, "tcp/443", ()),
+    # The Azure/Wiz path into the SAME defect: `"*"` is how an Azure NSG writes
+    # `destinationPortRange` for all ports, Wiz ingests Azure, and
+    # `wiz.normalize` / `guardicore.normalize` route a separate `port` field
+    # through this function. It used to warn "unparseable port '*'" and score
+    # the widest grant in the export as mid-risk.
+    (dict(port="*", protocol="tcp"), "tcp", 0, "tcp/0-65535", ()),
+    (dict(port="any"), "tcp", 0, "tcp/0-65535", ()),
+    (dict(port="all", protocol="udp"), "udp", 0, "udp/0-65535", ()),
 ]
 
 
@@ -214,6 +253,11 @@ INTERVAL_CASES = [
     ("tcp/80,8000-8100", [(80, 80), (8000, 8100)]),
     ("any", []),
     ("tcp/70000", []),
+    # An empty interval set is also why guardrail clause 2 could not fire on a
+    # wildcard port: it intersects the intervals with the admin ports, and there
+    # were none to intersect.
+    ("tcp/any", [(0, 65535)]),
+    ("tcp/443,any", [(0, 65535)]),
 ]
 
 
@@ -223,7 +267,48 @@ def test_intervals_reconciles_the_scalar_pair_with_the_list(service, expected):
     assert parse_service(service).intervals() == expected
 
 
+# --- the port wildcard and the numeric range are ONE grant -----------------
+
+WILDCARD_PORT_EQUIVALENTS = ["tcp/any", "tcp/all", "tcp/*", "TCP/ANY", "tcp/443,any"]
+
+
+@pytest.mark.parametrize("spelling", WILDCARD_PORT_EQUIVALENTS)
+def test_a_wildcard_port_scores_exactly_like_the_numeric_full_range(spelling):
+    """The audit's exit criterion, asserted where the two halves meet.
+
+    `port_score` is what the guardrail floor and the severity vector both read,
+    so "same interval set" is only half the claim -- the two spellings have to
+    produce the same P, the same class LABEL, and therefore the same finding.
+    Before this, one of them was 1.0 "any-port" and the other 0.5 "unknown /
+    ephemeral", and 0.5 clears no guardrail at all.
+    """
+    from src.analyzers.severity import port_score
+
+    wide = parse_service(spelling)
+    numeric = parse_service("tcp/0-65535")
+    assert wide.intervals() == numeric.intervals() == [(0, 65535)]
+    assert port_score(wide.protocol, wide.port, wide.port_end, wide.ports) == \
+        port_score(numeric.protocol, numeric.port, numeric.port_end, numeric.ports)
+    assert port_score(wide.protocol, wide.port, wide.port_end, wide.ports)[0] == 1.0
+
+
+def test_the_wildcard_test_cannot_swallow_an_ordinary_port():
+    """`netaddr.is_any` also matches a token that parses as a 0-PREFIX NETWORK,
+    which is why it is safe to reuse here and worth pinning that it is: a port
+    token is never a network, so `0`, `443` and `-5` must be untouched by it.
+    Widening this test is how "port 0" would silently become "every port"."""
+    assert parse_service("tcp/0").intervals() == [(0, 0)]
+    assert parse_service("tcp/443").intervals() == [(443, 443)]
+    assert parse_service("tcp/-5").intervals() == []
+    assert parse_service("tcp/0,443").intervals() == [(0, 0), (443, 443)]
+
+
 # --- the resolved value, carried instead of discarded ----------------------
+# Beyond prefix notation and the wildcard words, two notations that resolved to
+# NOTHING and therefore scored as a single host (E=0.1): the Check Point range
+# object and the Cisco ASA address+mask pair. Both are in every export the audit
+# sampled, and `0.0.0.0-255.255.255.255` / `0.0.0.0 0.0.0.0` are spellings of
+# the internet that produced zero findings.
 TOKEN_CASES = [
     ("10.20.0.0/16", ["10.20.0.0/16"]),
     ("10.20.0.1/16", ["10.20.0.0/16"]),      # canonicalized
@@ -231,8 +316,25 @@ TOKEN_CASES = [
     ("any", ["0.0.0.0/0"]), ("ANY", ["0.0.0.0/0"]), ("all", ["0.0.0.0/0"]),
     ("*", ["0.0.0.0/0"]), ("0.0.0.0/0", ["0.0.0.0/0"]),
     ("::/0", ["::/0"]),
+    # --- Check Point / AlgoSec range objects ---------------------------------
+    ("10.20.0.0-10.20.255.255", ["10.20.0.0/16"]),
+    ("0.0.0.0-255.255.255.255", ["0.0.0.0/0"]),          # the internet, spelled long
+    ("10.0.0.0-10.0.3.255", ["10.0.0.0/22"]),   # summarized, minimal, ascending
+    ("10.0.0.0-9.0.0.0", []),                            # inverted: refused, not swapped
+    ("10.0.0.0-::1", []),                                # mixed family
+    # --- Cisco ASA / IOS address + mask, BOTH conventions --------------------
+    ("10.0.0.0 255.0.0.0", ["10.0.0.0/8"]),              # netmask form
+    ("10.0.0.0 0.255.255.255", ["10.0.0.0/8"]),          # wildcard form: same block
+    ("0.0.0.0 0.0.0.0", ["0.0.0.0/0"]),                  # the ASA idiom for "any"
+    ("0.0.0.0 255.255.255.255", ["0.0.0.0/0"]),          # ...and its ACL spelling
+    ("10.0.0.5 0.0.0.0", ["10.0.0.5/32"]),               # ambiguous mask, concrete host
+    ("10.0.0.5 255.255.255.255", ["10.0.0.5/32"]),
+    ("10.0.0.0 0.255.0.255", []),                        # discontiguous: no CIDR list says it
+    # --- and none of that may turn a NAME into address space -----------------
     ("DB-SUBNETS", []),                      # a named object: the catalog resolves it
     ("finance-users", []),
+    ("ANY-EXTERNAL", []),                    # a dash, and it is not a range
+    ("web-10.0.0.1", []),                    # a dash and a dot-quad, still a name
     ("", []), (None, []),
 ]
 

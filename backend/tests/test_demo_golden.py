@@ -263,24 +263,26 @@ def test_the_standalone_script_still_exits_zero(verify, capsys):
 # joining it, then the fingerprint becoming injective -- JSON field encoding plus
 # the resolved-catalog blob). No finding, count, band or structural number below
 # moved with any of them.
-DEMO_SNAPSHOT_ID = "snap_e013ae7930ae"
+DEMO_SNAPSHOT_ID = "snap_10eac3f23a5a"
 
 # 17 before Phase 1. -1 cross_tool_path, -1 transport_exposure, +1 over_permissive,
 # +14 shadowed_rule. Every one of the four is attributed in the module docstring.
-DEMO_FINDING_COUNT = 30
+# Then +1 transport_exposure (round-2 audit quick win 3: the any-protocol filter
+# was excluding ALGO-001, a rule in the shipped fixture) -> 31.
+DEMO_FINDING_COUNT = 31
 
 DEMO_BY_TYPE = {
     "cidr_overlap": 2,          # unchanged
     "over_permissive": 5,       # 4 + ALGO-030 (resolved-CIDR exposure scoring)
     "shadowed_rule": 15,        # 1 + 14 (containment shadowing sees ALGO-001)
-    "transport_exposure": 8,    # 9 - 1 (the withheld app-server-07 merge)
+    "transport_exposure": 9,    # 9 - 1 (withheld merge) + 1 (ALGO-001, any-protocol filter dropped)
     # "cross_tool_path": 0      # 1 -> 0 (the /16 pivot is no longer a pivot)
 }
 
 DEMO_BY_BAND = {
     "critical": 3,   # 4 - 1 (the cross-tool path was the fourth)
     "high": 1,       # 0 + 1 (ALGO-030 -- the demo's first-ever high)
-    "medium": 8,     # 9 - 1 (the withheld-merge fallback pair)
+    "medium": 9,     # 9 - 1 (withheld-merge pair) + 1 (ALGO-001 transport_exposure)
     "low": 18,       # 4 + 14 (the dead-allow findings)
 }
 
@@ -315,6 +317,12 @@ DEMO_FINDINGS = [
     ("shadowed_rule", ("ALGO-001", "ALGO-072"), 10, "low", False),
     ("shadowed_rule", ("ALGO-001", "ALGO-080"), 10, "low", False),
     ("shadowed_rule", ("ALGO-001", "ALGO-082"), 10, "low", False),
+    # NEW (round-2 audit, quick win 3): transport_exposure.py filtered on
+    # `r.port is not None`, which excluded every any-protocol rule -- including
+    # ALGO-001, which ships in data/mock/algosec_export.json itself. `_opens`
+    # already handled protocol == "any", so the filter was removing the widest
+    # grant in the fixture from the analyzer whose docs claimed to cover it.
+    ("transport_exposure", ("ALGO-001",), 40, "medium", False),
     ("transport_exposure", ("ALGO-060", "ALGO-061", "ALGO-082", "WIZ-011"), 40, "medium", False),
     ("transport_exposure", ("ALGO-070", "ALGO-080"), 40, "medium", False),
     ("transport_exposure", ("ALGO-080",), 78, "critical", True),

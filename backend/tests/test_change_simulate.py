@@ -7,7 +7,7 @@ wire, so a caller that omits it used to switch all of them off and hand itself a
 clean delta -- an auto-approve hole (PROD-READINESS-AUDIT, Phase 0 workstream 1).
 
 `simulate_change` now re-derives the tags from the asset layer before anything is
-built or scored. These tests pin three things:
+built or scored. These tests pin four things:
 
 1. **The security property.** The same change scores identically and gets the
    same gate ruling whether the caller sends the right tags or none at all.
@@ -16,6 +16,15 @@ built or scored. These tests pin three things:
 3. **Side-effect freedom.** A simulation is a question, not a mutation: the
    engine's own records/assets/alias_map and the caller's proposed record all
    come back untouched, so simulating twice cannot drift.
+4. **The gate's idea of "the internet" is the graph's, not a string** (audit B1).
+   `_internet_sensitive_paths` used to enumerate from the literal node
+   `0.0.0.0/0`, so an estate whose existing internet ingress is spelled `any` or
+   as a named object had NO internet paths on either side of the delta and a
+   proposed internal rule completing a chain to a PCI database came back
+   `forced_escalate=False`. `advisory.classify_change` short-circuits to escalate
+   on that flag BEFORE any model call, so False handed the decision to the LLM
+   under a delta that read "no new internet paths" -- the gate disarmed by the
+   spelling of a rule the operator did not even write.
 """
 
 from __future__ import annotations
@@ -30,10 +39,19 @@ from src.advisory import classify_change, intake
 from src.analyzers.over_permissive import _reasons as _overpermissive_reasons
 from src.analyzers.run_all import run
 from src.analyzers.severity import exposure_score, port_score, score_over_permissive
-from src.change.simulate import resolve_dest_tags, simulate_change
+from src.change.simulate import _internet_sensitive_paths, resolve_dest_tags, simulate_change
 from src.config import SENSITIVE_TAGS
+from src.graph.build import build_graph
+from src.identity import resolve_identities
 from src.models import ChangeRequest, PolicyRecord
-from src.normalizers.common import parse_service, record_from_service
+from src.normalizers import algosec, guardicore
+from src.normalizers.common import NormalizeResult, parse_service, record_from_service
+
+# The same four spellings `test_analyzers.py` scores through `over_permissive`
+# and `test_reachability.py` traces through `path_trace`, imported rather than
+# restated so the three exit criteria cannot drift apart about what "the four
+# encodings" are.
+from tests.test_analyzers import FOUR_ENCODINGS
 
 # The audit's exploitable window (audit line ~1302): a general-app port keeps P
 # low enough that the "admin/data port open to a broad source range" predicate
@@ -351,3 +369,114 @@ def test_intake_carries_the_full_decoded_service(eng, sensitive_asset, monkeypat
                               svc=parse_service("quic"), order=1)
     assert (rec.l7_app, rec.l7_source, rec.protocol) == ("quic", "declared", "udp")
     assert rec.source_kind == "cidr" and rec.destination_kind == "identity"
+
+
+# --------------------------------------------------------------------------
+# The gate's internet is the graph's internet (audit B1 -- workstream A1)
+# --------------------------------------------------------------------------
+#
+# The estate holds ONE rule, the internet ingress, spelled four different ways:
+#
+#   AlgoSec: <entry> -> app-server-07 tcp/443
+#
+# The operator then proposes a purely INTERNAL rule:
+#
+#   app-server-07 -> db-prod-01 tcp/5432        (db-prod-01 is `pci`)
+#
+# which completes an internet -> crown-jewel chain. Nothing about the PROPOSAL
+# says "internet" -- its own source is an internal host, so the gate's other arm
+# (`is_internet_source(proposed.source, ...)`) cannot see it either. The only
+# thing that can is the path delta, and the path delta used to start at a string.
+
+
+def _ingress_estate(token: str, objects: dict):
+    """One AlgoSec rule, `token -> app-server-07 tcp/443`, through the real
+    normalizers plus the Guardicore label catalog that gives db-prod-01 its
+    identity. No hand-built assets: an `ip_set` supplied by a fixture is the very
+    fact the pipeline was losing."""
+    algo = {
+        "device": "afa-edge-fw-01",
+        "objects": {**objects,
+                    "app-server-07": {"type": "host", "value": "10.30.7.7", "tags": ["prod"]},
+                    "db-prod-01": {"type": "host", "value": "10.50.0.10", "tags": ["pci"]}},
+        "rules": [{"rule_id": "R1", "order": 1, "src": token, "dst": "app-server-07",
+                   "service": "tcp/443", "action": "allow"}],
+    }
+    gc = {"labels": {"app-server-07": {"role": "app", "env": "prod", "tags": ["prod"],
+                                       "cidr": "10.30.7.7/32"},
+                     "db-prod-01": {"role": "db", "env": "prod", "tags": ["pci"],
+                                    "cidr": "10.50.0.10/32"}},
+          "policies": []}
+    res = NormalizeResult()
+    res.extend(algosec.normalize(algo))
+    res.extend(guardicore.normalize(gc))
+    ident = resolve_identities(res.entities)
+    return res, ident
+
+
+def _completing_rule() -> PolicyRecord:
+    """The proposal: internal source, internal service, regulated destination.
+    Deliberately carries NO dest_tags -- `resolve_dest_tags` supplies them, and
+    the gate must not need the caller's help to see the exposure."""
+    return PolicyRecord(
+        id="CR-INT-rule", source_tool="guardicore", raw_ref="CR-INT",
+        source="app-server-07", source_kind="identity",
+        destination="db-prod-01", destination_kind="identity", dest_tags=[],
+        service="tcp/5432", port=5432, protocol="tcp", action="allow", order=999,
+    )
+
+
+@pytest.mark.parametrize("name,token,objects", FOUR_ENCODINGS, ids=[e[0] for e in FOUR_ENCODINGS])
+def test_the_four_encodings_give_one_forced_escalate(name, token, objects):
+    """The A1 exit criterion for the gate. Measured before the fix:
+
+        entry='0.0.0.0/0'    forced_escalate=True
+        entry='any'          forced_escalate=False, reasons=[], new_exposed=[]
+        entry='ANY-EXTERNAL' forced_escalate=False, reasons=[], new_exposed=[]
+
+    Everything the delta says about the exposure -- the flag, the reason string
+    and the newly-exposed asset list -- must now be identical for all four.
+    """
+    res, ident = _ingress_estate(token, objects)
+    delta = simulate_change(res.records, ident.assets, ident.alias_map, _completing_rule())
+
+    assert delta["forced_escalate"] is True, name
+    assert delta["forced_reasons"] == [
+        "opens 1 new internet path(s) reaching sensitive asset(s): db-prod-01"], name
+    assert delta["new_exposed_assets"] == ["db-prod-01"], name
+    assert [p["terminal"] for p in delta["new_paths"]] == ["db-prod-01"], name
+    assert delta["boundaries_crossed"] == ["internet->internal"], name
+
+
+def test_the_gate_does_not_escalate_when_there_is_no_internet_ingress():
+    """The control that gives the four cases above their meaning.
+
+    Identical proposal, identical destination, identical tags -- but the estate's
+    one rule now comes from an INTERNAL /16, so no internet path exists to be
+    completed and the flag must be False. Without this, an always-escalate gate
+    would satisfy every assertion above and the test would prove nothing.
+    """
+    res, ident = _ingress_estate("10.20.0.0/16", {})
+    delta = simulate_change(res.records, ident.assets, ident.alias_map, _completing_rule())
+
+    assert delta["forced_escalate"] is False
+    assert delta["forced_reasons"] == []
+    assert delta["new_exposed_assets"] == []
+
+
+@pytest.mark.parametrize("name,token,objects", FOUR_ENCODINGS, ids=[e[0] for e in FOUR_ENCODINGS])
+def test_the_path_map_the_gate_diffs_finds_every_spelling(name, token, objects):
+    """One level below the flag: the map itself, before and after the rule.
+
+    Asserted separately because a delta can be right for the wrong reason (both
+    sides empty is also "no new paths"), and an empty map on BOTH sides is
+    precisely what the string lookup produced.
+    """
+    res, ident = _ingress_estate(token, objects)
+    node = ident.alias_map.get(token, token)
+    before = _internet_sensitive_paths(build_graph(res.records, ident.assets, ident.alias_map))
+    after = _internet_sensitive_paths(
+        build_graph(res.records + [_completing_rule()], ident.assets, ident.alias_map))
+
+    assert before == {}, name          # the ingress alone reaches nothing regulated
+    assert list(after) == [(node, "app-server-07", "db-prod-01")], name

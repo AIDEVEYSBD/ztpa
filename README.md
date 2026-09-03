@@ -1,6 +1,6 @@
 # Network Policy Reviewer
 
-One unified, cross-tool view of network-policy risk — assembled from **AlgoSec**, **Guardicore**, and **Wiz**, then **explained**, **prioritized**, and **gated** by a local-first AI advisory layer. It surfaces the attack path that crosses all three tools and that no single console can show.
+One unified, cross-tool view of network-policy risk — assembled from **AlgoSec**, **Guardicore**, and **Wiz**, then **explained**, **prioritized**, and **gated** by a local-first AI advisory layer. It surfaces attack paths that cross all three tools and that no single console can show — **within a stated scope**, set out under *What it does* below and in full in [docs/ENGINE.md §10](docs/ENGINE.md).
 
 > **The one rule that governs the whole codebase:** the deterministic engine owns all **facts and math** (normalization, entity resolution, CIDR/subnet math, reachability, shadowing, effective policy, the delta of a proposed change). The AI/agent owns only **language and judgment** (explaining, ranking, classifying, drafting). **The model never computes reachability or subnet math — it calls deterministic tools and reasons over their structured results.**
 
@@ -9,9 +9,36 @@ One unified, cross-tool view of network-policy risk — assembled from **AlgoSec
 ## What it does
 
 - **Consolidates** three tools into one canonical policy model + one reachability graph (the defensible IP).
-- **Resolves identities** deterministically — IP is an attribute, not a key — so `appsrv-07` (Wiz) and `app-server-07` (AlgoSec/Guardicore) become one asset. *That merge is what makes the cross-tool path connect.*
+- **Resolves identities** deterministically — IP is an attribute, not a key — so `appsrv-07` (Wiz) and `app-server-07` (AlgoSec/Guardicore) become one asset. *That merge is what lets a cross-tool path connect at all.* ⚠️ On the bundled fixture the engine **withholds** exactly that merge: none of the three exports declares a VPC / account / VRF, so `10.30.7.7` is an unscoped IP collision and it files a `manual_review` row rather than fusing two hosts on an ambiguous address. Refusing is the right answer — see [ENGINE.md §2](docs/ENGINE.md) — and it is a *second*, independent reason the demo shows no cross-tool path.
 - **Finds risk deterministically**: over-permissive rules, CIDR overlap/redundancy, rule shadowing, and **cross-tool reachability paths** — each with an exact severity vector and a guardrail floor.
-- **The money shot:** `Internet → lb-public-01 → app-server-07 → internal-app → db-prod-01` — a path across **3 tools** into PCI/customer data, force-flagged critical.
+- **The shape of the headline finding:** `Internet → lb-public-01 → app-server-07 → internal-app → db-prod-01` — a path across **3 tools** into PCI/customer data, force-flagged critical. ⚠️ **That chain does not currently render on the bundled fixture** — the engine reports zero `cross_tool_path` findings there, deliberately, and the first bullet of the scope note below says why.
+
+> **What the cross-tool path claim does — and does not — cover.** A differentiator is worth
+> exactly what its scope is, so the scope is here rather than three documents away. The full
+> list of engine simplifications is [ENGINE.md §10](docs/ENGINE.md).
+>
+> - **A chain that pivots *through* a subnet or group object is not reported — and on the
+>   bundled demo that is every chain there is.** An abstract node may start or end a path but
+>   never sit in the middle: reaching hosts inside a range does not let you originate as that
+>   range, and CIDR-membership expansion — which would put the concrete hosts inside the range
+>   in as the real pivots — is not built (ENGINE.md §10.2, Phase-3 scope). The seeded 3-tool
+>   chain pivots through `internal-app`, an AlgoSec network object `10.40.0.0/16`, so the
+>   engine declines it and reports **0** cross-tool paths. `scripts/verify_engine.py` asserts
+>   that state on purpose (`P5`); `DEMO.md` §2 says what to present instead. Refusing to route
+>   an attack path through an address range is the correct behaviour — it is *also* the reason
+>   the flagship number is currently zero, and both halves belong in the same sentence.
+> - **However the export spells the internet.** The search starts from *every* node the graph
+>   classifies as internet — `0.0.0.0/0`, `any`, `ANY-EXTERNAL`, a named group that
+>   dereferences to public space — because the entry set is derived from **resolved address
+>   space** (`reachability.internet_entries`), not looked up by string. Four spellings of one
+>   policy produce one finding, and the change gate reads the same definition.
+> - **Deny rules do not subtract.** Effective policy is the union of allow edges; a
+>   non-shadowed deny that ought to cut a path is invisible to reachability (§10.1).
+> - **It does not yet hold at the size on the box.** On a realistic 5,000-rule multi-tool
+>   export — the scale this product is sold on — path tracing took **~21 minutes**,
+>   synchronously on the request path. The measured table and the shape that produced it are
+>   in ENGINE.md §10; the bundled 27-rule demo and the generated scale fixture are both far
+>   below the cliff, so a green `verify_engine.py` is not evidence about scale.
 
 ### The AI / agentic layer (local-first on Ollama)
 

@@ -38,6 +38,20 @@ the *spelling* of a rule rather than from what the rule actually grants:
    all. The test is now `netaddr.is_public` over the resolved address space, the
    same classifier `graph.zones` uses, so the two layers cannot drift.
 
+What THIS round changed here (PROD-READINESS-AUDIT-2, L1)
+---------------------------------------------------------
+A fourth instance of the same class: one rule, two halves, and only one half
+applied it. `netaddr` publishes IPv4-mapped v6 unwrapping as a classification
+DECISION -- "``::ffff:10.0.0.0/104`` is therefore 10/8", with the stated reason
+that not unwrapping "would silently hide an internet-facing v6 rule written in
+mapped form". It applied it inside `is_public` only. The band tables are indexed
+by (family, prefix length) and every mapped block is /96 or longer, so
+`_exposure_of` banded `::ffff:0.0.0.0/96` -- the whole internet -- in the bottom
+v6 row at E = 0.1, the exposure of a single host, while `is_public` called the
+same token public. `prefixlen_of` printed 96 beside it. Both now read the
+network through `_net_of`, which parses AND unwraps, so one address space has one
+prefix length and one E however it is spelled.
+
 The guardrail CLAUSES are unchanged: still exactly the three published in
 ENGINE.md 5.4 for over-permissive rules. They fire on strictly more inputs now
 (a range that contains an admin port, a public source that is not a `/0`), which
@@ -53,14 +67,14 @@ from __future__ import annotations
 
 from ..config import (
     ADMIN_LATERAL_PORTS, DATA_STORE_PORTS, D_UNTAGGED, EXPOSURE_BANDS_BY_VERSION,
-    E_IDENTITY, GENERAL_APP_PORTS, INFRA_CONTROL_PORTS, PORT_CLASS_ADMIN,
+    E_IDENTITY, E_UNRESOLVED, GENERAL_APP_PORTS, INFRA_CONTROL_PORTS, PORT_CLASS_ADMIN,
     PORT_CLASS_ANY_PORT, PORT_CLASS_DATA_STORE, PORT_CLASS_GENERAL_APP,
     PORT_CLASS_INFRA_CONTROL, PORT_CLASS_P, PORT_CLASS_UNKNOWN, PORT_SPAN_ANY,
     P_UNKNOWN, SENSITIVE_TAGS, SEVERITY_CONFIG, TAG_SENSITIVITY, TRANSPORT_CONFIG,
     ZONE_INTERNET,
 )
 from ..graph.zones import boundary_multiplier
-from ..netaddr import is_any, is_public, parse_net
+from ..netaddr import Network, _unwrap_mapped, is_any, is_public, parse_net
 from ..normalizers.common import parse_service
 
 # The L4 port space. Mirrored from `normalizers.common` deliberately rather than
@@ -89,7 +103,8 @@ _CLASSIFIED_PORTS: frozenset[int] = frozenset().union(*_PORT_CLASS_SETS.values()
 # --- the four sub-scores (categorical lookups; never computed) -------------
 
 def exposure_score(source: str, source_kind: str,
-                   source_cidrs: list[str] | None = None) -> float:
+                   source_cidrs: list[str] | None = None,
+                   source_unresolved: bool = False) -> float:
     """E: exposure breadth of the address space the source actually denotes.
 
     `source_cidrs` is `PolicyRecord.source_cidrs`: the RESOLVED address space
@@ -112,11 +127,23 @@ def exposure_score(source: str, source_kind: str,
 
     Falls back to E_IDENTITY when nothing in hand parses as address space --
     a label we cannot resolve is not evidence of exposure.
+
+    `source_unresolved` separates the two ways that fallback is reached, because
+    they mean opposite things. A token that names no address space at all (a
+    user, a tag, an application group) genuinely IS a narrow source: E_IDENTITY
+    is the right answer. A token the export DECLARED as an address but which the
+    engine could not read -- a malformed CIDR, a broken catalog reference, an
+    undecoded syntax -- is an UNKNOWN of unknown breadth, and scoring that as one
+    host lets bad input LOWER the reported risk. Those get E_UNRESOLVED, a
+    conservative floor that keeps the rule visible. `object_is_abstract` already
+    fails closed on the identical warning; this is the scoring half of that
+    decision, and the two halves now agree.
     """
     scored = [e for e in (_exposure_of(t) for t in _source_tokens(source, source_cidrs))
               if e is not None]
     if not scored:
-        return E_IDENTITY
+        # Nothing resolved. Which kind of nothing decides the answer.
+        return E_UNRESOLVED if source_unresolved else E_IDENTITY
     return max(scored)          # broadest network wins; order-independent
 
 
@@ -244,14 +271,14 @@ def band(severity: int) -> str:
 
 def score_over_permissive(*, source, source_kind, protocol, port, dest_tags,
                           src_zone, dst_zone, port_end=None, ports=None,
-                          source_cidrs=None) -> dict:
+                          source_cidrs=None, source_unresolved=False) -> dict:
     """The full vector plus the three published guardrail clauses (ENGINE.md 5.4).
 
-    `port_end` / `ports` / `source_cidrs` are trailing and optional so every
-    existing call site keeps working; supplying them is what makes the score
-    describe the rule instead of its first port and its label.
+    `port_end` / `ports` / `source_cidrs` / `source_unresolved` are trailing and
+    optional so every existing call site keeps working; supplying them is what
+    makes the score describe the rule instead of its first port and its label.
     """
-    E = exposure_score(source, source_kind, source_cidrs)
+    E = exposure_score(source, source_kind, source_cidrs, source_unresolved)
     P, p_class = port_score(protocol, port, port_end, ports)
     D = dest_score(dest_tags)
     B = boundary_multiplier(src_zone, dst_zone)
@@ -423,10 +450,14 @@ def prefixlen_of(source: str, source_kind: str,
     0.0.0.0/0 is the same lie in a smaller font. Mixed-family groups return the
     numerically smallest prefix length, which is only meaningful within one
     family -- callers that need the exposure ranking should read E.
+
+    Reads the same canonical network `_exposure_of` bands, so the printed prefix
+    length and the E beside it always describe one address space: a mapped
+    `::ffff:0.0.0.0/96` prints 0, not 96, because as address space it IS a /0.
     """
-    lens = [n.prefixlen for n in (parse_net(t) for t in _source_tokens(source, source_cidrs))
+    lens = [n.prefixlen for n in (_net_of(t) for t in _source_tokens(source, source_cidrs))
             if n is not None]
-    lens += [0 for t in _source_tokens(source, source_cidrs) if parse_net(t) is None and is_any(t)]
+    lens += [0 for t in _source_tokens(source, source_cidrs) if _net_of(t) is None and is_any(t)]
     return min(lens) if lens else None
 
 
@@ -445,6 +476,29 @@ def _source_tokens(source: str, source_cidrs: list[str] | None) -> list[str]:
     return [source] if isinstance(source, str) else []
 
 
+def _net_of(token: str) -> Network | None:
+    """The network a token denotes: parsed, and IPv4-mapped v6 UNWRAPPED.
+
+    Every read of a prefix length in this module goes through here, and that is
+    the whole point of it existing. `netaddr` treats unwrapping as part of what
+    an address space IS (its module docstring publishes the decision and the
+    reason), but applies it inside `is_public` only. A mapped block is always /96
+    or longer, so banding the raw network puts EVERY mapped address space in the
+    bottom v6 row: `::ffff:0.0.0.0/96` -- the entire internet, spelled in mapped
+    form -- scored E = 0.1, the exposure of one host, while `is_public` called it
+    public. Two halves of one published rule, disagreeing.
+
+    `_unwrap_mapped` is imported under its private name rather than reimplemented
+    here on purpose: a second copy of a classification decision is exactly the
+    defect this round exists to remove. The cleaner home for it is
+    `netaddr.parse_net` itself, so that `cidr_overlap`, `PolicyRecord` and
+    `graph.zones` inherit it too -- that is a change to `netaddr`, not to this
+    module.
+    """
+    net = parse_net(token)
+    return None if net is None else _unwrap_mapped(net)
+
+
 def _denotes_the_internet(token: str) -> bool:
     """One token: public address space holding more than one address.
 
@@ -454,9 +508,12 @@ def _denotes_the_internet(token: str) -> bool:
     """
     if not is_public(token):
         return False
-    net = parse_net(token)
+    net = _net_of(token)
     if net is None:
         return True                       # "any" / "all" / "*": the whole space
+    # Address COUNT is invariant under unwrapping (a mapped /120 and its 1.2.3.0/24
+    # twin hold the same 256 addresses), so this arm cannot disagree with itself;
+    # it goes through `_net_of` so the module has exactly one way to read a token.
     return net.num_addresses > 1
 
 
@@ -469,8 +526,13 @@ def _band_for(version: int, prefixlen: int) -> float:
 
 
 def _exposure_of(token: str) -> float | None:
-    """E for ONE token; None when it names no address space at all."""
-    net = parse_net(token)
+    """E for ONE token; None when it names no address space at all.
+
+    Bands the CANONICAL network (`_net_of`), so `::ffff:52.20.10.0/120` scores
+    0.3 exactly as `52.20.10.0/24` does rather than falling into the v6 /65-/128
+    row at 0.1.
+    """
+    net = _net_of(token)
     if net is None:
         # A wildcard WORD ("any"/"all"/"*") parses as nothing but denotes
         # everything. Both band tables agree that a 0-prefix is 1.0, so the

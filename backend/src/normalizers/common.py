@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import ipaddress
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Union
 
 from ..config import APP_BY_PORT, APP_TRANSPORT, L7_APPS
 from ..models import PolicyRecord
@@ -307,9 +307,12 @@ def _parse_port_spec(spec: str) -> tuple[list[tuple[int, int]], list[str]]:
     """Decode the port half of a service token into canonical intervals.
 
     Handles every encoding a real export uses: a single port ("443"), a range
-    ("8000-8100"), and a COMMA LIST of either ("80,443", "80,8000-8100") -- the
-    most common AlgoSec/Palo encoding, which used to fail int() as a whole and
-    vanish, leaving a rule that grants two ports scored as "port unknown".
+    ("8000-8100"), a COMMA LIST of either ("80,443", "80,8000-8100") -- the most
+    common AlgoSec/Palo encoding, which used to fail int() as a whole and vanish,
+    leaving a rule that grants two ports scored as "port unknown" -- and the
+    WILDCARD ("any" / "all" / "*"), which is the widest grant a service column
+    can express and which used to decode to no port at all. See the comment on
+    the wildcard branch below; it is the sharpest inversion in the decoder.
 
     Invalid intervals are REJECTED with a warning, never coerced. An inverted
     range or a 70000 has no meaning worth preserving, and passing it on would
@@ -328,6 +331,32 @@ def _parse_port_spec(spec: str) -> tuple[list[tuple[int, int]], list[str]]:
         tok = token.strip()
         if not tok:
             warnings.append("empty port token")
+            continue
+        # THE WILDCARD VOCABULARY, APPLIED PER COMMA ELEMENT.
+        # `any` / `all` / `*` is how Palo Alto, Check Point and AlgoSec spell
+        # "every port of this protocol", and `"*"` is how an Azure NSG spells
+        # `destinationPortRange` (which Wiz ingests and hands us through the
+        # separate `port` field). All of it used to fall through to `int("any")`,
+        # be rejected, and leave the record with `port=None` -> P_UNKNOWN (0.5)
+        # and an EMPTY interval set -- so `tcp/any`, the widest TCP grant it is
+        # possible to write, produced no finding at all while the byte-equivalent
+        # `tcp/1-65535` scored 90/critical, and guardrail clause 2 (which
+        # intersects the intervals with the admin ports) could not fire either.
+        # Narrowing a grant from "every protocol" to "every port of one protocol"
+        # must not be able to silence the engine.
+        #
+        # `netaddr.is_any` is the SAME test the whole-service token
+        # (`parse_service`), the src/dst tokens (`cidrs_for_token`) and
+        # `_PROTOCOL_ALIASES` already use, so the four places that decide what a
+        # wildcard is cannot drift apart. It is safe on port tokens: it matches
+        # only the three words and a token that parses as a 0-prefix NETWORK, so
+        # "0", "443" and "-5" are unaffected (verified in test_parse_service).
+        #
+        # Per element, not per spec, because `tcp/443,any` grants every port --
+        # the union of a wildcard with anything is the wildcard, and
+        # `_merge_intervals` collapses it to exactly that.
+        if is_any(tok):
+            intervals.append((_PORT_MIN, _PORT_MAX))
             continue
         # A leading "-" is a negative number, not a range separator: `port=-5`
         # must read as "out of range", not as an unparseable range.
@@ -441,6 +470,18 @@ def parse_service(service: Optional[str] = None, port: Optional[int] = None,
 
     proto, warnings = _decode_proto(protocol)
     if port is None:
+        if protocol is None or not str(protocol).strip():
+            # NOTHING was supplied: no service token, no port, no protocol, and
+            # no App-ID we recognize. The old answer was a confident bare `tcp`
+            # with no warning at all -- the audit's sharpest row, "no `service`
+            # field at all -> NO FINDING, and zero warnings" -- and `port=None`
+            # scores P_UNKNOWN (0.5), i.e. mid-risk, so an unread service column
+            # reads as a moderate rule rather than as a gap. The decode is
+            # unchanged (there is nothing else to score); what changes is that
+            # the absence is now a FACT on the record, which `service_audit`
+            # carries into the ingest audit trail.
+            return DecodedService(proto, None, None, proto, None, None, None,
+                                  warnings + ["no service, port or protocol specified"])
         return DecodedService(proto, None, None, proto, None, None, None, warnings)
     intervals, port_warnings = _parse_port_spec(str(port))
     pstart, pend, ports = _project(intervals)
@@ -452,14 +493,175 @@ def parse_service(service: Optional[str] = None, port: Optional[int] = None,
     return DecodedService(proto, pstart, pend, label, l7, l7src, ports, warnings)
 
 
+# ---------------------------------------------------------------------------
+# The address-space NOTATIONS a real export writes, beyond `a.b.c.d/len`.
+#
+# `parse_net` (netaddr.py) already reads prefix notation, the slash-netmask form
+# `10.0.0.0/255.0.0.0` and the slash-hostmask form `10.0.0.0/0.255.255.255`,
+# plus a bare host. Two more notations are in every catalog the audit sampled
+# and resolved to NOTHING, which is the worst possible answer: `source_cidrs`
+# came back `[]`, `exposure_score` fell back to E_IDENTITY (0.1 -- one host) and
+# an internet-to-PCI grant produced zero findings.
+#
+#   Check Point / Palo range object   1.0.0.0-223.255.255.255
+#   Cisco ASA address + mask          10.0.0.0 0.255.255.255   (wildcard)
+#                                     10.0.0.0 255.0.0.0       (netmask)
+#
+# Both are decoded here rather than in `netaddr.parse_net` on purpose: they are
+# EXPORT notations, not address-space classification, and `parse_net` is the
+# frozen primitive that `zones`, `severity` and `models` all share.
+# ---------------------------------------------------------------------------
+
+# The separator a range object uses. One partition, not a split: a range has
+# exactly two endpoints, and `db-prod-01` must never be read as one.
+_RANGE_SEP = "-"
+
+# The characters an IPv4/IPv6 literal is made of. Used only to decide whether a
+# token was WRITTEN as address space (and is therefore worth a malformed-address
+# warning), never to parse one -- `ipaddress` does the parsing.
+_ADDRESS_CHARS: frozenset[str] = frozenset("0123456789abcdefABCDEF.:")
+
+# The two address classes, as one alias, so the range/mask helpers below can say
+# what they take and return without repeating the union at every signature.
+_IPAddress = Union[ipaddress.IPv4Address, ipaddress.IPv6Address]
+
+
+def _bare_address(token: str) -> Optional[_IPAddress]:
+    """A bare IPv4/IPv6 literal -> the address object; None otherwise.
+
+    Deliberately NOT `parse_net`: an endpoint of a range and the left half of an
+    ASA mask pair are addresses, never networks, and accepting `10.0.0.0/8-...`
+    here would invent a shape no vendor writes.
+    """
+    try:
+        return ipaddress.ip_address(token.strip())
+    except ValueError:
+        return None
+
+
+def _address_shaped(token: str) -> bool:
+    """True when a token is spelled out of address characters alone."""
+    t = token.strip()
+    return bool(t) and all(ch in _ADDRESS_CHARS for ch in t)
+
+
+def _cidrs_for_range(token: str) -> list[str]:
+    """`10.0.0.0-10.0.3.255` -> the minimal covering CIDR list; [] if not a range.
+
+    This is how Check Point writes an address range object and how AlgoSec
+    re-exports one, and `0.0.0.0-255.255.255.255` is a spelling of the internet
+    that produced no finding at all. `summarize_address_range` yields the
+    minimal set in ascending order, so the answer is canonical and the record's
+    `source_cidrs` is deterministic. An inverted or mixed-family range resolves
+    to nothing and is reported by the caller as a malformed address -- coercing
+    it (by swapping the endpoints) would silently invent a grant.
+    """
+    lo_tok, sep, hi_tok = token.partition(_RANGE_SEP)
+    if not sep:
+        return []
+    lo, hi = _bare_address(lo_tok), _bare_address(hi_tok)
+    if lo is None or hi is None or lo.version != hi.version or lo > hi:
+        return []
+    return [str(net) for net in ipaddress.summarize_address_range(lo, hi)]
+
+
+def _prefixlen_for_mask(address: _IPAddress, mask_token: str) -> Optional[int]:
+    """(address, dotted mask) -> prefix length, for BOTH Cisco conventions.
+
+    ASA/IOS writes a block two ways and the same file uses both: a NETMASK
+    (contiguous 1s from the left, `255.0.0.0`) in `network-object`, and a
+    WILDCARD mask (contiguous 1s from the right, `0.255.255.255`) in an ACL.
+    They are bit-complements, so exactly one reading is valid for any mask
+    except the two that are their own complement:
+
+      ``0.0.0.0``          netmask -> /0    wildcard -> /32
+      ``255.255.255.255``  netmask -> /32   wildcard -> /0
+
+    For those two the ADDRESS decides, because only one reading of each pair is
+    something an operator ever writes: `0.0.0.0 0.0.0.0` and
+    `0.0.0.0 255.255.255.255` are both the ASA idiom for "any", while
+    `10.0.0.5 <either>` is that one host in whichever convention. Guessing the
+    other way round would either inflate one host into the whole internet or
+    shrink the internet to one host -- and this rule does neither.
+
+    A DISCONTIGUOUS mask (`0.255.0.255`, a legal ACL wildcard for "every second
+    /16") denotes a set no CIDR list can express, so it returns None and the
+    caller reports it rather than approximating it.
+    """
+    mask = _bare_address(mask_token)
+    if mask is None or mask.version != 4 or address.version != 4:
+        return None
+    bits = int(mask)
+    ones = bin(bits).count("1")
+    is_netmask = bits == (((1 << ones) - 1) << (32 - ones))    # 1s then 0s
+    is_wildcard = bits == ((1 << ones) - 1)                    # 0s then 1s
+    if is_netmask and is_wildcard:                             # 0.0.0.0 / 255.255.255.255
+        return 0 if int(address) == 0 else 32
+    if is_netmask:
+        return ones
+    if is_wildcard:
+        return 32 - ones
+    return None
+
+
+def _cidrs_for_masked(token: str) -> list[str]:
+    """`10.0.0.0 0.255.255.255` -> `["10.0.0.0/8"]`; [] if not an address+mask."""
+    parts = token.split()
+    if len(parts) != 2:
+        return []
+    address = _bare_address(parts[0])
+    if address is None:
+        return []
+    prefixlen = _prefixlen_for_mask(address, parts[1])
+    if prefixlen is None:
+        return []
+    return [str(ipaddress.ip_network((address, prefixlen), strict=False))]
+
+
+def looks_like_address_space(token: Optional[str]) -> bool:
+    """True when a token was WRITTEN as address space, whatever it resolves to.
+
+    The one predicate that separates "this object names no address" (a user
+    group, a tag, an application) from "this object claims to be an address and
+    is not one" (`10.0.0.0/33`, `10.0.0.0-9.0.0.0`, `10.0.0.0 0.255.0.255`).
+    That distinction is the whole basis of the malformed-address warning and, as
+    of B2, of `PolicyRecord.source_unresolved`: only the second case may raise
+    the exposure floor, because only the second case is evidence that address
+    space was meant.
+
+    Deliberately narrow on the two mask/range notations -- a hostname is allowed
+    to contain a dash (`db-prod-01`, `ANY-EXTERNAL`) and an object label is
+    allowed to contain a space, so the half that is not the separator must be a
+    bare IP literal AND the other half must be spelled out of address characters
+    alone. `web-10.0.0.1` is therefore a name, not a broken range.
+    """
+    if not isinstance(token, str):
+        return False
+    t = token.strip()
+    if not t:
+        return False
+    if "/" in t:                                   # prefix, netmask or hostmask form
+        return True
+    lo, sep, hi = t.partition(_RANGE_SEP)
+    if sep and _bare_address(lo) is not None and _address_shaped(hi):
+        return True
+    parts = t.split()
+    return (len(parts) == 2 and _bare_address(parts[0]) is not None
+            and _address_shaped(parts[1]))
+
+
 def cidrs_for_token(token: Optional[str]) -> list[str]:
     """Resolve a source/destination TOKEN to the address space it denotes.
 
     This is the token-level half of the "carry the resolved value, not the label"
-    fix: it handles the two cases that need no catalog lookup -- an address
-    (`10.20.0.0/16`, or a bare host `10.20.0.5` which is its own /32) and the
-    wildcard vocabulary (`any`/`all`/`*`/`0.0.0.0/0`, all of which collapse onto
-    INTERNET_CIDR so four spellings of one rule score identically).
+    fix: it handles every case that needs no catalog lookup --
+
+      an address        `10.20.0.0/16`, `10.20.0.5` (its own /32),
+                        `10.20.0.0/255.255.0.0`, `10.20.0.0/0.0.255.255`
+      the wildcards     `any`/`all`/`*`/`0.0.0.0/0`, all collapsing onto
+                        INTERNET_CIDR so four spellings of one rule score alike
+      a range object    `10.20.0.0-10.20.255.255` (Check Point)
+      address + mask    `10.20.0.0 255.255.0.0` / `10.20.0.0 0.0.255.255` (ASA)
 
     Returns [] for anything else -- a named object, a user, a tag, an
     application group. That emptiness is the signal each NORMALIZER must act on
@@ -474,7 +676,9 @@ def cidrs_for_token(token: Optional[str]) -> list[str]:
         return [str(net)]
     if is_any(token):
         return [INTERNET_CIDR]
-    return []
+    if not isinstance(token, str):
+        return []
+    return _cidrs_for_range(token) or _cidrs_for_masked(token)
 
 
 def record_from_service(*, record_id: str, source_tool: str, raw_ref: str, source: str,
@@ -483,7 +687,8 @@ def record_from_service(*, record_id: str, source_tool: str, raw_ref: str, sourc
                        source_ip: Optional[str] = None, dest_ip: Optional[str] = None,
                        note: Optional[str] = None,
                        source_cidrs: Optional[list[str]] = None,
-                       dest_cidrs: Optional[list[str]] = None) -> PolicyRecord:
+                       dest_cidrs: Optional[list[str]] = None,
+                       source_unresolved: bool = False) -> PolicyRecord:
     """Build a canonical PolicyRecord from an ALREADY-decoded service.
 
     Every ad-hoc record site (the custom-change endpoint, intake extraction, the
@@ -502,13 +707,25 @@ def record_from_service(*, record_id: str, source_tool: str, raw_ref: str, sourc
     HAS an object catalog (a normalizer resolving a named object or an address
     group) passes the resolved list explicitly and it wins. Passing [] is a
     deliberate statement that the object resolves to no address space at all.
+
+    `source_unresolved` splits that [] in two (see `PolicyRecord.source_unresolved`).
+    A caller that does not pass it gets the honest default for a token it never
+    inspected -- False, "nothing claimed address space" -- and when the caller
+    passed no `source_cidrs` either, the flag is derived here from the token
+    itself, so an ad-hoc record site cannot silently lose the distinction the
+    way it used to lose `port_end` and `l7_app`.
     """
+    derived_source = source_cidrs is None
+    resolved_source = cidrs_for_token(source) if derived_source else list(source_cidrs)
     return PolicyRecord(
         id=record_id, source_tool=source_tool, raw_ref=raw_ref,
         source=source, source_kind="cidr" if is_cidr(source) else "identity",
         destination=destination, destination_kind="cidr" if is_cidr(destination) else "identity",
-        source_cidrs=cidrs_for_token(source) if source_cidrs is None else list(source_cidrs),
+        source_cidrs=resolved_source,
         dest_cidrs=cidrs_for_token(destination) if dest_cidrs is None else list(dest_cidrs),
+        source_unresolved=(source_unresolved or
+                           (derived_source and not resolved_source
+                            and looks_like_address_space(source))),
         dest_tags=list(dest_tags or []),
         service=svc.label, port=svc.port, port_end=svc.port_end, protocol=svc.protocol,
         l7_app=svc.l7_app, l7_source=svc.l7_source,

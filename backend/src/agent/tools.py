@@ -80,12 +80,21 @@ def effective_policy(ctx, asset: str) -> dict:
     `reachable(source, asset)` is true -- the assistant can call both in one turn
     without contradicting itself. `witness_paths` is capped for prompt size, which
     is why `source_count` reports the full total alongside it.
+
+    `internet_entries` NAMES the internet nodes that reach the asset rather than
+    leaving `internet_exposed: true` to be taken on faith. It is not decoration:
+    the engine used to answer this question with `"0.0.0.0/0" in sources`, so an
+    asset exposed through a named object (``ANY-EXTERNAL``) was reported NOT
+    internet-exposed, and the assistant repeated that to an operator. With the
+    entries listed, the claim carries the evidence for itself -- and
+    `internet_path` is the shortest of them, not the only one.
     """
     key = _canon(ctx, asset)
     res = who_can_reach(ctx.graph, key)
     return {
         "target": key, "target_tags": res["target_tags"],
         "internet_exposed": res["internet_exposed"],
+        "internet_entries": res["internet_entries"],
         "internet_path": _display(res["internet_path"]),
         "sources": res["sources"], "source_count": len(res["sources"]),
         "witness_paths": [{"source": w["entry"], "path": _display(w), "tools": w["tools"]}
@@ -116,7 +125,7 @@ def simulate_change_tool(ctx, source: str, destination: str, service: str, actio
         dest_tags=dest_tags, service=svc.label, port=svc.port, port_end=svc.port_end,
         protocol=svc.protocol, l7_app=svc.l7_app, l7_source=svc.l7_source, action=action, order=9999,
     )
-    delta = simulate_change(ctx.records, ctx.assets, ctx.alias_map, proposed)
+    delta = simulate_change(ctx.records, ctx.assets, ctx.alias_map, proposed, getattr(ctx, "resolved", ()))
     return {"new_paths": [" -> ".join(p["display_path"]) for p in delta["new_paths"]],
             "new_exposed_assets": delta["new_exposed_assets"],
             "boundaries_crossed": delta["boundaries_crossed"],
@@ -175,7 +184,9 @@ SCHEMAS = [
         "name": "effective_policy",
         "description": "What can actually reach this asset, and is it internet-exposed. Returns every "
                        "source with a witness path proving it, using the same reachability rule as "
-                       "`reachable`; witness_paths is capped at 10 (source_count is the true total).",
+                       "`reachable`; witness_paths is capped at 10 (source_count is the true total). "
+                       "internet_entries names the internet nodes that reach it -- an estate may spell "
+                       "the internet '0.0.0.0/0', 'any' or as a named object, and all of them count.",
         "parameters": {"type": "object", "properties": {"asset": {"type": "string"}}, "required": ["asset"]}}},
     {"type": "function", "function": {
         "name": "risk_findings", "description": "The deterministic risk findings, optionally filtered by type/min_severity.",

@@ -54,7 +54,7 @@ import pytest
 
 from src import models
 from src.analyzers import over_permissive, path_trace, run_all
-from src.analyzers.severity import score_over_permissive
+from src.analyzers.severity import is_internet_source, score_over_permissive
 from src.change.simulate import resolve_dest_tags
 from src.config import ZONE_INTERNAL, ZONE_INTERNET
 from src.graph.build import build_graph
@@ -159,9 +159,16 @@ def _mutant_merge_entities(mutation: str):
 
 
 def _mutant_reasons_m57(rec: PolicyRecord, E: float, P: float) -> list[str]:
-    """`over_permissive._reasons` with the any/any arm DELETED."""
+    """`over_permissive._reasons` with the any/any arm DELETED.
+
+    Tracks the real function line for line apart from that one deletion -- the
+    internet test here is `is_internet_source`, as it now is in production. A
+    mutant that has silently become a copy of an OLDER version of the function
+    tests two changes at once and proves neither.
+    """
     cfg = over_permissive.OVERPERMISSIVE_CONFIG
-    is_internet = E >= 1.0
+    is_internet = over_permissive.is_internet_source(
+        rec.source, rec.source_kind, rec.source_cidrs)
     sensitive = bool(set(rec.dest_tags) & over_permissive.SENSITIVE_TAGS)
     out: list[str] = []
     # M57: the `if rec.protocol == "any"` arm is gone.
@@ -175,9 +182,18 @@ def _mutant_reasons_m57(rec: PolicyRecord, E: float, P: float) -> list[str]:
 
 
 def _mutant_reasons_m56(rec: PolicyRecord, E: float, P: float) -> list[str]:
-    """`over_permissive._reasons` with the internet test moved off its boundary."""
+    """`over_permissive._reasons` with the internet test back on the E proxy.
+
+    RE-TARGETED (PROD-READINESS-AUDIT-2 B2). The mutation this guard injects used
+    to be `E >= 1.0` -> `E > 1.0`, a mutation of a line that was itself the bug.
+    It is now the bug: the address-space predicate replaced by the exposure-score
+    proxy the engine deleted everywhere else. This is the exact code that shipped,
+    so the guard below is a regression test for a defect that really happened,
+    not a hypothetical.
+    """
     cfg = over_permissive.OVERPERMISSIVE_CONFIG
-    is_internet = E > 1.0                 # M56: `E >= 1.0` -> `E > 1.0` (never true)
+    # M56: `is_internet_source(...)` -> `E >= 1.0`, true only for a /0.
+    is_internet = E >= 1.0
     sensitive = bool(set(rec.dest_tags) & over_permissive.SENSITIVE_TAGS)
     out: list[str] = []
     if rec.protocol == "any":
@@ -220,12 +236,14 @@ def _guard_m57() -> None:
 
     The input isolates the arm, which is the only way to see the real damage.
     `10.20.30.0/24 -> app-01 any` scores E=0.3 (the published /24../27 band) --
-    below `broad_source_E` (0.5), so the broad-source arm cannot fire, and far
-    below the `E >= 1.0` the internet arm needs -- and its destination carries no
-    sensitive tag, so neither regulated-destination arm fires either. Of the four
-    arms in `_reasons`, only the any/any one is left, and `analyze` drops a record
-    with no reasons before it ever builds a Finding. Delete that arm and the
-    customer's most permissive rule is not downgraded, it is INVISIBLE.
+    below `broad_source_E` (0.5), so the broad-source arm cannot fire; the source
+    is RFC 1918, so `is_internet_source` is False and the internet arm cannot
+    fire (nor can any guardrail clause, all three of which require the internet);
+    and its destination carries no sensitive tag, so neither regulated-destination
+    arm fires either. Of the four arms in `_reasons`, only the any/any one is
+    left, and `analyze` drops a NON-FORCED record with no reasons before it ever
+    builds a Finding. Delete that arm and the customer's most permissive rule is
+    not downgraded, it is INVISIBLE.
 
     On the seeded demo the same rule trips two other arms and so merely loses its
     headline sentence; `test_m57_the_demo_still_calls_its_any_any_rule_an_any_any
@@ -736,58 +754,110 @@ def test_m59_guard_fails_under_the_mutation(monkeypatch: pytest.MonkeyPatch) -> 
 _INTERNET_REASON = "exposed directly to the internet"
 
 
+# Public address space, narrower than a /0. E = 0.3, so the E proxy calls it
+# internal; `is_internet_source` calls it what it is.
+_PARTNER_PUBLIC_24 = "52.20.10.0/24"
+
+
 def _guard_m56() -> None:
-    """E == 1.0 is exactly a /0, and the internet arm must fire ON that boundary.
+    """`_reasons` must ask the address space, not the exposure score.
 
-    `E > 1.0` is never true -- 1.0 is the top of the published band table -- so
-    the mutation does not narrow the arm, it deletes it. The finding survives
-    (the broad-source arm still fires) which is exactly why nothing caught this:
-    what is lost is the sentence that says why. The result is a finding that
-    contradicts itself, forced critical BY the guardrail clause "admin/lateral-
-    movement port exposed to the internet" while its human-readable reasons never
-    mention the internet at all.
+    RE-TARGETED, AND THE OLD RATIONALE WAS WRONG (PROD-READINESS-AUDIT-2 B2)
+    -----------------------------------------------------------------------
+    The previous version of this guard injected `E >= 1.0` -> `E > 1.0` and
+    justified pinning the arm to that boundary like this:
 
-    This is also the audit's own condemned predicate: `severity._is_internet(E)`
-    was replaced by `is_internet_source` for being a proxy. The one that remains
-    here is display-only and must stay pinned to its boundary.
+        "The finding survives (the broad-source arm still fires) which is
+         exactly why nothing caught this: what is lost is the sentence that says
+         why. ... The one that remains here is display-only and must stay pinned
+         to its boundary."
+
+    Both halves were false, and the second one certified the live defect as
+    correct. The predicate was not display-only: `_reasons` ran BEFORE
+    `score_over_permissive` and `analyze` skipped any record it returned nothing
+    for, so it gated SCORING. And the finding did not survive -- for any public
+    source narrower than a /23 the broad-source arm needs E >= 0.5 and cannot
+    fire either, so `allow 52.20.10.0/24 -> app-01 tcp/3389` (a partner's public
+    /24, RDP, a prod host) was forced critical at severity 52 by the guardrail
+    floor and then emitted by nobody. A mutation guard written to stop a
+    regression had become the reason the fix would look like one.
+
+    The rationale is now TRUE, because `analyze` scores first and emits any
+    forced rule unconditionally: under the mutant the finding really does
+    survive, and what is really lost is the sentence that says why. So the guard
+    asserts the contradiction the old text described -- a finding forced critical
+    BY the clause "admin/lateral-movement port exposed to the internet" whose
+    human-readable reasons never mention the internet -- at the input where the
+    proxy and the predicate actually disagree.
+
+    Both spellings are checked. The /0 pins the boundary the old guard covered
+    (it passes under the mutant, which is the point: it could never have caught
+    this); the partner /24 is where the proxy is wrong, and it is the one that
+    bites.
     """
-    records = [_rec("MG-56", "0.0.0.0/0", "app-01", "tcp/3389",
-                    dest_tags=("prod",), dest_cidrs=["10.90.4.4/32"])]
-    entities = [_cidr_entity("0.0.0.0/0"),
-                _entity("app-01", "algosec", ip="10.90.4.4", tags=("prod",))]
-    findings = _analyze_over_permissive(records, entities)
-    assert len(findings) == 1, f"M56: expected one finding, got {len(findings)}."
-    finding = findings[0]
+    for ref, source, e_expected in (("MG-56-ZERO", "0.0.0.0/0", 1.0),
+                                    ("MG-56-PUB24", _PARTNER_PUBLIC_24, 0.3)):
+        records = [_rec(ref, source, "app-01", "tcp/3389",
+                        dest_tags=("prod",), dest_cidrs=["10.90.4.4/32"])]
+        entities = [_cidr_entity(source),
+                    _entity("app-01", "algosec", ip="10.90.4.4", tags=("prod",))]
+        findings = _analyze_over_permissive(records, entities)
 
-    assert finding.signals["severity_vector"]["E"] == 1.0, (
-        f"M56: E is {finding.signals['severity_vector']['E']} for a /0 source; the guard "
-        "needs the boundary value to be under test.")
-    assert _INTERNET_REASON in finding.signals["reasons"], (
-        f"M56: reasons were {finding.signals['reasons']!r} for a rule sourced from "
-        f"0.0.0.0/0 -- {_INTERNET_REASON!r} is missing, so the internet arm never fired "
-        "at E == 1.0, the one value that IS a /0.")
-    # The contradiction, spelled out: the guardrail floor and the prose are two
-    # renderings of one fact and must not be able to disagree about it.
-    forced = " ".join(finding.signals["forced_reasons"])
-    assert "internet" in forced, (
-        f"M56: the guardrail did not force this critical for an internet reason "
-        f"({forced!r}), so the guard is no longer positioned to catch the contradiction. "
-        "Fix the fixture, not the assertion.")
-    assert _INTERNET_REASON in finding.signals["reasons"], (
-        f"M56: the guardrail forced this finding critical for {forced!r} while its reasons "
-        f"{finding.signals['reasons']!r} never say it is internet-facing. A finding that "
-        "contradicts its own floor is worse than one that is merely incomplete.")
+        assert len(findings) == 1, (
+            f"M56: {source} -> app-01 tcp/3389 produced {len(findings)} findings, "
+            "expected exactly 1. The guardrail floor forces this critical, so the "
+            "analyzer must report it whatever `_reasons` thinks.")
+        finding = findings[0]
+        assert finding.signals["severity_vector"]["E"] == e_expected, (
+            f"M56: {source} scores E={finding.signals['severity_vector']['E']}, expected "
+            f"{e_expected}. This guard needs one source ON the E == 1.0 boundary and one "
+            "BELOW it; fix the fixture, not the assertion.")
+        # The guardrail floor's own verdict, first -- if it stops firing for an
+        # internet reason the guard is no longer positioned to catch anything.
+        forced = " ".join(finding.signals["forced_reasons"])
+        assert finding.forced_critical and "internet" in forced, (
+            f"M56: {source} was not forced critical for an internet reason ({forced!r}), "
+            "so the contradiction this guard exists to detect cannot arise. Fix the "
+            "fixture, not the assertion.")
+        # ...and then the prose, which is the same fact rendered for a human.
+        assert _INTERNET_REASON in finding.signals["reasons"], (
+            f"M56: {source} was forced critical for {forced!r} while its reasons "
+            f"{finding.signals['reasons']!r} never say it is internet-facing. The floor "
+            "and the prose are two renderings of one fact; a finding that contradicts "
+            "its own floor is worse than one that is merely incomplete. `_reasons` is "
+            "asking `E >= 1.0` again -- E == 1.0 is only a /0.")
 
 
-def test_m56_a_slash_zero_source_is_reported_as_exposed_to_the_internet() -> None:
+def test_m56_a_public_source_is_reported_as_exposed_to_the_internet() -> None:
     _guard_m56()
 
 
 def test_m56_guard_fails_under_the_mutation(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Inject the matrix's M56 (`E >= 1.0` -> `E > 1.0`)."""
+    """Inject M56 as re-targeted: the internet arm back on the `E >= 1.0` proxy."""
     monkeypatch.setattr(over_permissive, "_reasons", _mutant_reasons_m56)
     with pytest.raises(AssertionError, match=r"^M56"):
         _guard_m56()
+
+
+def test_m56_the_shipped_defect_no_longer_hides_the_finding_entirely() -> None:
+    """The A3 half, stated separately so the two failures cannot be confused.
+
+    Under the mutant the finding must still EXIST -- that is what inverting
+    `analyze`'s control flow bought, and it is what makes the guard above a test
+    about prose rather than about existence. If this ever fails, the reason gate
+    has been moved back in front of the scorer and a mutation to a display
+    predicate can once again delete a forced-critical finding outright.
+    """
+    records = [_rec("MG-56-A3", _PARTNER_PUBLIC_24, "app-01", "tcp/3389",
+                    dest_tags=("prod",), dest_cidrs=["10.90.4.4/32"])]
+    entities = [_cidr_entity(_PARTNER_PUBLIC_24),
+                _entity("app-01", "algosec", ip="10.90.4.4", tags=("prod",))]
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(over_permissive, "_reasons", _mutant_reasons_m56)
+        findings = _analyze_over_permissive(records, entities)
+    assert len(findings) == 1 and findings[0].forced_critical, (
+        "M56/A3: with the reason gate mutated, the forced-critical finding disappeared. "
+        "`_reasons` is gating the scorer again instead of filtering behind it.")
 
 
 # ==========================================================================
@@ -882,19 +952,29 @@ def test_m57_the_demo_still_calls_its_any_any_rule_an_any_any_rule(demo) -> None
 
 
 def test_m56_the_demo_still_says_its_internet_findings_are_internet_facing(demo) -> None:
-    """M56 on the shipped fixture: every /0-sourced finding keeps its internet line."""
+    """M56 on the shipped fixture: every internet-sourced finding keeps its line.
+
+    Selected by `is_internet_source` -- the predicate itself -- rather than by
+    `E == 1.0`. Selecting on the proxy is how the old version of this pin agreed
+    with the defect: it only ever looked at the findings for which the proxy was
+    right, so a demo containing a public /24 would have sailed through it.
+    """
     checked = 0
     for finding in demo.findings:
         if finding.type != "over_permissive":
             continue
-        if finding.signals.get("severity_vector", {}).get("E") != 1.0:
+        signals = finding.signals
+        if not is_internet_source(signals.get("source", ""), signals.get("source_kind", ""),
+                                  signals.get("source_cidrs") or []):
             continue
         checked += 1
-        assert _INTERNET_REASON in finding.signals["reasons"], (
-            f"M56: demo finding {finding.title!r} scores E=1.0 (a /0) but reports "
-            f"{finding.signals['reasons']!r}, with no internet reason.")
+        assert _INTERNET_REASON in signals["reasons"], (
+            f"M56: demo finding {finding.title!r} is sourced from public address space "
+            f"({signals.get('source')!r} -> {signals.get('source_cidrs')!r}) but reports "
+            f"{signals['reasons']!r}, with no internet reason.")
     assert checked, ("M56: the demo no longer contains an over_permissive finding sourced "
-                     "from a /0, so this pin is vacuous. Re-point it at a rule that is.")
+                     "from the internet, so this pin is vacuous. Re-point it at a rule "
+                     "that is.")
 
 
 def test_m61_the_demo_persists_sorted_dest_tags(demo) -> None:

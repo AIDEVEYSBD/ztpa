@@ -28,6 +28,12 @@ because the properties above are vacuous without them:
     security-relevant (`find_paths` feeds the change gate's force-escalation)
     and no test reached the branch, so the fallback that keeps the three tools
     agreeing under truncation was unexercised in both directions.
+  * an estate whose internet source is NOT spelled `0.0.0.0/0`. The demo's is,
+    and so was every fixture that ever exercised `cross_tool_paths`, so the
+    product's headline analyzer was tested with exactly the one spelling that
+    worked while `any` / `ANY-EXTERNAL` / a named group returned zero paths --
+    rendered to a buyer as "no internet-to-crown-jewel path exists" (audit B1).
+    The last section drives all four spellings through the real normalizers.
 
 Offline by construction: `run()` reads the seeded fixtures, no DB, no model.
 """
@@ -35,19 +41,32 @@ Offline by construction: `run()` reads the seeded fixtures, no DB, no model.
 from __future__ import annotations
 
 import logging
+import types
 
 import networkx as nx
 import pytest
 
 from src.agent import tools
+from src.analyzers import path_trace
 from src.analyzers.run_all import run
+from src.analyzers.severity import score_cross_tool_path
+from src.config import SENSITIVE_TAGS
 from src.graph import reachability
+from src.graph.build import build_graph
 from src.graph.reachability import (
-    _PATH_SCAN_CAP, _grant_matches, _valid_traversal, describe_path, find_paths, reachable,
-    who_can_reach,
+    _PATH_SCAN_CAP, _grant_matches, _valid_traversal, cross_tool_paths, describe_path,
+    find_paths, internet_entries, reachable, who_can_reach,
 )
 from src.graph.zones import zone_of
-from src.normalizers.common import INTERNET_CIDR
+from src.identity import resolve_identities
+from src.normalizers import algosec, guardicore
+from src.normalizers.common import INTERNET_CIDR, NormalizeResult
+
+# The SAME four spellings `test_analyzers.py` scores through `over_permissive`,
+# imported rather than restated: the Phase-1 exit criterion and this one are the
+# same claim about the same four encodings, and two copies of the matrix would
+# eventually disagree about what "the four encodings" are.
+from tests.test_analyzers import FOUR_ENCODINGS
 
 # The assets the internet can reach under the documented traversal rule. Pinned so
 # a change to the rule (or to how a normalizer labels a node concrete/abstract)
@@ -325,21 +344,43 @@ def test_witness_is_one_of_the_paths_reachable_would_return(g):
             assert w["length"] == min(p["length"] for p in enumerated)
 
 
-def test_internet_path_is_the_witness_from_the_internet_node(g):
+def test_internet_path_is_the_witness_from_an_internet_node(g):
+    """The path shipped with `internet_exposed` must start at an INTERNET-ZONE
+    node -- which is the graph's own classification, not the string 0.0.0.0/0.
+
+    Asserting `entry == INTERNET_CIDR` (as this did) is only true because the
+    demo happens to spell its internet source that way; it would have passed
+    unchanged on an estate where the whole mechanism was silently dead. The
+    property with content is "the entry is one of `internet_entries`, and it is
+    the shortest of them".
+    """
+    entries = set(internet_entries(g))
     for target in sorted(g.nodes):
         policy = who_can_reach(g, target)
         if not policy["internet_exposed"]:
             assert policy["internet_path"] is None
+            assert policy["internet_entries"] == []
             continue
-        assert policy["internet_path"]["entry"] == INTERNET_CIDR
+        assert set(policy["internet_entries"]) <= entries
+        assert policy["internet_path"]["entry"] in policy["internet_entries"]
         assert policy["internet_path"]["terminal"] == target
         assert _valid_traversal(g, policy["internet_path"]["path"])
+        # The deterministic pick: the SHORTEST witness among the qualifying
+        # entries, ties broken by the entry name (the paths are sorted by
+        # `(length, path)` and `path[0]` is the entry). Compared on length +
+        # entry rather than on the path itself because `_bfs_witnesses` picks one
+        # shortest path where the enumeration may hold several of equal length --
+        # `test_witness_is_a_path_the_enumeration_also_returns` pins that half.
+        shortest = sorted((min(q["length"] for q in reachable(g, e, target)["paths"]), e)
+                          for e in policy["internet_entries"])
+        assert (policy["internet_path"]["length"], policy["internet_path"]["entry"]) == shortest[0]
 
 
 def test_unknown_target_returns_the_empty_shape(g):
     policy = who_can_reach(g, "no-such-asset")
     assert policy == {"target": "no-such-asset", "target_tags": [], "sources": [],
-                      "witnesses": [], "internet_exposed": False, "internet_path": None}
+                      "witnesses": [], "internet_entries": [], "internet_exposed": False,
+                      "internet_path": None}
     # `truncated` False alongside a False verdict is the claim "this no is proven,
     # nothing was cut short to reach it" -- see the truncation section below.
     assert reachable(g, INTERNET_CIDR, "no-such-asset") == {
@@ -386,7 +427,10 @@ def test_abstract_pivot_rule_is_enforced_by_both_tools():
     assert who_can_reach(no_lb, "host") == {
         "target": "host", "target_tags": [], "sources": ["10.0.0.0/8"],
         "witnesses": [describe_path(no_lb, ["10.0.0.0/8", "host"])],
-        "internet_exposed": False, "internet_path": None,
+        # 0.0.0.0/0 IS an internet node here and it still does not reach `host`:
+        # `internet_entries` lists the entries that reach the target, not every
+        # entry in the graph, so the abstract-pivot rule still decides.
+        "internet_entries": [], "internet_exposed": False, "internet_path": None,
     }
 
 
@@ -547,3 +591,172 @@ _QUIC = {"protocol": "udp", "port": 443, "port_end": None, "l7_app": "quic"}
 ])
 def test_grant_matches(grant, port, protocol, app, ok):
     assert _grant_matches(grant, port, protocol, app) is ok
+
+
+# --------------------------------------------------------------------------
+# The internet is a place, not a string (audit B1 -- workstream A1 + A2)
+# --------------------------------------------------------------------------
+#
+# `cross_tool_paths` looked its entry point up by the literal key "0.0.0.0/0"
+# and returned [] when it was absent, so an export spelling its internet source
+# `any`, `ANY-EXTERNAL` or as a named group produced ZERO cross-tool findings --
+# from the analyzer this product is sold on, and rendered as "no
+# internet-to-crown-jewel path exists". `who_can_reach` held the same literal
+# (`internet_exposed`), and so did the change gate (`simulate.py`, covered in
+# `test_change_simulate.py`).
+#
+# Everything below drives the REAL normalizers. The estate is two hops through
+# two tools, which is the minimum that makes a cross-tool finding possible:
+#
+#   AlgoSec:    <entry> -> app-server-07  tcp/443
+#   Guardicore: app-server-07 -> db-prod-01 tcp/5432   (db-prod-01 is `pci`)
+#
+# Nothing is hand-built, for the reason `test_analyzers.py`'s own matrix gives:
+# a fixture that supplies `ip_set=["0.0.0.0/0"]` for a group object supplies the
+# very fact the pipeline was losing, and the test then passes while the property
+# is false.
+
+
+def _two_tool_estate(token: str, objects: dict, *, second_hop: bool = True):
+    """normalize(algosec) + normalize(guardicore) -> (graph, alias_map).
+
+    `second_hop` False leaves only the internet ingress in place, which is what
+    the change-gate test needs: the proposed rule supplies the second hop.
+    """
+    algo = {
+        "device": "afa-edge-fw-01",
+        "objects": {**objects,
+                    "app-server-07": {"type": "host", "value": "10.30.7.7", "tags": ["prod"]},
+                    "db-prod-01": {"type": "host", "value": "10.50.0.10", "tags": ["pci"]}},
+        "rules": [{"rule_id": "R1", "order": 1, "src": token, "dst": "app-server-07",
+                   "service": "tcp/443", "action": "allow"}],
+    }
+    gc = {
+        "labels": {"app-server-07": {"role": "app", "env": "prod", "tags": ["prod"],
+                                     "cidr": "10.30.7.7/32"},
+                   "db-prod-01": {"role": "db", "env": "prod", "tags": ["pci"],
+                                  "cidr": "10.50.0.10/32"}},
+        "policies": ([{"policy_id": "GC-1", "src_label": "app-server-07",
+                       "dst_label": "db-prod-01", "port": 5432, "protocol": "tcp",
+                       "action": "allow"}] if second_hop else []),
+    }
+    res = NormalizeResult()
+    res.extend(algosec.normalize(algo))
+    res.extend(guardicore.normalize(gc))
+    ident = resolve_identities(res.entities)
+    return res, ident, build_graph(res.records, ident.assets, ident.alias_map)
+
+
+@pytest.mark.parametrize("name,token,objects", FOUR_ENCODINGS, ids=[e[0] for e in FOUR_ENCODINGS])
+def test_every_spelling_of_the_internet_is_an_entry(name, token, objects):
+    """`internet_entries` is the zone layer's answer, so all four spellings qualify.
+
+    The node key is whatever the export wrote -- `zones.zone_of` classifies it
+    from the address space it resolves to -- so this also pins that the entry set
+    is keyed by NAME, which is the fact the string lookup got wrong.
+    """
+    _res, ident, g = _two_tool_estate(token, objects)
+    node = ident.alias_map.get(token, token)
+    assert g.nodes[node]["zone"] == "internet", name
+    assert internet_entries(g) == [node], name
+
+
+@pytest.mark.parametrize("name,token,objects", FOUR_ENCODINGS, ids=[e[0] for e in FOUR_ENCODINGS])
+def test_the_four_encodings_produce_one_cross_tool_finding(name, token, objects):
+    """The A1 exit criterion. One estate, four spellings, ONE finding each --
+    identical severity, band, forced flag, terminal, tools and hop count.
+
+    Measured before the fix: the literal /0 gave 1 finding at 100/critical/forced
+    and the other three gave 0, which the UI renders as "no
+    internet-to-crown-jewel path exists".
+
+    The entry NODE legitimately differs between spellings (it is the object name
+    the operator sees in their own console, and the finding cites it), so it is
+    excluded from the comparison and asserted separately.
+    """
+    def one(tok, objs):
+        _res, ident, g = _two_tool_estate(tok, objs)
+        fs = path_trace.analyze(g)
+        assert len(fs) == 1, (tok, [f.title for f in fs])
+        f = fs[0]
+        return f, (f.severity, f.severity_band, f.forced_critical,
+                   f.signals["terminal"], f.signals["terminal_tags"],
+                   tuple(f.signals["tools"]), tuple(f.signals["hops_tools"]),
+                   f.signals["boundary"], f.signals["reaches_sensitive"],
+                   f.signals["severity_vector"])
+
+    baseline, baseline_key = one("0.0.0.0/0", {})
+    finding, key = one(token, objects)
+
+    assert key == baseline_key, name
+    assert key[:3] == (100, "critical", True), name
+    # ...and the one thing that DOES differ is the operator's own label for the
+    # entry, which is the only place the spelling may survive.
+    assert finding.signals["path"][1:] == baseline.signals["path"][1:] == \
+        ["app-server-07", "db-prod-01"]
+    assert finding.signals["entry"] == token
+
+
+@pytest.mark.parametrize("name,token,objects", FOUR_ENCODINGS, ids=[e[0] for e in FOUR_ENCODINGS])
+def test_the_four_encodings_agree_about_internet_exposure(name, token, objects):
+    """`who_can_reach`'s half of the same defect: `internet_exposed` was
+    `INTERNET_CIDR in witnesses`, so the assistant told an operator a PCI database
+    reachable through `ANY-EXTERNAL` was not internet-exposed."""
+    _res, ident, g = _two_tool_estate(token, objects)
+    node = ident.alias_map.get(token, token)
+    policy = who_can_reach(g, "db-prod-01")
+
+    assert policy["internet_exposed"] is True, name
+    assert policy["internet_entries"] == [node], name
+    assert policy["internet_path"]["path"] == [node, "app-server-07", "db-prod-01"], name
+    # and the tool payload the assistant actually reads carries it too
+    ctx = types.SimpleNamespace(graph=g, alias_map=ident.alias_map)
+    assert tools.effective_policy(ctx, "db-prod-01")["internet_entries"] == [node], name
+
+
+def test_an_explicit_source_is_a_probe_and_not_the_default():
+    """The `sources` hatch still answers about ONE entry -- which is exactly the
+    old behaviour, and exactly why it must not be the default. Pinned so the
+    regression (a caller passing the literal string again) is visible as a
+    deliberate narrowing rather than as an empty finding list."""
+    _res, _ident, g = _two_tool_estate("ANY-EXTERNAL",
+                                       {"ANY-EXTERNAL": {"type": "network", "value": "0.0.0.0/0"}})
+    assert len(cross_tool_paths(g, SENSITIVE_TAGS)) == 1
+    assert cross_tool_paths(g, SENSITIVE_TAGS, sources=[INTERNET_CIDR]) == []
+    assert len(cross_tool_paths(g, SENSITIVE_TAGS, sources=["ANY-EXTERNAL"])) == 1
+
+    # The old call shape must not be answerable at all: a bare string iterates as
+    # characters, so it would filter to nothing and return [] -- a silent zero
+    # from the differentiator, which is the whole defect wearing a new hat.
+    with pytest.raises(TypeError, match="LIST of entry nodes"):
+        cross_tool_paths(g, SENSITIVE_TAGS, INTERNET_CIDR)
+
+
+@pytest.mark.parametrize("name,token,objects", FOUR_ENCODINGS, ids=[e[0] for e in FOUR_ENCODINGS])
+def test_describe_path_emits_the_entrys_resolved_address_space(name, token, objects):
+    """The A2 exit criterion, and the proof the key is load-bearing rather than
+    decorative.
+
+    `severity.score_cross_tool_path` has always read `path.get("entry_cidrs")` so
+    a named entry could be scored on the space it dereferences to -- and nothing
+    produced the key, so the branch was dead code and every named entry fell back
+    to its LABEL, scoring E_IDENTITY (0.1, one host) for a chain entered from the
+    whole internet. Stripping the key here reproduces exactly that: E collapses
+    0.1 and severity 100 -> 59, two bands, on an identical estate.
+    """
+    _res, ident, g = _two_tool_estate(token, objects)
+    node = ident.alias_map.get(token, token)
+    path = cross_tool_paths(g, SENSITIVE_TAGS)[0]
+
+    assert path["entry_cidrs"] == sorted(g.nodes[node]["ip_set"]), name
+    assert INTERNET_CIDR in path["entry_cidrs"], name
+    assert score_cross_tool_path(path)["vector"]["E"] == 1.0, name
+
+    without = score_cross_tool_path({k: v for k, v in path.items() if k != "entry_cidrs"})
+    if token == INTERNET_CIDR or token == "any":
+        # These two spell the address space in the label itself, so the label is
+        # already enough -- which is precisely why the defect was invisible.
+        assert without["vector"]["E"] == 1.0, name
+    else:
+        assert without["vector"]["E"] == 0.1, name
+        assert without["severity"] < score_cross_tool_path(path)["severity"], name
