@@ -23,6 +23,23 @@ testpaths = ["backend/tests"]
 # now the caller's choice (`pytest -q`), and it still prints the count.
 addopts = "--strict-markers --strict-config --tb=short -r fEs"
 
+# The one marker this suite has, and the reason it needs one. `backend/conftest.py`
+# opens with the contract "this is a unit suite; it has no business opening a
+# socket", and enforces it -- outbound connections to anything but loopback raise.
+# A test that must reach a real external service therefore has to say so, in a
+# way both a human and the socket guard can read, and has to be OPT-IN so that
+# the documented `pytest` command stays a statement about THIS repo rather than
+# about whether a third party's cloud is reachable and unchanged today.
+#
+#     pytest -m "not live"                      # the default, minus even collection
+#     NPR_RUN_AZURE_LIVE=1 pytest -m live       # ask for the real thing
+#
+# `-m live` alone still SKIPS with the reason on it: the marker declares the
+# dependency, the environment variable grants it.
+markers = [
+    "live: opens a socket to a real external service; opt-in (see backend/conftest.py)",
+]
+
 # Warnings are errors, so a deprecation lands as a red test while it is still
 # cheap to fix rather than as a surprise on the next dependency bump. Deprecations
 # raised inside third-party internals are not actionable here, so they are listed

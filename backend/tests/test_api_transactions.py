@@ -116,6 +116,28 @@ class _ConnectionWatch:
             raise AssertionError(self.violations[-1])
 
 
+def _embed_tripwire(w: "_ConnectionWatch", name: str):
+    """A stand-in for `embed`/`embed_texts` that trips the connection watch.
+
+    `embed_texts` answers an `EmbeddingResult`, not a list, and the difference
+    is load-bearing: `entity_suggest.suggest_merges` branches on `.ok` to decide
+    whether a similarity of zero is a measurement or an absence. Returning `[]`
+    here would hand it the exact ambiguity the real type was introduced to
+    remove, so the stub answers the real type -- ok=False, no vectors -- which
+    is what a route sees when no embedding provider is reachable.
+    """
+    from src.advisory.client import EmbeddingResult
+
+    def _stub(*_a, **_kw):
+        w.note_model_call(name)
+        if name == "embed_texts":
+            return EmbeddingResult(vectors=[], ok=False, provider="none",
+                                   error="no embedding provider in this test")
+        return []
+
+    return _stub
+
+
 @pytest.fixture(scope="module")
 def eng():
     from src.analyzers.run_all import run
@@ -147,11 +169,34 @@ def watch(monkeypatch, eng):
             patched += 1
     assert patched >= 5, f"only {patched} model call sites were covered; the sweep is not finding them"
 
-    # Embeddings are the other network call that used to sit inside a block.
+    # Embeddings are the other network call that used to sit inside a block --
+    # and the sweep used to look for `embed` ONLY, which covered no live call
+    # site at all. `client.embed()` is a compatibility shim; the code that runs
+    # calls `embed_texts()`, and `advisory/entity_suggest.py` imports THAT name
+    # into its own namespace. So /api/assets/merge-suggestions walked straight
+    # past this tripwire and made a real HTTPS request to the hosted embedding
+    # provider on every run of this suite -- which meant the one route whose
+    # embedding call this test exists to police was the one route it could not
+    # see. (Found by backend/conftest.py's outbound-socket guard: it is the
+    # blocked connection that made this test go red.)
+    #
+    # Both names are swept, and the stub returns the REAL result type rather
+    # than `[]`, because `EmbeddingResult.ok` is what tells the caller the
+    # numbers are absent instead of small.
+    embed_names = ("embed", "embed_texts")
+    patched_embed = 0
     for module in list(sys.modules.values()):
-        if getattr(module, "__name__", "").startswith("src") and hasattr(module, "embed"):
-            monkeypatch.setattr(module, "embed",
-                                lambda *_a, **_kw: w.note_model_call("embed") or [])
+        if not getattr(module, "__name__", "").startswith("src"):
+            continue
+        for name in embed_names:
+            if hasattr(module, name):
+                monkeypatch.setattr(module, name, _embed_tripwire(w, name))
+                patched_embed += 1
+    assert patched_embed >= 3, (
+        f"only {patched_embed} embedding call sites were covered; the sweep is "
+        "not finding them. src/advisory/client.py defines `embed` and "
+        "`embed_texts`, and src/advisory/entity_suggest.py imports `embed_texts`."
+    )
 
     monkeypatch.setattr(main, "_ENGINE", eng)
     monkeypatch.setattr(main, "_ENGINE_STATE",

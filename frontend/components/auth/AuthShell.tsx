@@ -38,12 +38,3 @@ export function AuthBanner({ children, kind = "ok" }: { children: React.ReactNod
     : "border-sev-critical-line bg-sev-critical-bg text-sev-critical";
   return <div className={`mb-3 border p-2.5 text-xs ${c}`}>{children}</div>;
 }
-
-export function DevLink({ href }: { href: string }) {
-  return (
-    <div className="mt-3 border border-accent bg-accent-soft p-2.5 text-xs">
-      <div className="mb-1 font-semibold text-text2">Dev link (Resend not configured)</div>
-      <Link href={href} className="break-all text-accent-fg underline">{href}</Link>
-    </div>
-  );
-}

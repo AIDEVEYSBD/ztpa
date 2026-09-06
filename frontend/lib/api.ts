@@ -1,6 +1,8 @@
 import type {
-  ActionItem, AdminMetrics, AskResult, CampaignPlan, CampaignSubmitResult, ChangeResult, Finding, GraphData,
-  Health, MergeSuggestion, Remediation, RemediationRevision, StagedChange, ToolInfo,
+  ActionItem, AdminMetrics, AiActiveConfig, AiConfigResponse, AiConfigSave, AiTestResult, AskResult,
+  AzureAiAccount, AzureDeployment, AzureDiscovery, AzureResourceGroup, AzureSubscription, CampaignPlan,
+  CampaignSubmitResult, ChangeResult, Finding, GraphData, Health, MergeSuggestion, Remediation,
+  RemediationRevision, StagedChange, ToolInfo,
 } from "./types";
 
 /**
@@ -342,6 +344,194 @@ export type AuditPage = {
   offset: number;
 };
 
+// ───────────────────────────────────────────────────────────────────────────
+// Azure discovery + AI configuration
+//
+// These reads back the admin Configuration screen, and they carry two
+// obligations the rest of this file does not.
+//
+// 1. AN EMPTY ANSWER IS AMBIGUOUS. Azure Resource Manager filters list results
+//    by role assignment, so an identity with no Reader receives an empty 200
+//    rather than a 403 — `[]` from ARM equally means "the subscription has none"
+//    and "you may not see any". The backend refuses to pass that ambiguity on:
+//    every discovery route raises a TYPED error envelope
+//    (`{code, detail, error, azure_detail}` — see `_arm_exception` in
+//    backend/app/main.py) instead of returning `[]`, so `[]` on the wire is a
+//    real, positive "Azure was asked, and answered none". `armList` below keeps
+//    that guarantee intact on this side: a body it cannot read becomes a
+//    REPORTED FAILURE, never an empty list.
+//
+// 2. A TRUNCATED LIST IS NOT A LIST. Every discovery route is bounded, and a
+//    dropdown silently cut off at the limit fails exactly like an empty one —
+//    the operator's resource group is missing and the page says nothing. The
+//    bound rides on `x-npr-result-truncated` response headers, which is the
+//    reason these calls read the Response themselves rather than going through
+//    `j()`, which returns only the parsed body.
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * A discovery failure carrying ARM's own words.
+ *
+ * Extends `ApiError`, so every existing consumer — `asApiError`, `ErrorState`,
+ * `InlineError` — handles it unchanged and renders the same status + detail as
+ * any other failure. The two extra fields are what a discovery panel can say on
+ * top of that: `code` is the machine-readable `ArmError.kind`, so the UI can
+ * branch on "this identity can see several subscriptions" without parsing an
+ * English sentence, and `azureDetail` is ARM's raw message, which for the
+ * authorization case names the exact missing permission and scope and is the
+ * single most useful string an operator can be handed.
+ */
+export class AzureDiscoveryError extends ApiError {
+  /** `ArmError.kind`: azure_forbidden, azure_subscription_ambiguous, … */
+  readonly code?: string;
+  /** ARM's own error message, verbatim. */
+  readonly azureDetail?: string;
+
+  constructor(status: number, detail: string, path: string, code?: string, azureDetail?: string) {
+    super(status, detail, path);
+    this.name = "AzureDiscoveryError";
+    this.code = code;
+    this.azureDetail = azureDetail;
+    // `ApiError`'s constructor pins the prototype to ApiError; re-pin it here or
+    // `instanceof AzureDiscoveryError` is false in every consumer.
+    Object.setPrototypeOf(this, AzureDiscoveryError.prototype);
+  }
+}
+
+/** True for a JSON object (not an array, not null). */
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === "object" && !Array.isArray(v);
+}
+
+const str = (v: unknown): string | undefined => (typeof v === "string" && v.trim() ? v.trim() : undefined);
+
+/** The bound that stopped a listing, as a sentence, or nothing. */
+function truncationReason(r: Response): string | undefined {
+  if ((r.headers.get("x-npr-result-truncated") || "").toLowerCase() !== "true") return undefined;
+  const by = r.headers.get("x-npr-result-truncated-by") || "the endpoint's limit";
+  return (
+    `Azure returned more than this endpoint serves in one response, so the list was cut off at ` +
+    `${by}. What is missing here is not absent from your subscription — narrow the scope, or use ` +
+    `the manual configuration if you already know the target.`
+  );
+}
+
+/** The backend's own word for "I answered 200 and enumerated nothing, and here
+ *  is why". `degraded_reason` is the name the snapshot/graph/findings envelopes
+ *  already use for exactly this claim; both are accepted. */
+function unavailableReason(body: Record<string, unknown>): string | undefined {
+  return str(body.unavailable_reason) ?? str(body.degraded_reason);
+}
+
+/**
+ * A discovery body -> the items in it, or a rejection.
+ *
+ * Tolerant about the ENVELOPE (a bare array — what this API build serves — or
+ * `{items: [...]}` / `{<key>: [...]}`) and strict about the CONTENT: a body with
+ * no array in it throws rather than yielding `[]`, because the caller renders an
+ * empty list as "Azure answered none" and no unreadable body earns that claim.
+ */
+function asItems<T>(body: unknown, key: string, url: string): { items: T[]; reason?: string } {
+  if (Array.isArray(body)) return { items: body as T[] };
+  if (isRecord(body)) {
+    const list = body[key] ?? body.items;
+    if (Array.isArray(list)) return { items: list as T[], reason: unavailableReason(body) };
+    // An object carrying a reason and no list is still a legible answer: the
+    // lookup did not happen, and saying so is the point of the field.
+    const reason = unavailableReason(body);
+    if (reason) return { items: [], reason };
+  }
+  throw new ApiError(
+    200,
+    `The API answered, but not with the ${key} shape this screen reads (an array of ${key}, ` +
+      `optionally wrapped). The frontend and backend are probably different builds — nothing ` +
+      `about your Azure estate can be concluded from this.`,
+    url,
+  );
+}
+
+/**
+ * One discovery read. Reads the Response itself (rather than going through
+ * `j()`) for the truncation headers and for ARM's typed error envelope, but
+ * delegates to the SAME dead-upstream classification every other call uses, so a
+ * stopped backend still reads as "nothing answered at the API" here.
+ */
+async function armList<T>(url: string, key: string): Promise<AzureDiscovery<T>> {
+  let r: Response;
+  try {
+    r = await fetch(url, { cache: "no-store" });
+  } catch (e) {
+    throw new ApiError(0, e instanceof Error && e.message ? e.message : "The request could not be sent.", url);
+  }
+  const parsed = parseBody(await r.text().catch(() => ""));
+  if (!r.ok) {
+    if (looksLikeDeadUpstream(r)) throw new ApiError(r.status, deadUpstreamDetail(r.status), url, false);
+    const body = isRecord(parsed) ? parsed : {};
+    throw new AzureDiscoveryError(r.status, detailFor(r.status, parsed, url), url,
+                                  str(body.code), str(body.azure_detail));
+  }
+  const { items, reason } = asItems<T>(parsed, key, url);
+  return { items, unavailable_reason: reason, incomplete_reason: truncationReason(r) };
+}
+
+/**
+ * `GET /api/admin/ai/config` -> `{stored, active}`.
+ *
+ * The API serves the stored row FLAT, with `resolved` + `azure_ready` +
+ * `azure_reason` + `azure_api_key_present` alongside it; this splits the two
+ * apart, because they answer different questions and the screen renders both.
+ * When there is no resolution block it leaves `active` UNSET rather than copying
+ * `stored` into it — that asymmetry is the point. A screen that assumed saved ==
+ * live would assert the operator's choice is in effect on exactly the
+ * deployments where it is not: a stale read, an unreachable store, or the
+ * AI_CONFIG_IGNORE_DB break-glass.
+ */
+function asAiConfig(body: unknown, url: string): AiConfigResponse {
+  if (isRecord(body)) {
+    // `{stored, active}` if some build ever serves it that way…
+    const nested = isRecord(body.stored) ? body.stored : undefined;
+    // …otherwise the flat form, recognised by the two fields that make it a
+    // configuration read rather than an arbitrary object.
+    const flat = !nested && "provider" in body && "source" in body ? body : undefined;
+    const stored = nested ?? flat;
+    if (stored) {
+      const resolved = isRecord(body.resolved) ? body.resolved : isRecord(body.active) ? body.active : undefined;
+      return {
+        stored: stored as unknown as AiConfigResponse["stored"],
+        active: resolved
+          ? ({
+              ...resolved,
+              // Readiness and the key indicator sit beside `resolved` on the
+              // wire; the screen reads them as part of the active configuration
+              // because that is the question they answer.
+              ready: typeof body.azure_ready === "boolean" ? body.azure_ready : undefined,
+              reason: str(body.azure_reason) ?? null,
+              key_present: typeof body.azure_api_key_present === "boolean" ? body.azure_api_key_present : undefined,
+            } as unknown as AiActiveConfig)
+          : undefined,
+        default_api_version: str(body.default_api_version),
+        providers: Array.isArray(body.providers) ? (body.providers as string[]) : undefined,
+      };
+    }
+  }
+  throw new ApiError(
+    200,
+    "The API answered, but not with the AI-configuration shape this screen reads (the stored row, " +
+      "plus a `resolved` block). The frontend and backend are probably different builds — the " +
+      "configuration below cannot be shown, and it must not be guessed at.",
+    url,
+  );
+}
+
+/** `?subscription=` only when one was chosen. Omitted, the backend resolves it
+ *  itself — and refuses to guess when more than one is visible, which is why the
+ *  screen has a subscription dropdown at all. */
+const subQ = (subscription?: string) => (subscription ? `subscription=${encodeURIComponent(subscription)}` : "");
+const joinQ = (...parts: (string | undefined)[]) => {
+  const q = parts.filter(Boolean).join("&");
+  return q ? `?${q}` : "";
+};
+
 const post = (body?: unknown): RequestInit =>
   ({ method: "POST", headers: { "content-type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
 
@@ -399,4 +589,43 @@ export const api = {
   rule: (ref: string, snap?: string) => j<{ ref: string; rules: any[] }>(`/api/rule/${encodeURIComponent(ref)}${qs(snap)}`),
   propose: (sample: unknown, tool_hint: string) =>
     j<any>("/api/connectors/propose", post({ sample, tool_hint })),
+
+  // ── AI configuration (admin) ────────────────────────────────────────────
+  /** The saved provider choice and the one this deployment is actually routing
+   *  on. Admin-only; 503 when the store exists but could not be read, which is
+   *  NOT the same answer as "nothing is configured". */
+  aiConfig: () => j<unknown>("/api/admin/ai/config").then((b) => asAiConfig(b, "/api/admin/ai/config")),
+  /** Save the choice. No API key is sent, because the row cannot hold one — see
+   *  lib/types.ts and db/migrations/0004_ai_config.sql.
+   *
+   *  Typed `unknown` on purpose: the screen re-reads `aiConfig()` after a save
+   *  rather than trusting the echo, because "the PUT returned 200" and "this
+   *  deployment is now routing on what I saved" are different facts — the stored
+   *  row loses to a break-glass env var, and only the re-read can show that. */
+  saveAiConfig: (body: AiConfigSave) =>
+    j<unknown>("/api/admin/ai/config", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
+  /** Make one real model call with the SAVED configuration and report what came
+   *  back. A 200 with `ok: false` is a reachable provider that refused; only a
+   *  rejection here means the request never got an answer. */
+  testAiConfig: () => j<AiTestResult>("/api/admin/ai/test", post()),
+
+  // ── Azure discovery (admin) ─────────────────────────────────────────────
+  azureSubscriptions: () =>
+    armList<AzureSubscription>("/api/admin/azure/subscriptions", "subscriptions"),
+  azureResourceGroups: (subscription?: string) =>
+    armList<AzureResourceGroup>(`/api/admin/azure/resource-groups${joinQ(subQ(subscription))}`, "resource_groups"),
+  azureAccounts: (resourceGroup: string, subscription?: string) =>
+    armList<AzureAiAccount>(
+      `/api/admin/azure/accounts${joinQ(`resource_group=${encodeURIComponent(resourceGroup)}`, subQ(subscription))}`,
+      "accounts",
+    ),
+  azureDeployments: (resourceGroup: string, account: string, subscription?: string) =>
+    armList<AzureDeployment>(
+      `/api/admin/azure/deployments${joinQ(
+        `resource_group=${encodeURIComponent(resourceGroup)}`,
+        `account=${encodeURIComponent(account)}`,
+        subQ(subscription),
+      )}`,
+      "deployments",
+    ),
 };

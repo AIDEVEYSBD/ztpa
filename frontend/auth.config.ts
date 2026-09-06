@@ -1,11 +1,18 @@
 import type { NextAuthConfig } from "next-auth";
 import { resolveRole, unmappedRoles, type AppRole } from "@/lib/roles";
-import { identityFromIdToken, readAppRoles, SSO_SESSION_MAX_AGE } from "@/lib/sso";
+import {
+  BREAKGLASS_SESSION_MAX_AGE, identityFromIdToken, readAppRoles, SSO_SESSION_MAX_AGE,
+} from "@/lib/sso";
 
 // Edge-safe config (no DB imports) — used by middleware AND spread into the full
 // config in auth.ts. Public routes need no session; everything else (including
 // the /api proxy to the backend) requires one.
-const PUBLIC = ["/login", "/forgot", "/reset", "/sso"];
+//
+// `/forgot` and `/reset` are gone from this list because the routes are gone:
+// SSO-only has no password to reset. They are NOT left here "just in case" —
+// a public path is an unauthenticated entry point, and one that maps to no page
+// is surface with no purpose.
+const PUBLIC = ["/login", "/sso"];
 
 /** Signed in, but the role gate does not apply (otherwise /no-access would loop). */
 export const ROLE_EXEMPT = ["/no-access"];
@@ -67,20 +74,39 @@ export const authConfig = {
         token.idToken = account.id_token;
         token.authAt = nowSec();
         token.reauthAt = nowSec() + SSO_SESSION_MAX_AGE;
-      } else if (user) {
-        // Legacy local login (password / magic link), used only until SSO is on.
-        token.provider = "local";
+      } else if (account?.provider === "breakglass" && user) {
+        // The emergency door (docs/BREAKGLASS.md). `role` is admin because
+        // auth.ts verified the configured credential — it is NOT read from any
+        // table, and there is no other credential provider left that could
+        // reach this branch. `appRoles` names the door so /no-access, the
+        // sidebar and anything reading the session can tell the two apart.
+        token.provider = "breakglass";
         token.role = (user as { role?: AppRole }).role ?? null;
         token.uid = (user as { id?: string }).id;
-        token.appRoles = [];
+        token.sub = (user as { id?: string }).id ?? token.sub;
+        token.email = (user as { email?: string | null }).email ?? token.email;
+        token.appRoles = ["breakglass"];
         token.unmapped = [];
         token.misconfigured = false;
+        token.isEyEmployee = null;
+        token.orgType = null;
+        token.directoryRoles = [];
+        token.authAt = nowSec();
+        // Deliberately shorter than an SSO session, and on the same absolute
+        // (never rolling) clock: if the operator forgets to disarm the flag,
+        // the sessions it minted still expire on their own.
+        token.reauthAt = nowSec() + BREAKGLASS_SESSION_MAX_AGE;
       }
 
       // Hard stop at the absolute deadline: clears the session cookie, so the
       // next navigation runs a fresh authorization request and picks up any
       // role change. Never extend this on activity.
-      if (token.provider === "autox" && typeof token.reauthAt === "number" && nowSec() >= token.reauthAt) {
+      //
+      // Provider-agnostic on purpose. It used to test `provider === "autox"`,
+      // which was correct while the alternative was a local password session
+      // that had no deadline to enforce; a break-glass session is the opposite
+      // case — the one session that most needs to die by itself.
+      if (typeof token.reauthAt === "number" && nowSec() >= token.reauthAt) {
         return null;
       }
       return token;
@@ -92,7 +118,7 @@ export const authConfig = {
         (session.user as any).role = (token.role as AppRole | null) ?? null;
       }
       (session as any).sso = {
-        provider: token.provider ?? "local",
+        provider: token.provider ?? "none",
         sub: (token.uid ?? token.sub) as string,
         appRoles: (token.appRoles as string[]) ?? [],
         unmapped: (token.unmapped as string[]) ?? [],

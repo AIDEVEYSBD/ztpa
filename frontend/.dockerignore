@@ -24,7 +24,17 @@ dist
 npm-debug.log*
 yarn-error.log*
 
-# Not inputs to the build.
-Dockerfile
-.dockerignore
+# NOT excluded: Dockerfile and .dockerignore.
+#
+# They look like obvious non-inputs, and with a local `docker build` they are --
+# the CLI reads the Dockerfile itself and never needs it inside the context. But
+# `az acr build` TARS THE CONTEXT AND UPLOADS IT, then resolves --file against
+# the extracted tree on the build agent. Excluding the Dockerfile there means it
+# is genuinely not present, and the build dies with the rather unhelpful
+# "ERROR: Unable to find 'Dockerfile'" -- which it did, after the backend image
+# had already built and pushed.
+#
+# The cost of shipping them is two small text files in a layer that is never
+# copied into the image. The cost of excluding them is a deploy that fails
+# halfway, only on ACR, and never locally.
 coverage

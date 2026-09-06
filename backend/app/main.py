@@ -16,6 +16,7 @@ import logging
 import os
 import sys
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,9 +30,10 @@ from psycopg.types.json import Jsonb  # noqa: E402
 from pydantic import BaseModel, Field  # noqa: E402
 from starlette.exceptions import HTTPException as StarletteHTTPException  # noqa: E402
 
-from src import request_ctx, settings, tools_registry  # noqa: E402
+from src import ai_config, azure_arm, request_ctx, settings, tools_registry  # noqa: E402
 from src.advisory import authoring, campaign as campaign_mod, classify_change, entity_suggest, explain as explain_mod  # noqa: E402
 from src.advisory import intake as intake_mod, orchestrator, rank as rank_mod, remediation, report as report_mod  # noqa: E402
+from src.advisory import client as llm_client  # noqa: E402
 from src.advisory.client import provider_status  # noqa: E402
 from src.agent.assistant import ask as agent_ask  # noqa: E402
 from src.analyzers.run_all import EngineResult, reanalyze, run  # noqa: E402
@@ -118,7 +120,13 @@ async def _lifespan(_app: FastAPI):
 app = FastAPI(title="Network Policy Reviewer", version="1.0", lifespan=_lifespan)
 app.add_middleware(
     CORSMiddleware, allow_origins=[settings.FRONTEND_ORIGIN, "http://localhost:3000"],
-    allow_methods=["*"], allow_headers=["*"], expose_headers=["x-request-id"],
+    allow_methods=["*"], allow_headers=["*"],
+    # `x-npr-result-truncated*` rides on the Azure discovery listings: their body is
+    # the bare array the shared contract specifies, which has no room to say "there
+    # were more". A browser cannot read a response header it was not given
+    # permission to, so leaving these off would make the one signal that a dropdown
+    # is incomplete invisible to the page that renders it.
+    expose_headers=["x-request-id", "x-npr-result-truncated", "x-npr-result-truncated-by"],
 )
 
 
@@ -549,6 +557,37 @@ def _unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
     return JSONResponse(status_code=500,
                         content={"detail": "internal server error", "error": "internal server error",
                                  "request_id": rid})
+
+
+@app.exception_handler(azure_arm.ArmError)
+def _arm_exception(request: Request, exc: azure_arm.ArmError) -> JSONResponse:
+    """Azure discovery failures, as a TYPED envelope rather than an empty list.
+
+    This handler is the mechanism behind the one rule `src/azure_arm.py` exists
+    to hold: a dropdown that is empty because the app's identity has no `Reader`
+    assignment must not look like a dropdown that is empty because the customer
+    owns no Foundry accounts. So no discovery route ever catches an `ArmError`
+    itself -- it cannot be forgotten on a branch, and it cannot decay into
+    `return []` under a later edit.
+
+    The envelope is `{detail, error, code, azure_detail, request_id}`: `detail`
+    and `error` are the same human sentence every other error in this API
+    carries (frontend/lib/api.ts flattens `detail` and renders it), `code` is the
+    machine-readable `ArmError.kind` so the UI can branch without parsing
+    English, and `azure_detail` is ARM's own message -- which for the
+    authorization case names the exact missing permission and scope, and is the
+    single most useful string an operator can be handed.
+
+    `exc.status` is chosen by the raising module and is deliberately NOT a
+    passthrough of ARM's status: ARM's 403 ("this app's identity lacks Reader")
+    becomes 502 here, because a 403 from `/api/admin/*` already means "you are
+    not an admin of this product" and the two are fixed by different people.
+    """
+    log.warning("azure discovery failed", extra={
+        "event": "azure_discovery_failed", "code": exc.kind, "status": exc.status,
+        "path": request.url.path, "azure_detail": exc.detail})
+    return JSONResponse(status_code=exc.status,
+                        content={**exc.payload(), "request_id": request_ctx.request_id()})
 
 
 # --------------------------------------------------------------------------
@@ -2133,6 +2172,458 @@ def admin_metrics(days: int = Query(30, ge=1, le=365), _: None = Depends(require
         "snapshots": snaps["n"], "findings": finds["findings"], "critical": finds["critical"],
         "active_snapshot": sid(),
     }
+
+
+# --- Admin: the AI provider configuration, and Azure resource discovery -----
+# THE PROBLEM THESE ROUTES SOLVE. Pointing this product at a customer's own
+# Azure AI Foundry deployment used to be a container-spec edit: three environment
+# variables, a new revision, no record of who decided it, and no way to tell a
+# wrong endpoint from a weak model. The Configuration page replaces that with a
+# stored, attributable row (`ztpa.ai_config`, owned by src/ai_config.py) whose
+# three Azure fields are DISCOVERED from the operator's own subscription rather
+# than typed from memory.
+#
+# Four properties hold across every route below, and each is a finding from the
+# round-2 audit rather than a preference:
+#
+#   * ADMIN ONLY. Discovery enumerates the customer's cloud estate -- resource
+#     group names alone are an inventory -- and /api/admin/ai/test spends model
+#     tokens. Both are `Depends(require_admin)`, which runs before the handler
+#     body and so cannot be missed on a branch.
+#
+#   * BOUNDED. Every list route takes `Query(..., ge=1, le=MAX_LIMIT)`, every ARM
+#     call carries a timeout, and pagination stops at a page cap. An unbounded
+#     synchronous call to somebody else's API on a request path is the exact
+#     pattern Phase 2 removed.
+#
+#   * NO SILENT EMPTY LIST. `[]` from here means Azure was asked and answered
+#     "none". Everything else -- no credential, no Reader role, a timeout, a body
+#     that is not the documented shape -- raises `ArmError` and leaves as a typed
+#     error envelope through `_arm_exception`. No route below catches one, so the
+#     distinction cannot decay into `return []` under a later edit.
+#
+#   * NO MODEL CALL INSIDE AN OPEN TRANSACTION. /api/admin/ai/test reads the
+#     configuration, CLOSES the connection, makes the call, then opens a second
+#     short transaction for the audit row -- the shape /api/campaign/plan already
+#     uses, and the one Phase 2 imposed after /api/actions held a transaction
+#     open across a live LLM call.
+
+
+def _azure_client_id() -> str | None:
+    """The user-assigned managed identity discovery should authenticate as.
+
+    Read from the RESOLVED configuration, not straight from the environment, so
+    discovery answers the question the operator is actually asking: "can the
+    identity this app will use for INFERENCE see my Foundry account?"
+    Authenticating discovery as the developer's `az login` while inference runs
+    as a managed identity would make the dropdowns fill beautifully and every
+    model call 403 -- the two have to be the same principal or the page proves
+    nothing.
+
+    `resolve()` never raises and is cached for 30s, so this is safe on a request
+    path. `None` means DefaultAzureCredential: the app's system-assigned identity
+    in Container Apps, `az login` on a laptop.
+    """
+    return ai_config.resolve().azure_client_id or None
+
+
+def _azure_list(items: list, state: dict) -> JSONResponse:
+    """A discovery listing, with truncation marked rather than implied.
+
+    The BODY is the bare array the shared contract specifies. The one thing an
+    array cannot carry is "there were more" -- and a dropdown silently cut off at
+    the limit fails exactly like an empty one: the operator's resource group is
+    missing and the page gives them nothing to read. So the bound that stopped
+    the listing rides on a header (exposed through CORS above), and
+    src/azure_arm.py has already logged it with the request id.
+    """
+    if not state.get("truncated"):
+        return JSONResponse(content=items)
+    return JSONResponse(content=items, headers={
+        "x-npr-result-truncated": "true",
+        "x-npr-result-truncated-by": str(state.get("bound") or "limit"),
+    })
+
+
+@app.get("/api/admin/azure/subscriptions")
+def azure_subscriptions(
+    limit: int = Query(azure_arm.DEFAULT_LIMIT, ge=1, le=azure_arm.MAX_LIMIT),
+    _: None = Depends(require_admin),
+) -> JSONResponse:
+    """`[{id, name, state}]` -- the subscriptions this app's Azure identity can see.
+
+    Not in the original endpoint contract, and additive on purpose: with more
+    than one subscription visible there is no defensible guess about which estate
+    to enumerate (`azure_arm.resolve_subscription` refuses to make one), so the
+    page needs a way to ask. With exactly one, it is the answer and the other
+    three routes default to it without the frontend passing anything.
+    """
+    state: dict = {}
+    return _azure_list(azure_arm.list_subscriptions(client_id=_azure_client_id(),
+                                                    limit=limit, state=state), state)
+
+
+@app.get("/api/admin/azure/resource-groups")
+def azure_resource_groups(
+    subscription: str | None = Query(None, max_length=64),
+    limit: int = Query(azure_arm.DEFAULT_LIMIT, ge=1, le=azure_arm.MAX_LIMIT),
+    _: None = Depends(require_admin),
+) -> JSONResponse:
+    """`[{name, location}]` -- the first dropdown on the Configuration page."""
+    state: dict = {}
+    client_id = _azure_client_id()
+    sub = azure_arm.resolve_subscription(subscription, client_id=client_id)
+    return _azure_list(azure_arm.list_resource_groups(sub, client_id=client_id,
+                                                      limit=limit, state=state), state)
+
+
+@app.get("/api/admin/azure/accounts")
+def azure_accounts(
+    resource_group: str = Query(..., min_length=1, max_length=90),
+    subscription: str | None = Query(None, max_length=64),
+    limit: int = Query(azure_arm.DEFAULT_LIMIT, ge=1, le=azure_arm.MAX_LIMIT),
+    _: None = Depends(require_admin),
+) -> JSONResponse:
+    """`[{name, endpoint, kind, location}]` -- the accounts in one resource group
+    that can actually serve a model call.
+
+    Filtered to `azure_arm.INFERENCE_KINDS`. A Speech or Vision resource has a
+    name, an endpoint and a location too, so an unfiltered list looks like a
+    perfectly good model dropdown right up until the operator picks one and every
+    model call 404s.
+    """
+    state: dict = {}
+    client_id = _azure_client_id()
+    sub = azure_arm.resolve_subscription(subscription, client_id=client_id)
+    return _azure_list(azure_arm.list_ai_accounts(sub, resource_group, client_id=client_id,
+                                                  limit=limit, state=state), state)
+
+
+@app.get("/api/admin/azure/deployments")
+def azure_deployments(
+    resource_group: str = Query(..., min_length=1, max_length=90),
+    account: str = Query(..., min_length=1, max_length=64),
+    subscription: str | None = Query(None, max_length=64),
+    limit: int = Query(azure_arm.DEFAULT_LIMIT, ge=1, le=azure_arm.MAX_LIMIT),
+    _: None = Depends(require_admin),
+) -> JSONResponse:
+    """`[{name, model, version, sku}]` -- the model deployments on one account.
+
+    `name` is the DEPLOYMENT name (what goes into the request path and into
+    `azure_deployment`); `model` is what it is a deployment OF. They routinely
+    differ, which is the whole reason this is a dropdown and not a text box.
+    """
+    state: dict = {}
+    client_id = _azure_client_id()
+    sub = azure_arm.resolve_subscription(subscription, client_id=client_id)
+    return _azure_list(azure_arm.list_deployments(sub, resource_group, account,
+                                                  client_id=client_id, limit=limit,
+                                                  state=state), state)
+
+
+# --- Admin: the stored provider configuration ------------------------------
+
+class AiConfigBody(BaseModel):
+    """The Configuration page's form. Mirrors `ztpa.ai_config` exactly, and
+    notably has NO key field: the API key for `azure_auth_mode='key'` lives in a
+    Container Apps secret surfaced as `AZURE_AI_API_KEY`, never in the database
+    and never in a request body that could be echoed back or logged."""
+
+    provider: str
+    azure_endpoint: str | None = None
+    azure_deployment: str | None = None
+    azure_api_version: str | None = None
+    azure_auth_mode: str = "identity"
+    azure_client_id: str | None = None
+
+
+class AiTestBody(BaseModel):
+    """What /api/admin/ai/test accepts, and why every field is optional.
+
+    The test button posts nothing in the simple case. It MAY post the form's
+    current values, and when it does they are compared with what is stored --
+    see `ai_config_test`. Every field is optional (`provider` included, unlike
+    `AiConfigBody`) so that an empty object, a partial form and no body at all
+    are all accepted rather than 422'd: a diagnostic endpoint that refuses the
+    request is the least useful possible answer to "is my configuration
+    working?".
+    """
+
+    provider: str | None = None
+    azure_endpoint: str | None = None
+    azure_deployment: str | None = None
+    azure_api_version: str | None = None
+    azure_auth_mode: str | None = None
+    azure_client_id: str | None = None
+
+    def is_empty(self) -> bool:
+        return not any(v for v in self.model_dump().values())
+
+
+def _ai_config_payload(cfg: ai_config.AiConfig) -> dict:
+    """The stored row, what it RESOLVES to, and whether that can make a call.
+
+    Three questions the Configuration page has to answer at once, and they have
+    different answers often enough that collapsing them is a bug: a deployment
+    can have no stored row and still be routed at Azure by its container spec
+    (`azure_origin: "environment"`), and a row can be complete, saved,
+    attributable and still unable to make a single call because it selects key
+    auth on a deployment whose `AZURE_AI_API_KEY` was never set.
+
+    Flat, with the stored row's own fields at the top level, because that is what
+    the shared contract's `GET -> the current stored config` describes; the
+    resolution and readiness blocks are additive alongside it.
+    """
+    resolved = ai_config.resolve(cfg)
+    ready, reason = ai_config.azure_ready(resolved)
+    return {
+        **cfg.public(),
+        "resolved": {
+            "provider": resolved.provider,
+            "provider_origin": resolved.provider_origin,
+            "azure_endpoint": resolved.azure_endpoint,
+            "azure_deployment": resolved.azure_deployment,
+            "azure_api_version": resolved.azure_api_version,
+            "azure_auth_mode": resolved.azure_auth_mode,
+            "azure_client_id": resolved.azure_client_id,
+            "azure_origin": resolved.azure_origin,
+            "config_source": resolved.config_source,
+            "azure_endpoint_error": resolved.azure_endpoint_error,
+        },
+        "azure_ready": ready,
+        "azure_reason": reason,
+        # A BOOLEAN, never the value: the page has to be able to say "you chose
+        # key auth and this deployment has no key" without the key itself ever
+        # crossing the API boundary.
+        "azure_api_key_present": bool(settings.AZURE_AI_API_KEY),
+        "providers": list(ai_config.PROVIDERS),
+        "auth_modes": list(ai_config.AZURE_AUTH_MODES),
+        "default_api_version": ai_config.DEFAULT_AZURE_API_VERSION,
+    }
+
+
+def _ai_config_or_503(reader):
+    """Run a store call, mapping src/ai_config.py's two failures onto the two
+    statuses they mean.
+
+    `AiConfigUnavailable` is 503 and NOT an empty configuration -- the whole
+    reason that exception type exists is that "no row is stored" and "the store
+    could not be read" have different fixes, and answering the second with the
+    defaults would show an operator a blank form for a provider that is in fact
+    configured and running. `AiConfigError` is 400: the input was refused, and
+    the message names the field.
+    """
+    try:
+        return reader()
+    except ai_config.AiConfigError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except ai_config.AiConfigUnavailable as exc:
+        log.error("the AI configuration store is unreachable", extra={
+            "event": "ai_config_store_unavailable", "error": str(exc)})
+        raise HTTPException(503, str(exc)) from exc
+
+
+@app.get("/api/admin/ai/config")
+def ai_config_get(_: None = Depends(require_admin)) -> dict:
+    """The stored advisory-provider configuration. Holds no secret and returns
+    none -- see `AiConfigBody` and `ai_config.SECRET_COLUMN_PATTERNS`."""
+    return _ai_config_payload(_ai_config_or_503(ai_config.load))
+
+
+@app.put("/api/admin/ai/config")
+def ai_config_put(body: AiConfigBody, _: None = Depends(require_admin)) -> dict:
+    """Save the configuration. Validated, audited and attributed by
+    `ai_config.save()` inside one transaction, so the row and the record of who
+    changed it can never disagree."""
+    cfg = ai_config.AiConfig(
+        provider=body.provider,
+        azure_endpoint=body.azure_endpoint,
+        azure_deployment=body.azure_deployment,
+        azure_api_version=body.azure_api_version,
+        azure_auth_mode=body.azure_auth_mode,
+        azure_client_id=body.azure_client_id,
+    )
+    actor = request_ctx.current().email
+    saved = _ai_config_or_503(lambda: ai_config.save(cfg, actor))
+    # A changed `azure_client_id` is a changed IDENTITY. Without this, discovery
+    # would keep authenticating as the previous one until the process restarted
+    # -- a configuration change that appears to do nothing, which is how an
+    # operator concludes the page is broken and goes back to the container spec.
+    azure_arm.reset_credentials()
+    log.info("AI provider configuration saved", extra={
+        "event": "ai_config_saved_api", "provider": saved.provider,
+        "azure_deployment": saved.azure_deployment})
+    return _ai_config_payload(saved)
+
+
+# The probe. Deliberately trivial and deliberately not JSON: the question is "can
+# this deployment reach that model at all", and a model that answers the wrong
+# word is still a model that answered, which is the fact under test. Temperature
+# 0 so the call is as cheap and as repeatable as the provider allows.
+_AI_TEST_SYSTEM = ("You are a connectivity probe for a network policy review tool. "
+                   "Answer with a single word and nothing else.")
+_AI_TEST_USER = "Reply with the single word: ok"
+
+# The fields compared between a posted test body and the configuration that is
+# actually in force. Shared by the drift check and its error message so the two
+# cannot list different things.
+_AI_CONFIG_FIELDS: tuple[str, ...] = (
+    "provider", "azure_endpoint", "azure_deployment", "azure_api_version",
+    "azure_auth_mode", "azure_client_id",
+)
+
+
+def _ai_config_drift(body: AiTestBody, resolved: ai_config.Resolved) -> list[str]:
+    """Which fields of a posted configuration differ from the one in force.
+
+    Compared through `ai_config.validate()` so both sides are NORMALIZED:
+    `https://acct.cognitiveservices.azure.com` and the same string with a
+    trailing slash are one configuration, and refusing to test over a slash would
+    be a false alarm that teaches an operator to ignore the message. The api
+    version is defaulted on both sides for the same reason -- an unset field and
+    the default it resolves to are not a difference.
+
+    A body that cannot be validated at all is drift by definition: it is not what
+    is stored, because what is stored is valid.
+    """
+    try:
+        posted = ai_config.validate(ai_config.AiConfig(
+            provider=body.provider, azure_endpoint=body.azure_endpoint,
+            azure_deployment=body.azure_deployment, azure_api_version=body.azure_api_version,
+            azure_auth_mode=body.azure_auth_mode or "identity",
+            azure_client_id=body.azure_client_id))
+    except ai_config.AiConfigError as exc:
+        return [f"the values sent are not a valid configuration ({exc})"]
+    default_version = ai_config.DEFAULT_AZURE_API_VERSION
+    out = []
+    for field in _AI_CONFIG_FIELDS:
+        mine = getattr(posted, field) or ""
+        theirs = getattr(resolved, field) or ""
+        if field == "azure_api_version":
+            mine, theirs = mine or default_version, theirs or default_version
+        if mine != theirs:
+            out.append(field)
+    return out
+
+
+@app.post("/api/admin/ai/test")
+def ai_config_test(body: AiTestBody | None = None, _: None = Depends(require_admin)) -> dict:
+    """Make ONE real call through the configured provider and report what happened.
+
+    `{ok, provider, model, latency_ms, error}`, plus the endpoint and deployment
+    that were actually used so the answer names its own subject. This is the
+    button an operator presses to find out whether the configuration they just
+    saved works, so it must never pass on a configuration that would fail in use.
+    Four ways it refuses to.
+
+    IT TESTS WHAT IS IN FORCE, AND SAYS SO. `advisory.client.complete()` reads its
+    Azure target from the resolved configuration (`settings.azure_target()`), so
+    there is no seam through which an UNSAVED draft could be tested -- a body of
+    draft values would be accepted, ignored, and answered with a green tick
+    describing the old row. Rather than that, a body that DIFFERS from what is in
+    force is refused, naming the fields, with "save it first". Posting no body,
+    an empty object, or the stored values tests what is running.
+
+    A PROVIDER SUBSTITUTION IS A FAILURE, NOT A PASS. `complete()` is fail-closed
+    by contract: a provider it does not implement falls through to the Ollama
+    branch and comes back `ok=True` from a completely different model. Here that
+    would be the worst possible answer -- a green tick that appears to prove the
+    Azure endpoint works, produced by a local model that never touched it. So the
+    provider that answered is compared with the one that was asked for.
+
+    AN EMPTY COMPLETION IS A FAILURE. A 200 carrying no text cannot serve any
+    capability in this product. It is also not hypothetical: the reasoning
+    deployment on the live Foundry account spends its whole budget in
+    `reasoning_content` and returns `content: ""` with `finish_reason: "length"`,
+    which is a working endpoint and an unusable configuration.
+
+    A CONFIGURATION THAT CANNOT CALL IS REPORTED, NOT ATTEMPTED. `azure_ready()`
+    already knows when key auth is selected with no key in the environment; the
+    reason is returned instead of a 401 the operator would have to decode.
+
+    No connection is held across the model call.
+    """
+    cfg = _ai_config_or_503(ai_config.load)
+    resolved = ai_config.resolve(cfg)
+    base = {"endpoint": resolved.azure_endpoint or None,
+            "deployment": resolved.azure_deployment or None,
+            "auth_mode": resolved.azure_auth_mode,
+            "config_source": resolved.config_source}
+
+    if body is not None and not body.is_empty():
+        drifted = _ai_config_drift(body, resolved)
+        if drifted:
+            return {**base, "ok": False, "provider": resolved.provider, "model": None,
+                    "latency_ms": 0, "tested": "nothing", "sample": "",
+                    "error": ("this tests the configuration this deployment is RUNNING, and the "
+                              f"values you sent differ from it ({', '.join(drifted)}). Save "
+                              "first, then test -- otherwise the result would describe a "
+                              "configuration nobody is using.")}
+
+    provider = resolved.provider
+    if provider == "auto":
+        # `auto` is not a destination, it is the instruction to pick one, so the
+        # test resolves it the same way a real call will -- otherwise the button
+        # reports on a provider no capability would ever reach.
+        provider = settings.active_provider()
+
+    if provider == "azure":
+        ready, why = ai_config.azure_ready(resolved)
+        if not ready:
+            # No call is made, because there is nothing to call. A 200 with
+            # ok=False rather than a 4xx: the operator asked "does this work?"
+            # and this IS the answer; an HTTP error would leave the page
+            # rendering a transport failure instead of the reason.
+            return {**base, "ok": False, "provider": provider,
+                    "model": resolved.azure_deployment or None, "latency_ms": 0,
+                    "error": why, "tested": "the configuration in force", "sample": ""}
+
+    t0 = time.perf_counter()
+    res = llm_client.complete(system=_AI_TEST_SYSTEM, user=_AI_TEST_USER, role="judge",
+                              temperature=0.0, provider=provider,
+                              capability="ai_config_test", subject="config-page")
+    latency_ms = round((time.perf_counter() - t0) * 1000)
+
+    ok, error = res.ok, res.error
+    if ok and res.provider != provider:
+        ok = False
+        error = (f"the configured provider is '{provider}' but the advisory client answered as "
+                 f"'{res.provider}'. The call did NOT reach the configured endpoint, so this "
+                 f"result says nothing about it: '{provider}' is not implemented in "
+                 f"src/advisory/client.py on this build.")
+    elif ok and not (res.text or "").strip():
+        ok = False
+        error = ("the provider accepted the call and returned an empty completion"
+                 + (f" (finish_reason: {res.finish_reason})" if getattr(res, "finish_reason", None)
+                    else "")
+                 + ". Nothing in this product can be served by that, so it is not a working "
+                   "configuration.")
+
+    payload = {
+        **base, "ok": ok, "provider": res.provider, "model": res.model,
+        "latency_ms": latency_ms, "error": error, "tested": "the configuration in force",
+        # Bounded proof that something really answered, so `ok` is not the only
+        # thing the operator has to take on trust.
+        "sample": (res.text or "").strip()[:200],
+    }
+    if provider != "azure":
+        payload.update(endpoint=None, deployment=None, auth_mode=None)
+    log.info("AI provider test call completed", extra={
+        "event": "ai_config_test", "ok": ok, "provider": res.provider, "model": res.model,
+        "latency_ms": latency_ms, "error": error})
+    # Second transaction, AFTER the call: an admin action that spends tokens is
+    # attributable. Best-effort -- a failed audit must not turn a successful
+    # probe into a 500, because the probe's answer is what the operator came for
+    # -- but never silent.
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            audit(cur, "ai_config_test", subject=res.provider,
+                  detail={k: payload[k] for k in ("ok", "provider", "model", "latency_ms",
+                                                  "error", "endpoint", "deployment")})
+    except Exception as exc:  # noqa: BLE001 — the probe's result outranks its audit row
+        log.warning("the AI provider test could not be audited", exc_info=True, extra={
+            "event": "ai_config_test_audit_failed", "error": str(exc)})
+    return payload
 
 
 class AskBody(BaseModel):

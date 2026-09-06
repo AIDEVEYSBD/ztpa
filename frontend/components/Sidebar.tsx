@@ -3,12 +3,12 @@
 import { useSession } from "next-auth/react";
 import {
   Network, ListChecks, GitBranch, MessageSquare, FileText, Plug, Fingerprint,
-  Users, LogOut, Database, History, Rocket, SlidersHorizontal, BarChart3, ScrollText,
+  LogOut, Database, History, Rocket, SlidersHorizontal, BarChart3, ScrollText, Cog,
 } from "lucide-react";
 import { Brand, cn } from "./ui";
 import { ThemeToggle } from "./theme";
 
-export type ScreenId = "map" | "risks" | "change" | "staging" | "ask" | "report" | "connectors" | "assets" | "ingest" | "users" | "snapshots" | "tools" | "metrics" | "audit";
+export type ScreenId = "map" | "risks" | "change" | "staging" | "ask" | "report" | "connectors" | "assets" | "ingest" | "snapshots" | "tools" | "metrics" | "audit" | "config";
 
 type NavDef = { id: ScreenId; label: string; icon: typeof Network };
 
@@ -29,12 +29,24 @@ const ADMIN: NavDef[] = [
   { id: "metrics", label: "Metrics & Cost", icon: BarChart3 },
   { id: "ingest", label: "Ingested data", icon: Database },
   { id: "snapshots", label: "Snapshots", icon: History },
-  { id: "users", label: "Manage users", icon: Users },
+  //
+  // There is no "Manage users" entry here any more, and there is no `users`
+  // screen to point one at. Membership and roles are granted in the AutoX admin
+  // (autox:app_roles), so a local invite/role screen could only ever create rows
+  // nobody can sign in as. Who HAS signed in is still recorded in
+  // ztpa.app_users (see lib/users.ts), and what they did is the Audit trail.
+  //
   // The governance reader. Admin-only like the rest of this group: the whole
   // ADMIN block is rendered only for role === "admin" below, which is the same
   // gate every other admin screen already relies on. The API is admin-only too —
   // this hides the door, it does not replace the lock.
   { id: "audit", label: "Audit trail", icon: ScrollText },
+  // Where this deployment's AI provider is chosen. Admin-only for the same
+  // reason the rest of this group is, and for one more: it decides where the
+  // product sends network topology, firewall rules and asset names. The API
+  // behind it is admin-only too -- this hides the door, it does not replace the
+  // lock.
+  { id: "config", label: "Configuration", icon: Cog },
 ];
 
 /** "Mehul Puri" -> "MP"; "purimehul2003@x.com" -> "PU". */

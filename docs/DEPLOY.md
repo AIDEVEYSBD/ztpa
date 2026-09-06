@@ -208,6 +208,49 @@ but point it at a scratch database anyway, never at production.
 
 ---
 
+## Testing against a real cloud service
+
+"Deliberately offline" used to cover only the database. It now covers the
+network too, because it had stopped being true: a live Azure discovery probe was
+gated **opt-out**, so plain `pytest` reached Azure Resource Manager from any
+machine with a working `az login` and asserted the *absence* of a GPT deployment
+in a resource group nobody in this repo controls. Somebody deployed
+`gpt-5.1-codex-mini` and the suite went red without a line of this code
+changing. Three other tests were quietly making real calls to a hosted model
+provider — billing a key from the checked-in `.env` on every run — and were
+green the whole time.
+
+So `backend/conftest.py` closes the network seam the same way it closes the
+database one, in two independent halves (`backend/tests/livegate.py`):
+
+- **`connect` to anything but loopback raises** `OutboundSocketBlocked`, naming
+  the address and the test. Loopback stays open, so `NPR_TEST_DATABASE_URL`
+  against a local Postgres is unaffected.
+- **`@pytest.mark.live` is the only exemption**, and a marked test is *skipped
+  at collection* unless the run asks for live tests. There is no per-test gate
+  to forget: declaring that you reach the internet is what makes you opt-in, and
+  *not* declaring it is what makes you fail loudly instead of quietly passing.
+
+```bash
+# the default: green means "everything this repo controls is correct"
+pytest
+
+# ask for the real thing (Azure Resource Manager discovery)
+NPR_RUN_LIVE=1 pytest -m live
+
+# real inference against a Foundry deployment — naming the target IS the opt-in,
+# and a target that is set but unreachable is a hard FAILURE, never a skip
+NPR_TEST_AZURE_ENDPOINT=https://<account>.cognitiveservices.azure.com/ \
+NPR_TEST_AZURE_DEPLOYMENT=Mistral-Large-3 pytest -m live -s
+```
+
+`NPR_SKIP_AZURE_LIVE=1` still vetoes every live test and wins over both opt-ins,
+so any pipeline already setting it keeps working. `test_offline_suite_contract.py`
+tests the guard itself — a guard nobody has watched fire is a guard nobody knows
+works.
+
+---
+
 ## Operational caveats
 
 - **Cold starts.** Render free sleeps after 15 min idle. To keep the demo snappy,

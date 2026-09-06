@@ -29,10 +29,103 @@ export const SSO_CLIENT_SECRET = process.env.SSO_CLIENT_SECRET || "";
 /** SSO is live once a client_id is registered. */
 export const ssoEnabled = (): boolean => !!SSO_CLIENT_ID;
 
-/** Local password/magic-link login. Off automatically once SSO is configured;
- *  `AUTH_LOCAL_LOGIN=true` keeps it on (useful during cutover). */
-export const localLoginEnabled = (): boolean =>
-  process.env.AUTH_LOCAL_LOGIN === "true" || !ssoEnabled();
+// --- break-glass -----------------------------------------------------------
+//
+// THIS IS THE ONLY WAY IN THAT DOES NOT GO THROUGH AUTOX, AND IT IS OFF.
+//
+// Password sign-in and magic links are gone; AutoX is the sole identity
+// provider. That is the decision, and it has a consequence nobody can wish
+// away: a broken SSO client registration, a rotated secret, an AutoX outage or
+// a mistyped `SSO_ISSUER` locks every operator out of a running deployment with
+// no way back in. `docs/BREAKGLASS.md` is the recovery, and this is the code it
+// drives.
+//
+// Three properties it must have, and each one is a deliberate choice below:
+//
+//  1. **Off unless someone armed it.** The predecessor (`localLoginEnabled`)
+//     returned TRUE whenever SSO was not configured, so the shipped default of
+//     a fresh clone -- and of the live deployment, which has no `SSO_*` var set
+//     -- was "password login is on". Under SSO-only that default would silently
+//     preserve the very bypass this workstream removes. It is now the literal
+//     string "true" in `AUTH_LOCAL_LOGIN` and nothing else. Never derive it from
+//     the absence of another setting.
+//
+//  2. **No credential in the database.** The old path compared bcrypt hashes in
+//     `ztpa.app_users.password_hash`; migration 0005 drops that column. The
+//     break-glass credential lives ONLY in the platform's secret store (a
+//     Container Apps secret), so a database compromise yields no login and there
+//     is no dormant password sitting in a table waiting to be found. It also
+//     means break-glass works when the database is down -- the session is minted
+//     from configuration alone, and mirroring the sign-in into `app_users` is a
+//     best-effort side effect exactly as it is for AutoX.
+//
+//  3. **Distinguishable in the audit trail.** A break-glass session carries
+//     `sub = breakglass:<email>`, never an AutoX subject, so `audit_log
+//     .actor_sub` says which door was used.
+//
+// The name `AUTH_LOCAL_LOGIN` is reused rather than invented because
+// `scripts/azure/deploy.sh` already plumbs it to the Container App, so the
+// recovery in docs/BREAKGLASS.md needs no deploy-script change to work today.
+// Its MEANING changed -- it no longer means "keep the old login for everyone".
+
+/** The single identity break-glass can authenticate. Lowercased, since it is
+ *  compared against operator-typed input and stamped into the audit trail. */
+export const BREAKGLASS_EMAIL = (process.env.BREAKGLASS_EMAIL || "").trim().toLowerCase();
+
+/** bcrypt hash of the break-glass password (preferred: the plaintext then never
+ *  appears in shell history, a deployment template or `az` output). */
+export const BREAKGLASS_PASSWORD_HASH = (process.env.BREAKGLASS_PASSWORD_HASH || "").trim();
+
+/** Plaintext fallback. Accepted on purpose: a recovery that fails because the
+ *  operator could not produce a bcrypt hash at 3am is not a recovery. It is
+ *  logged as a warning on every use so it cannot become the normal state. */
+export const BREAKGLASS_PASSWORD = process.env.BREAKGLASS_PASSWORD || "";
+
+/** Absolute lifetime of a break-glass session. Deliberately short and NOT
+ *  extended by activity: if an operator forgets to disarm the flag, the sessions
+ *  it minted still die. Default 15 minutes. */
+export const BREAKGLASS_SESSION_MAX_AGE = Number(process.env.BREAKGLASS_SESSION_MAX_AGE || 900);
+
+/** The `sub` a break-glass session carries. Prefixed so no AutoX subject can
+ *  ever collide with it and so the audit trail is greppable. */
+export const breakGlassSub = (email: string): string => `breakglass:${email}`;
+
+/** Is `sub` a break-glass identity? Used by anything reading the audit trail. */
+export const isBreakGlassSub = (sub: string | null | undefined): boolean =>
+  typeof sub === "string" && sub.startsWith("breakglass:");
+
+/**
+ * Why the login screen shows what it shows.
+ *
+ * `armed but not usable` is a state in its own right, and it must be visible:
+ * an operator who flipped the flag and forgot the credential would otherwise
+ * see a sign-in page with nothing on it and no idea why.
+ */
+export type BreakGlassState =
+  | { armed: false }
+  | { armed: true; usable: false; reason: string }
+  | { armed: true; usable: true; email: string };
+
+export function breakGlassState(): BreakGlassState {
+  if (process.env.AUTH_LOCAL_LOGIN !== "true") return { armed: false };
+  if (!BREAKGLASS_EMAIL) {
+    return { armed: true, usable: false, reason: "BREAKGLASS_EMAIL is not set." };
+  }
+  if (!BREAKGLASS_PASSWORD_HASH && !BREAKGLASS_PASSWORD) {
+    return {
+      armed: true,
+      usable: false,
+      reason: "Neither BREAKGLASS_PASSWORD_HASH nor BREAKGLASS_PASSWORD is set.",
+    };
+  }
+  return { armed: true, usable: true, email: BREAKGLASS_EMAIL };
+}
+
+/** Break-glass can actually authenticate someone right now. */
+export const breakGlassEnabled = (): boolean => {
+  const s = breakGlassState();
+  return s.armed && s.usable;
+};
 
 /** Absolute lifetime of a signed-in session, in seconds. This is the role-freshness
  *  knob: AutoX role grants/revocations only appear in NEWLY minted tokens, so the

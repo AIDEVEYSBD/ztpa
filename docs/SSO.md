@@ -6,6 +6,17 @@ Network Policy Reviewer authenticates against **AutoX SSO** using OpenID Connect
 authorization code + PKCE (S256). Authorization is driven by the **`autox:app_roles`**
 claim — the roles a user holds *in this application*.
 
+> **AutoX SSO is the ONLY way in.** There is no password directory, no magic
+> link, no invite, no "forgot password" and no Manage-users screen. Password and
+> magic-link sign-in, `ztpa.auth_tokens` and `app_users.password_hash` were
+> removed (`db/migrations/0005_drop_local_auth.sql`), and membership and roles are
+> granted in the AutoX admin.
+>
+> The consequence is stated plainly because it is real: **a broken SSO
+> configuration locks everyone out of a running deployment.** The recovery is a
+> single, off-by-default, audited credential — **[docs/BREAKGLASS.md](BREAKGLASS.md)**.
+> Read it before you deploy, not after.
+
 ---
 
 ## 1. What to register in the AutoX SSO admin
@@ -41,7 +52,7 @@ reuse-detection races. Role freshness is handled by capping the session instead
 
 | SSO app role | App role | Grants |
 |---|---|---|
-| `npr_admin` | `admin` | Everything, plus the admin console: users, snapshots, per-role tool toggles, usage metrics. The only role that may mutate the system of record — recompute, merge/unmerge identities, push to a data source |
+| `npr_admin` | `admin` | Everything, plus the admin console: snapshots, per-role tool toggles, usage metrics, the audit trail. The only role that may mutate the system of record — recompute, merge/unmerge identities, push to a data source. (There is no *users* screen: see §5) |
 | `npr_analyst` | `analyst` | Full read + AI advisory; propose, approve/reject, stage and withdraw change requests; run remediation campaigns |
 | `npr_viewer` | `viewer` | Read-only: findings, graph, reports, evidence. Cannot submit, approve, stage, push or withdraw a change, cannot merge identities, and cannot recompute a snapshot |
 
@@ -116,21 +127,41 @@ SSO_SCOPE=openid profile email orgs roles
 SSO_SESSION_MAX_AGE=3600  # absolute session seconds; role-change pickup interval
 SSO_POST_LOGOUT_REDIRECT_URI=   # default: <origin>/login (must be registered)
 SSO_ROLE_MAP=             # optional JSON override of SSO role -> app role
-AUTH_LOCAL_LOGIN=         # "true" keeps password/magic-link login alive during cutover
 ```
 
-`ssoEnabled()` is simply "is `SSO_CLIENT_ID` set". Setting it:
+`ssoEnabled()` is simply "is `SSO_CLIENT_ID` set", and it registers the `autox`
+provider. It no longer *unregisters* anything, because there is nothing left to
+unregister: the password and magic-link providers are deleted, not disabled.
 
-- registers the `autox` provider,
-- **unregisters** the password and magic-link credential providers (so they cannot
-  be used as an SSO bypass) unless `AUTH_LOCAL_LOGIN=true`,
-- disables local invite / reset / magic-link server actions.
+**With `SSO_CLIENT_ID` unset there is no sign-in method at all.** `/login` then
+renders an explicit "Sign-in is not configured" panel naming the variables that
+fix it and pointing at the break-glass procedure — not an empty login box — and
+the server logs `[auth] NO SIGN-IN METHOD IS CONFIGURED` at start-up. This is a
+change of default worth noticing: local login used to be **on** whenever SSO was
+off, so a deployment with no `SSO_*` variables was previously usable.
 
-Apply the schema change once:
+The emergency path has its own three variables and its own document; they are not
+part of a normal deployment and must be **unset** in steady state:
+
+```ini
+AUTH_LOCAL_LOGIN=         # exactly "true" arms the break-glass credential
+BREAKGLASS_EMAIL=         # the one identity it can authenticate
+BREAKGLASS_PASSWORD_HASH= # bcrypt; store as a platform SECRET
+```
+
+See **[docs/BREAKGLASS.md](BREAKGLASS.md)**.
+
+Apply the schema, in this order:
 
 ```
-psql "$DATABASE_URL" --single-transaction -v ON_ERROR_STOP=1 -f db/sso_schema.sql
+python db/migrate.py                     # engine schema + numbered migrations
+python db/migrate.py db/auth_schema.sql  # ztpa.app_users
+python db/migrate.py db/sso_schema.sql   # the sso_* columns
 ```
+
+`0005_drop_local_auth` drops `ztpa.auth_tokens` and `app_users.password_hash`.
+It is order-independent: on a fresh database it runs before `app_users` exists,
+finds nothing to do, and says so in a NOTICE.
 
 ---
 
@@ -193,14 +224,33 @@ token stays valid until it expires. So:
   authorization request. It never re-renders a cached session. (The integration guide
   calls getting this wrong the most common mistake.)
 
-## 5. Users
+## 5. Users — `ztpa.app_users` is a mirror, not a directory
 
-- Local rows are keyed on `sso_sub` (the AutoX `sub`), never email: a deleted and
+There is no user management in this application. Membership and roles are granted
+in the AutoX admin; the **Manage users** screen, the invite flow and the
+`create-admin.mjs` / `send-reset.mjs` bootstrap scripts are gone, because under
+SSO they could only create rows nobody can sign in as.
+
+`ztpa.app_users` survives, and **must not be dropped**. It is the projection that
+gives the audit trail a *who*: `0002_audit_identity` made
+`audit_log.actor_email` / `actor_sub` / `actor_role` plain text so the trail
+outlives the account, and this table is what resolves a historical `actor_sub`
+back to a person. `frontend/lib/users.ts:provisionSsoUser` writes it on every
+authentication.
+
+- Rows are keyed on `sso_sub` (the AutoX `sub`), never email: a deleted and
   re-created AutoX account keeps the email but gets a **new** `sub`.
 - Provisioning is a side effect of successful authentication — a failed upsert logs
-  and sign-in continues. Local state never denies sign-in.
+  and sign-in continues. Local state never denies sign-in, and never grants it.
 - Migration adoption: an existing unlinked local row is claimed by matching email
-  **only** when `email_verified === true`, and its local password is cleared.
+  **only** when `email_verified === true`. (Its password used to be cleared here;
+  the column no longer exists.)
+- `email_verified` is now stamped from the AutoX `email_verified` claim, forward
+  only — it used to be written by a consumed magic link.
+- A break-glass sign-in is mirrored too, as `sso_sub = breakglass:<email>` with
+  `created_by = 'breakglass'`, so "did anyone use the emergency door" is one query.
+- `status` and `role` on this table are reporting fields. Setting `status` to
+  `disabled` here does **not** stop anyone signing in — revoke the AutoX app role.
 
 ## 6. Logout
 
@@ -227,8 +277,13 @@ slowly with `200`.
 - [ ] `npr_admin`, `npr_analyst`, `npr_viewer` created and assigned to users
 - [ ] `resource=https://sso.autogrc.cloud/api` confirmed on both legs — sign in and
       check the session is not flagged `misconfigured`
-- [ ] `db/sso_schema.sql` applied
-- [ ] `AUTH_LOCAL_LOGIN` unset in production (local login off)
+- [ ] `db/auth_schema.sql` and `db/sso_schema.sql` applied, and `python db/migrate.py --check` clean
+- [ ] `AUTH_LOCAL_LOGIN`, `BREAKGLASS_EMAIL`, `BREAKGLASS_PASSWORD_HASH` all unset
+      in production — `curl /api/auth/providers` returns **only** `autox`
+- [ ] Somebody has actually signed in and reached `/console` on this deployment.
+      With SSO as the only door, "the config looks right" is not evidence
+- [ ] [docs/BREAKGLASS.md](BREAKGLASS.md) is reachable by whoever holds the
+      hosting subscription, not only by whoever has the repo
 - [ ] `NPR_PROXY_SECRET` set to the **same** value on the backend and the frontend, and
       `/api/health` reports `proxy_auth: true` — without it the role headers are
       unauthenticated and every role guard in §1 can be bypassed by calling the backend

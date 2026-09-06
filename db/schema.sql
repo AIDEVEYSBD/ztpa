@@ -351,6 +351,53 @@ CREATE TABLE IF NOT EXISTS tool_settings (
 );
 
 -- ============================================================================
+-- ai_config -- which advisory provider this deployment uses, as ONE row an
+-- operator set deliberately and can be held to (Configuration page ->
+-- PUT /api/admin/ai/config). Read by backend/src/ai_config.py on the routing
+-- path; see db/migrations/0004_ai_config.sql for the full reasoning.
+--
+-- ⚠ NO API KEY COLUMN, EVER. This table is read on every model call, lands in
+-- every pg_dump, and is served by an admin endpoint. Secrets live in Container
+-- Apps secrets surfaced as environment variables (AZURE_AI_API_KEY,
+-- OPENAI_API_KEY), which is the whole point of azure_auth_mode: the stored row
+-- says WHICH credential to use, never WHAT it is. backend/tests/test_ai_config.py
+-- fails if a secret-shaped column ever appears here.
+--
+-- SINGLE ROW, enforced by a constant primary key (`id boolean PRIMARY KEY
+-- DEFAULT true CHECK (id)`): a PK is NOT NULL and the CHECK pins it to true, so
+-- the second insert is refused by the database rather than by a convention.
+-- It also gives save()'s UPSERT a real conflict target, so two admins saving at
+-- once cannot lose one another's write to a read-modify-write race.
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS ai_config (
+    id                 boolean PRIMARY KEY DEFAULT true CHECK (id),   -- singleton
+    provider           text NOT NULL DEFAULT 'auto'
+                       CHECK (provider IN ('auto', 'azure', 'openai', 'anthropic', 'ollama')),
+    azure_endpoint     text,                    -- https://<account>.cognitiveservices.azure.com/
+    azure_deployment   text,                    -- the DEPLOYMENT name, not the model name
+    azure_api_version  text,                    -- NULL -> ai_config.DEFAULT_AZURE_API_VERSION
+    azure_auth_mode    text NOT NULL DEFAULT 'identity'
+                       CHECK (azure_auth_mode IN ('identity', 'key')),
+    azure_client_id    text,                    -- user-assigned identity; NULL = default credential
+    configured_by      text,                    -- actor email, as 0002 gave the audit trail
+    updated_at         timestamptz NOT NULL DEFAULT now(),
+    -- An 'azure' row without a target routes every call at nothing and reads to
+    -- a user as a weak model rather than an unfinished form.
+    CONSTRAINT ai_config_azure_target_complete CHECK (
+        provider <> 'azure'
+        OR (nullif(btrim(azure_endpoint), '') IS NOT NULL
+            AND nullif(btrim(azure_deployment), '') IS NOT NULL)
+    )
+);
+
+-- Same COMMENT the migration applies, so a fresh install and a migrated one end
+-- up byte-for-byte identical in `\d+ ztpa.ai_config`.
+COMMENT ON TABLE ztpa.ai_config IS
+    'Single-row advisory-provider configuration written by the Configuration '
+    'page. NEVER stores an API key: secrets come from the environment '
+    '(Container Apps secrets) only. See db/migrations/0004_ai_config.sql.';
+
+-- ============================================================================
 -- remediation_revisions -- the durable Risk-To-Do iteration thread per finding
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS remediation_revisions (

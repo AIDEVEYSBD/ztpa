@@ -6,7 +6,31 @@ networkx>=3.2
 python-dotenv>=1.0
 # Provider-pluggable AI: Ollama (local, default, via httpx) + optional hosted
 anthropic>=0.39
+# openai also serves the AZURE provider. `openai.AzureOpenAI` takes
+# azure_endpoint + azure_deployment + api_version and an `azure_ad_token_provider`
+# callable, which is exactly the shape of the stored configuration -- so Azure AI
+# Foundry needs NO extra inference SDK. Verified against the live account this
+# feature was built for (api-endpoint-inference-resource, Foundry-RG): both of
+# its deployments answer 200 through the classic
+# {endpoint}/openai/deployments/{deployment}/chat/completions?api-version=2024-10-21
+# route with a managed-identity bearer token, EVEN THOUGH neither is an
+# OpenAI-format model (Mistral-Large-3 is "Mistral AI" format, Kimi-K2.7-Code is
+# "MoonshotAI"). azure-ai-inference / azure-ai-projects would each add a second
+# HTTP stack and a second auth path for the same call, so neither is here.
 openai>=1.40
+# Azure credentials only — DefaultAzureCredential (managed identity in Container
+# Apps, `az login` on a developer machine), ManagedIdentityCredential when a
+# user-assigned client id is configured, and get_bearer_token_provider to hand
+# either to the openai client above. Also the credential for ARM discovery on
+# the Configuration page, whose resource-group / account / deployment listings
+# are plain ARM REST calls over the httpx already below -- no azure-mgmt-*
+# package is needed for three GETs, and adding one would pull in msrest and a
+# second retry/telemetry stack.
+# Bounded rather than exactly pinned, matching every other line in this file:
+# `<2` is the constraint that matters (a major bump can reorder the credential
+# chain, which silently changes WHICH identity authenticates), while leaving
+# patch releases of a credential library reachable. Verified on 1.25.3.
+azure-identity>=1.19,<2
 # Postgres (Neon) — system of record
 psycopg[binary]>=3.1
 psycopg_pool>=3.2

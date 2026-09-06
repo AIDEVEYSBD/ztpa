@@ -23,6 +23,25 @@ invisible:
 
 Both log on CHANGE rather than per call: `active_provider()` runs on every model
 call, and a line per call would bury the transition it exists to show.
+
+ROUTING IS NO LONGER ENVIRONMENT-ONLY
+-------------------------------------
+`ADVISORY_PROVIDER` is now the SECOND source consulted, not the first. An
+operator can select a provider in the product (Configuration page ->
+`ztpa.ai_config`, one row, attributable), and that stored choice wins over an
+environment variable baked into a container spec. The full order, and the
+reasoning for it, is in `src/ai_config.py`'s docstring -- this module holds the
+environment half and defers to that module for the resolution.
+
+Two consequences worth stating here, where the constants are:
+
+  * every `AZURE_AI_*` value below is a FALLBACK, used when no row has been
+    stored. `AZURE_AI_API_KEY` is the exception and is never overridden,
+    because secrets are environment-only by rule: `ztpa.ai_config` has no
+    column that could hold one.
+  * `active_provider()` therefore reads the database (cached, 30s, same idiom
+    as `ollama_probe`). It still never raises: an unreadable store degrades to
+    this module's environment values and says so, loudly, once.
 """
 
 from __future__ import annotations
@@ -47,9 +66,19 @@ DB_SCHEMA: str = "ztpa"
 # --- AI provider routing ---------------------------------------------------
 # auto -> leverage a LOCAL model when Ollama is actually running and serving a
 # model (sensitive topology never leaves the box, zero per-call cost); otherwise
-# fall back to a hosted key — OpenAI first, then Anthropic. Force a single
-# provider with ADVISORY_PROVIDER=ollama|anthropic|openai.
+# fall back to the customer's OWN Azure AI Foundry deployment if one is
+# configured, and only then to a third-party hosted key — OpenAI, then
+# Anthropic. Force a single provider with
+# ADVISORY_PROVIDER=ollama|azure|openai|anthropic.
+#
+# This is the DEFAULT, consulted when no configuration row has been stored; a
+# row selected through the Configuration page wins (see src/ai_config.py).
 ADVISORY_PROVIDER: str = os.environ.get("ADVISORY_PROVIDER", "auto").strip().lower()
+
+# The providers that name one destination. `auto` is everything else: it is not
+# a provider, it is the instruction to pick one, and every branch that treats it
+# as a name has to be able to tell the difference.
+EXPLICIT_PROVIDERS: tuple[str, ...] = ("ollama", "azure", "anthropic", "openai")
 
 OLLAMA_HOST: str = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
 OLLAMA_JUDGE_MODEL: str = os.environ.get("OLLAMA_JUDGE_MODEL", "qwen3-coder:30b")
@@ -63,6 +92,48 @@ ANTHROPIC_MODEL: str = os.environ.get("ADVISORY_MODEL", "claude-sonnet-4-6")
 OPENAI_API_KEY: str = os.environ.get("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL: str = os.environ.get("OPENAI_MODEL", "gpt-4o")
 
+# --- Azure AI Foundry ------------------------------------------------------
+# The customer's OWN model deployment, inside their tenant, their subscription
+# and their region. Everything here except the key is a FALLBACK for the stored
+# configuration row (src/ai_config.py); the key is environment-only, always,
+# because ztpa.ai_config has no column that could hold one and must never grow
+# one.
+#
+# The endpoint is the account's data-plane host as
+# `az cognitiveservices account show` reports it, e.g.
+# https://<account>.cognitiveservices.azure.com/. The deployment is the
+# DEPLOYMENT name on that account, which is not always the model name.
+AZURE_AI_ENDPOINT: str = os.environ.get("AZURE_AI_ENDPOINT", "").strip()
+AZURE_AI_DEPLOYMENT: str = os.environ.get("AZURE_AI_DEPLOYMENT", "").strip()
+AZURE_AI_API_VERSION: str = os.environ.get("AZURE_AI_API_VERSION", "").strip()
+# 'identity' (the app's managed identity, no secret anywhere) | 'key'.
+AZURE_AI_AUTH_MODE: str = os.environ.get("AZURE_AI_AUTH_MODE", "").strip().lower()
+# Optional USER-ASSIGNED managed identity client id. Empty = let
+# DefaultAzureCredential choose, which is what works both in the deployed app
+# and against a developer's `az login`.
+AZURE_AI_CLIENT_ID: str = os.environ.get("AZURE_AI_CLIENT_ID", "").strip()
+# The secret, for azure_auth_mode='key' only. A Container Apps secret surfaced
+# as an environment variable — never a database column, never a request body
+# that gets echoed back.
+AZURE_AI_API_KEY: str = os.environ.get("AZURE_AI_API_KEY", "").strip()
+
+# AAD scopes. Constants rather than literals scattered through the call sites,
+# and overridable for a sovereign cloud (Azure Government / China), where both
+# hosts differ.
+#   - the data plane (chat completions on a Cognitive Services / AIServices
+#     account) is guarded by the cognitiveservices scope;
+#   - ARM (listing resource groups, accounts and deployments for the
+#     Configuration page's dropdowns) is guarded by the management scope.
+AZURE_AI_SCOPE: str = os.environ.get(
+    "AZURE_AI_SCOPE", "https://cognitiveservices.azure.com/.default").strip()
+AZURE_ARM_ENDPOINT: str = os.environ.get(
+    "AZURE_ARM_ENDPOINT", "https://management.azure.com").rstrip("/")
+AZURE_ARM_SCOPE: str = os.environ.get(
+    "AZURE_ARM_SCOPE", "https://management.azure.com/.default").strip()
+# Which subscription discovery enumerates. Empty = ask ARM for the ones the
+# credential can see rather than guessing one.
+AZURE_SUBSCRIPTION_ID: str = os.environ.get("AZURE_SUBSCRIPTION_ID", "").strip()
+
 # --- Misc ------------------------------------------------------------------
 FRONTEND_ORIGIN: str = os.environ.get("FRONTEND_ORIGIN", "http://localhost:3000")
 DEFAULT_SNAPSHOT_LABEL: str = "seed-demo"
@@ -74,6 +145,37 @@ def has_anthropic() -> bool:
 
 def has_openai() -> bool:
     return bool(OPENAI_API_KEY)
+
+
+def azure_target():
+    """The resolved Azure target (`ai_config.Resolved`): endpoint, deployment,
+    api-version, auth mode, client id, and where each came from.
+
+    A thin accessor so the provider client and the status payload have one place
+    to read from and never have to know whether the answer came from the stored
+    row or from this module's environment values. The read underneath is cached
+    for 30s, so calling it per request is fine.
+
+    Imported late: `ai_config` imports THIS module at its own module scope, so a
+    top-level import here would be a cycle. The direction is deliberate --
+    settings is the low-level environment layer and ai_config is the policy on
+    top of it; the arrow only points down at import time.
+    """
+    from . import ai_config
+    return ai_config.resolve()
+
+
+def has_azure() -> bool:
+    """True when an Azure AI Foundry deployment is configured AND usable.
+
+    'Usable' rather than merely 'set': a configuration that selects key auth on a
+    deployment with no `AZURE_AI_API_KEY` in its environment is complete on the
+    Configuration page and cannot make one call, and letting `auto` route to it
+    would turn a missing secret into 401s that read to a user as a weak model.
+    `ai_config.azure_status()` carries the reason as a sentence for the UI.
+    """
+    from . import ai_config
+    return ai_config.azure_ready(azure_target())[0]
 
 
 # Probe the local Ollama server at most once per TTL so routing decisions don't
@@ -178,16 +280,37 @@ def ollama_available() -> bool:
 # Last provider `auto` resolved to, so the escalation is logged on transition
 # rather than once per model call. A concurrent double-log is possible and
 # harmless; a lock on a routing decision this hot is not worth the contention.
-_AUTO_ROUTE: dict = {"reported": None}
+# `unusable` is the same idea for an EXPLICIT selection that cannot work.
+_AUTO_ROUTE: dict = {"reported": None, "unusable": None}
 
 
 def active_provider() -> str:
     """Resolve which chat provider to use for judgment jobs.
 
-    Explicit ADVISORY_PROVIDER wins. Under 'auto' we leverage a local model when
-    one exists (Ollama reachable + a model pulled), else fall back to a hosted
-    key — OpenAI first, then Anthropic. If nothing is available we still return
-    'ollama' so callers degrade to the deterministic engine fallback.
+    An explicit selection wins — from the stored configuration row first, then
+    from ADVISORY_PROVIDER (see `ai_config.resolve` for the order and why it is
+    that way). Under 'auto' we leverage a local model when one exists (Ollama
+    reachable + a model pulled), else the customer's own Azure AI Foundry
+    deployment, else a third-party hosted key — OpenAI first, then Anthropic. If
+    nothing is available we still return 'ollama' so callers degrade to the
+    deterministic engine fallback.
+
+    WHY AZURE SITS FIRST AMONG THE HOSTED OPTIONS. All three are "hosted" in the
+    sense the residency chip means — the topology leaves this box — but they are
+    not equivalent, and `auto` exists to pick the least-bad available option:
+
+      * an Azure Foundry deployment is the CUSTOMER'S OWN resource, in their
+        subscription, their tenant and their region, reached over their network
+        boundary. OpenAI and Anthropic are third parties under someone else's
+        contract. When both are available, sending a firewall topology to the
+        customer's own resource is strictly the smaller disclosure.
+      * it is the only hosted option that works with NO STORED SECRET: managed
+        identity is the default auth mode, so preferring it also prefers the
+        path with no key to leak.
+      * it can only be reached by a DELIBERATE act — an endpoint and a deployment
+        chosen on the Configuration page, or set in the container spec — whereas
+        `OPENAI_API_KEY` is routinely present in a developer's environment by
+        accident. A configured target should outrank an incidental key.
 
     Under 'auto' the choice is announced when it changes. Escalating from
     'ollama' to a hosted provider is not a detail: it moves the customer's
@@ -196,10 +319,33 @@ def active_provider() -> str:
     implemented for Ollama only. An operator must be able to see the moment that
     happened without diffing a status payload they never fetched.
     """
-    if ADVISORY_PROVIDER in ("ollama", "anthropic", "openai"):
-        return ADVISORY_PROVIDER
+    from . import ai_config
+
+    resolved = azure_target()          # one read; both branches below use it
+    azure_ok, azure_why = ai_config.azure_ready(resolved)
+
+    if resolved.provider in EXPLICIT_PROVIDERS:
+        # An explicit choice is honoured even when it cannot work: substituting a
+        # provider nobody chose is precisely the silent failure this module was
+        # rewritten to stop. It is said out loud instead, once per transition.
+        if resolved.provider == "azure" and not azure_ok:
+            if _AUTO_ROUTE["unusable"] != azure_why:
+                _AUTO_ROUTE["unusable"] = azure_why
+                log.warning("the selected provider cannot make a call; every model-backed "
+                            "capability will degrade to its deterministic fallback",
+                            extra={"event": "provider_unusable", "provider": "azure",
+                                   "reason": azure_why, "origin": resolved.provider_origin,
+                                   "config_source": resolved.config_source})
+        else:
+            _AUTO_ROUTE["unusable"] = None
+        return resolved.provider
+
     if ollama_available():
         chosen, why, warn = "ollama", "a local model is reachable", False
+    elif azure_ok:
+        chosen, why, warn = ("azure",
+                             "no local model; an Azure AI Foundry deployment is configured "
+                             f"({resolved.azure_deployment})", True)
     elif has_openai():
         chosen, why, warn = "openai", "no local model; OPENAI_API_KEY is set", True
     elif has_anthropic():

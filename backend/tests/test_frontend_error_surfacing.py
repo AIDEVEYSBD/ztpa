@@ -19,6 +19,15 @@ confident empty result:
     snapshot", a positive claim about the snapshot's contents, from a request
     that never learned anything about its contents.
 
+Two of those five call sites -- `UsersAdmin` and the `app/actions.ts` server
+actions behind it -- were later DELETED outright when authentication became
+SSO-only. Their entries did not move with them, and the parametrised contract
+below spent that change dying on `FileNotFoundError` before it could assert
+anything about the three that remained. They are now RETIRED (see
+`RETIRED_CALL_SITES`): the claim inverts from "this file surfaces its failure"
+to "this file is not there to lie", which is stronger, and which is itself
+asserted rather than assumed.
+
 A SECOND, OPPOSITE FAILURE is pinned here too, because it is the same defect
 with the sign flipped. Phase 0 made `/api/health` answer 503 when the backend is
 running but degraded (no database, an unpersisted snapshot), and made `api()`
@@ -245,11 +254,6 @@ SURFACING_CONTRACT: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
     ),
 
     (
-        "components/admin/UsersAdmin.tsx",
-        ('<ErrorState resource="the user directory"', '{err ? "(unknown)"'),
-        (".catch(() => setLoaded(true))",),
-    ),
-    (
         # Span-based popover: ErrorState renders a <div>, which cannot legally
         # nest inside it, so the panel is hand-rolled -- but it is still a
         # role="alert" carrying the status and the detail.
@@ -261,13 +265,6 @@ SURFACING_CONTRACT: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
         "components/RuleRef.tsx",
         ('role="alert"', "Could not load rule", "errorStatusLabel(err)", "err.detail"),
         ("catch { setRule(null); }",),
-    ),
-    (
-        # The action itself answered `[]` for a caller holding no admin role,
-        # so the client-side fix alone would not have closed the hole.
-        "app/actions.ts",
-        ("AdminUsersResult", "status: 403", "status: 500"),
-        (),
     ),
     (
         # /api/health's 503 IS its answer about itself, and the body carries the
@@ -378,6 +375,99 @@ SURFACING_CONTRACT: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
 )
 
 
+# --------------------------------------------------------------------------
+# RETIRING an entry, which is the only honest way one may leave the table above
+# --------------------------------------------------------------------------
+# A contract that names a file has exactly two failure modes, and until this
+# block existed only one of them was covered.
+#
+#   1. the file is there and stops surfacing its failure  -- caught, loudly,
+#      by `test_refuted_call_sites_render_their_failure` below;
+#   2. the file is DELETED and the entry left behind      -- which used to
+#      crash the parametrised test with `FileNotFoundError` before it could
+#      assert anything.
+#
+# (2) is what happened when SSO-only auth landed: `app/actions.ts` and
+# `components/admin/UsersAdmin.tsx` were deleted with local login, the entries
+# stayed, and two guards over PREVIOUSLY-REFUTED bugs died on a missing path.
+# A red suite is at least honest, but the shape of the failure said nothing
+# about what had actually changed, and the same crash would have hidden a real
+# regression in any of the other entries had one landed in the same change.
+#
+# So a deleted call site is now RETIRED rather than deleted from the table: the
+# entry moves here, and the assertion inverts. "The panel that could lie is not
+# there to lie" is a STRONGER guarantee than "the panel surfaces its failure" --
+# but only while something checks that it is still not there, which is what
+# `test_a_retired_call_site_stays_gone` does. Retiring is therefore a reviewed
+# edit to this table, never a quiet deletion of a line.
+#
+# (path, what it was, where the replacement guarantee is asserted)
+RETIRED_CALL_SITES: tuple[tuple[str, str, str], ...] = (
+    (
+        "components/admin/UsersAdmin.tsx",
+        "the Manage users screen: `.catch(() => setLoaded(true))` rendered "
+        '"Users (0)" / "No users yet" out of a failed server action',
+        "test_sso_only.py::test_the_local_auth_files_are_gone -- SSO-only auth "
+        "removed local account management entirely, and "
+        "test_the_manage_users_screen_is_unreachable_from_the_console pins that "
+        "no nav entry, ScreenId or console branch can reach it again",
+    ),
+    (
+        "app/actions.ts",
+        "the server actions behind it: adminListUsers answered `[]` to a caller "
+        "holding no admin role, so the client-side fix alone left the hole open",
+        "test_sso_only.py::test_the_local_auth_files_are_gone -- the whole "
+        "module (requestMagic / requestReset / doReset / adminCreateUser / "
+        "adminListUsers) went with local login",
+    ),
+)
+
+_RETIRED_PATHS = frozenset(rel for rel, _what, _where in RETIRED_CALL_SITES)
+
+
+@pytest.mark.parametrize("rel,what,where", RETIRED_CALL_SITES, ids=[r[0] for r in RETIRED_CALL_SITES])
+def test_a_retired_call_site_stays_gone(rel: str, what: str, where: str) -> None:
+    """A retired entry is an ABSENCE claim, and absence claims decay silently.
+
+    Restoring one of these files would restore a screen this table once caught
+    lying, with nothing left in the table to catch it a second time -- the entry
+    that used to do that is right here, inverted. So the inverted entry is what
+    guards the restore: bring the file back and this fails, pointing at the
+    surfacing requirement the restored file would have to meet again.
+    """
+    assert not (FRONTEND / rel).exists(), (
+        f"frontend/{rel} is back ({what}). It was retired from SURFACING_CONTRACT "
+        f"because it no longer exists; see {where}. If it is genuinely needed "
+        "again, move its entry back into SURFACING_CONTRACT with the required "
+        "strings that make it surface its failure -- do not just delete this line."
+    )
+
+
+def test_every_contract_path_still_exists() -> None:
+    """The class fix, stated once: no entry above may name a file that is gone.
+
+    Without this the parametrised test below reports a deletion as a
+    `FileNotFoundError` inside pytest's collection of one parameter -- a stack
+    trace about a path, from a test whose subject is error surfacing, which is
+    the same "the failure reported as a different failure" defect this module
+    exists to ban. Here it reports as the sentence a reader can act on.
+    """
+    gone = sorted(rel for rel, _req, _forb in SURFACING_CONTRACT
+                  if not (FRONTEND / rel).exists())
+    assert not gone, (
+        "SURFACING_CONTRACT names files that no longer exist: " + ", ".join(gone) +
+        ". Deleting a call site may legitimately retire its entry, but that is a "
+        "decision: move it to RETIRED_CALL_SITES with what it was and where the "
+        "replacement guarantee is asserted. Leaving the entry here is not an option, "
+        "and neither is deleting it silently."
+    )
+    overlap = sorted(_RETIRED_PATHS & {rel for rel, _r, _f in SURFACING_CONTRACT})
+    assert not overlap, (
+        f"{overlap} is claimed both present-and-surfacing and retired-and-absent. "
+        "One of the two tables is wrong."
+    )
+
+
 def _code_only(src: str) -> str:
     """Drop whole-line comments. Every file below documents the exact pattern it
     used to carry, so a naive substring scan would flag its own explanation."""
@@ -387,7 +477,15 @@ def _code_only(src: str) -> str:
 
 @pytest.mark.parametrize("rel,required,forbidden", SURFACING_CONTRACT, ids=lambda v: v if isinstance(v, str) else "")
 def test_refuted_call_sites_render_their_failure(rel: str, required: tuple[str, ...], forbidden: tuple[str, ...]) -> None:
-    src = (FRONTEND / rel).read_text(encoding="utf-8")
+    path = FRONTEND / rel
+    # Defence in depth behind `test_every_contract_path_still_exists`: if the
+    # file is gone, say WHICH decision was skipped rather than raising an
+    # IOError from the middle of a surfacing assertion.
+    assert path.exists(), (
+        f"frontend/{rel} does not exist, so this contract cannot be checked. "
+        "Retire the entry (RETIRED_CALL_SITES) or restore the file."
+    )
+    src = path.read_text(encoding="utf-8")
     code = _code_only(src)
     for needle in required:
         assert needle in src, f"{rel} no longer surfaces its failure: missing {needle!r}"

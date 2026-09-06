@@ -19,11 +19,11 @@ import { Connectors } from "@/components/Connectors";
 import { AssetsPanel } from "@/components/AssetsPanel";
 import { IngestInspector } from "@/components/IngestInspector";
 import { Staging } from "@/components/Staging";
-import { UsersAdmin } from "@/components/admin/UsersAdmin";
 import { SnapshotsAdmin } from "@/components/admin/SnapshotsAdmin";
 import { ToolsAdmin } from "@/components/admin/ToolsAdmin";
 import { MetricsAdmin } from "@/components/admin/MetricsAdmin";
 import { AuditAdmin } from "@/components/admin/AuditAdmin";
+import { AiConfigAdmin } from "@/components/admin/AiConfigAdmin";
 import { ErrorState } from "@/components/ui/Feedback";
 import { PanelHealthProvider, useScreenFailures } from "@/components/PanelHealth";
 
@@ -37,11 +37,11 @@ const META: Record<ScreenId, { title: string; sub: string }> = {
   connectors: { title: "Connectors", sub: "Bring your own source via a validated profile" },
   assets: { title: "Assets & Identity", sub: "One identity per asset, IP is an attribute" },
   ingest: { title: "Ingested data", sub: "What the connectors produced for this snapshot (admin)" },
-  users: { title: "Manage users", sub: "Invite users and assign roles (admin)" },
   snapshots: { title: "Snapshots", sub: "Point-in-time runs, with delete (admin)" },
   tools: { title: "Tools & Usage", sub: "Available tools, per-role access, and usage metrics (admin)" },
   metrics: { title: "Metrics & Cost", sub: "Application-wide KPIs, token usage and estimated cost (admin)" },
   audit: { title: "Audit trail", sub: "Every recorded action, who performed it and when (admin)" },
+  config: { title: "Configuration", sub: "Which AI provider this deployment uses, and whether it can actually call it (admin)" },
 };
 
 /**
@@ -231,11 +231,11 @@ export default function Dashboard() {
                 {screen === "connectors" && <Connectors />}
                 {screen === "assets" && <AssetsPanel snapshot={viewSnap} />}
                 {screen === "ingest" && <IngestInspector snapshot={viewSnap} />}
-                {screen === "users" && <UsersAdmin />}
                 {screen === "snapshots" && <SnapshotsAdmin onView={(id) => { setViewSnap(id); setScreen("map"); }} />}
                 {screen === "tools" && <ToolsAdmin />}
                 {screen === "metrics" && <MetricsAdmin />}
                 {screen === "audit" && <AuditAdmin />}
+                {screen === "config" && <AiConfigAdmin />}
               </motion.div>
             </AnimatePresence>
           </div>

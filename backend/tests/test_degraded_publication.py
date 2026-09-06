@@ -56,6 +56,7 @@ import contextlib
 import inspect
 import logging
 import os
+import sys
 from typing import Any, Iterator
 
 import pytest
@@ -75,6 +76,18 @@ def _boom(message: str):
     def _explode(*_args, **_kwargs):
         raise ValueError(message)
     return _explode
+
+
+def _no_model(**_kwargs: Any) -> Any:
+    """`advisory.client.complete`'s answer when no provider is reachable.
+
+    Shaped like the real `LLMResponse` (the fields every caller reads) rather
+    than a MagicMock, so a caller that forgets to branch on `ok` fails here the
+    way it would in production instead of quietly getting a truthy stub.
+    """
+    from src.advisory.client import LLMResponse
+    return LLMResponse(text="", provider="none", model="none", ok=False,
+                       error="no model provider in this test")
 
 
 # ==========================================================================
@@ -237,6 +250,22 @@ def api(monkeypatch: pytest.MonkeyPatch, healthy: run_all.EngineResult) -> TestC
     TestClient is NOT entered as a context manager: the lifespan starts a warm
     engine build on a background thread that would outlive these patches."""
     cur = _RecordingCursor()
+    # /api/report asks the advisory client for a narrative. Unstubbed, that is a
+    # real HTTPS call to whatever hosted provider the checked-in .env names --
+    # so this module was billing a third party on every run, and the assertions
+    # below ("analysis_complete is False", "degraded_analyzers == [...]") were
+    # being made about a payload whose narrative half depended on somebody
+    # else's uptime. The claim under test is about the ENGINE's completeness,
+    # which the deterministic fallback reports identically; a model that cannot
+    # be reached is the state CI has always run in, so this makes every machine
+    # agree with CI instead of the other way round.
+    #
+    # `ok=False` rather than a canned success, deliberately: a stub that answers
+    # like a working model would let a route that has no fallback pass here and
+    # fail in production. (Found by backend/conftest.py's outbound-socket guard.)
+    for module in list(sys.modules.values()):
+        if getattr(module, "__name__", "").startswith("src") and hasattr(module, "complete"):
+            monkeypatch.setattr(module, "complete", _no_model)
     monkeypatch.setattr(main, "get_conn", lambda: _conn_yielding(cur))
     monkeypatch.setattr(main, "ping", lambda: True)
     monkeypatch.setattr(main, "write_scenario", lambda *_a, **_kw: None)

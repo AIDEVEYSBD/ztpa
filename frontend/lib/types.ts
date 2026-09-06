@@ -290,3 +290,234 @@ export interface AdminMetrics {
   critical: number;
   active_snapshot: string;
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// AI provider configuration + Azure discovery (the admin Configuration screen)
+//
+// Which model this product talks to used to be decided entirely by environment
+// variables read at container start, which made "point the advisory layer at
+// our own Foundry deployment" a deploy rather than an admin action, invisible
+// to the audit trail and attributable to nobody. `ztpa.ai_config` holds that
+// choice as one row (db/migrations/0004_ai_config.sql), and these types are the
+// wire shapes the Configuration screen reads it back through.
+//
+// ⚠ THERE IS NO API-KEY FIELD ANYWHERE BELOW, and there must never be one. The
+// row says WHICH credential to use (`azure_auth_mode`), never WHAT it is: it is
+// read on every model call, lands in every pg_dump, and is served by an admin
+// endpoint. A key lives in the deployment's environment (a Container Apps
+// secret surfaced as AZURE_AI_API_KEY) and the UI only ever reports whether one
+// is present — see `AiActiveConfig.key_present`.
+// ───────────────────────────────────────────────────────────────────────────
+
+/** The advisory-provider vocabulary, identical to the backend's `ADVISORY_PROVIDER`
+ *  and to `ai_config.PROVIDERS` so a stored value and an environment value are
+ *  directly comparable. `auto` is a storable choice, not the absence of one: it
+ *  is how an operator says "go back to letting the deployment decide" while
+ *  still leaving a record that they said it. */
+export type AiProvider = "auto" | "azure" | "openai" | "anthropic" | "ollama";
+
+/** 'identity' — the Container App's managed identity, no secret anywhere.
+ *  'key'      — an API key read from the environment. Never from the database. */
+export type AzureAuthMode = "identity" | "key";
+
+/**
+ * Where the configuration the backend is actually routing on came from.
+ * These are NOT interchangeable and the screen renders a different sentence for
+ * each, because two of them mean the operator's saved choice is not in effect:
+ *
+ *   database    — a stored row was read. The operator's choice is live.
+ *   defaults    — no row (or no database at all). The environment decided.
+ *   stale       — the store is unreadable right now; the last row read in this
+ *                 process is still being used. Nothing has moved yet.
+ *   unavailable — the store is unreadable and nothing was ever read from it, so
+ *                 routing fell back to the environment. Inference may be going
+ *                 somewhere the operator did not choose.
+ *   ignored     — the AI_CONFIG_IGNORE_DB break-glass is set. Saving still
+ *                 writes a row, and this deployment is ignoring it.
+ */
+export type AiConfigSource = "database" | "defaults" | "stale" | "unavailable" | "ignored";
+
+/** Which of the three sources supplied a resolved field. */
+export type AiConfigOrigin = "database" | "environment" | "default";
+
+/** The stored row as `GET /api/admin/ai/config` serves it — the operator's
+ *  saved choice, whether or not it is the one in effect. */
+export interface AiStoredConfig {
+  provider: AiProvider | null;
+  azure_endpoint: string | null;
+  azure_deployment: string | null;
+  azure_api_version: string | null;
+  azure_auth_mode: AzureAuthMode;
+  azure_client_id: string | null;
+  /** Actor email captured at save time (0002's audit identity). Null for a row
+   *  written by a script — rendered as "unattributed", never invented. */
+  configured_by: string | null;
+  updated_at: string | null;
+  source: AiConfigSource;
+  /** True when a real row is behind these values (fresh or stale). */
+  is_stored: boolean;
+}
+
+/** The configuration the backend is ACTUALLY routing on, after the row / env /
+ *  default order has been applied — with the origin of each block, so the screen
+ *  can say "this deployment is on the environment's setting, not yours" instead
+ *  of implying the saved row is live. */
+export interface AiActiveConfig {
+  provider: AiProvider | string;
+  provider_origin: AiConfigOrigin;
+  azure_endpoint: string;
+  azure_deployment: string;
+  azure_api_version: string;
+  azure_auth_mode: AzureAuthMode | string;
+  azure_client_id: string | null;
+  azure_origin: AiConfigOrigin;
+  config_source: AiConfigSource;
+  /** Set when the configured endpoint could not be parsed as one. Kept as data
+   *  rather than an exception so a malformed AZURE_AI_ENDPOINT degrades the
+   *  advisory layer instead of 500-ing every request. */
+  azure_endpoint_error?: string | null;
+  /** Can this configuration actually make a call? "Configured" and "will work"
+   *  are different questions; conflating them turns a missing secret into 401s
+   *  that read to a user as a weak model. */
+  ready?: boolean;
+  /** Why not, when `ready` is false. Rendered verbatim. */
+  reason?: string | null;
+  /** Whether this deployment's environment carries the API key that
+   *  `azure_auth_mode: "key"` needs. A BOOLEAN, deliberately: the key itself is
+   *  never sent to the browser and never stored in the row. */
+  key_present?: boolean;
+}
+
+/** `GET /api/admin/ai/config`. Two payloads, never merged into one: the saved
+ *  choice and the live one differ exactly when something is wrong, and that is
+ *  the case the screen exists to show.
+ *
+ *  `active` is optional because an API build that has not grown the resolution
+ *  block yet must degrade to "the saved row is shown, the live one is unknown"
+ *  rather than to the far worse "the saved row IS the live one" — which is the
+ *  precise claim this screen exists to stop the console from making. */
+export interface AiConfigResponse {
+  stored: AiStoredConfig;
+  active?: AiActiveConfig | null;
+  /** The application default used when a stored row names no API version. Read
+   *  off the payload rather than hardcoded, so the placeholder in the manual
+   *  form cannot drift from what the backend would actually use. */
+  default_api_version?: string;
+  /** The provider vocabulary this API build accepts. */
+  providers?: string[];
+}
+
+/** `PUT /api/admin/ai/config` body. Mirrors the row's columns and nothing else —
+ *  in particular there is no key field, by construction. */
+export interface AiConfigSave {
+  provider: AiProvider;
+  azure_endpoint?: string | null;
+  azure_deployment?: string | null;
+  azure_api_version?: string | null;
+  azure_auth_mode?: AzureAuthMode;
+  azure_client_id?: string | null;
+}
+
+/**
+ * `POST /api/admin/ai/test` — the backend made ONE real model call with the
+ * saved configuration and is reporting what came back.
+ *
+ * `ok: false` is a successful HTTP response carrying a failed call, and the two
+ * must not be collapsed: "the API could not be reached" and "the API reached
+ * your Foundry deployment and it answered 401" have completely different fixes.
+ */
+export interface AiTestResult {
+  ok: boolean;
+  provider: string;
+  /** The deployment/model that was actually called, as the backend names it. */
+  model?: string | null;
+  endpoint?: string | null;
+  latency_ms?: number | null;
+  /** The deployment the call actually went to. */
+  deployment?: string | null;
+  auth_mode?: string | null;
+  /** Which configuration was under test, in the backend's words — "the
+   *  configuration in force", or "nothing" when it refused to run one. */
+  tested?: string | null;
+  config_source?: AiConfigSource | string | null;
+  /** A short excerpt of what the model said, when it said anything. Evidence
+   *  that a real call happened rather than a reachability ping. */
+  sample?: string | null;
+  /** The real error, verbatim, when `ok` is false. */
+  error?: string | null;
+}
+
+/** One Azure subscription this deployment's identity can see, from
+ *  `GET /api/admin/azure/subscriptions`. It is a dropdown rather than an
+ *  assumption because the backend refuses to guess: with several visible there
+ *  is no defensible default, and picking the first would enumerate somebody
+ *  else's estate and then report the operator's own account as missing. */
+export interface AzureSubscription {
+  id: string;
+  name: string;
+  state: string;
+}
+
+/** One Azure resource group, from `GET /api/admin/azure/resource-groups`. */
+export interface AzureResourceGroup {
+  name: string;
+  location: string;
+}
+
+/** One Azure AI Foundry / Cognitive Services account, from
+ *  `GET /api/admin/azure/accounts`. `endpoint` is the account's data-plane host
+ *  as ARM reports it, which is exactly what gets stored as `azure_endpoint`. */
+export interface AzureAiAccount {
+  name: string;
+  endpoint: string;
+  kind: string;
+  location: string;
+  provisioning_state?: string;
+}
+
+/** One model deployment on an account, from `GET /api/admin/azure/deployments`.
+ *  `name` is the DEPLOYMENT name, which is what a data-plane request path needs;
+ *  `model` is the model behind it. They differ often enough that using one for
+ *  the other is a 404 at request time. */
+export interface AzureDeployment {
+  name: string;
+  model: string;
+  version: string;
+  sku: string;
+  format?: string;
+  capacity?: number;
+  provisioning_state?: string;
+  /** Whether the backend believes this deployment can serve a chat completion.
+   *  A `false` here is the difference between a dropdown entry that works and
+   *  one that 404s on the first model call, so it is shown rather than used to
+   *  silently filter the list — an operator who cannot see their deployment at
+   *  all learns nothing. */
+  chat?: boolean;
+}
+
+/**
+ * A discovery list, and the one thing this screen must never get wrong.
+ *
+ * An empty dropdown has two completely different causes — "there are none" and
+ * "the lookup did not work" — and Azure Resource Manager makes them easy to
+ * confuse, because ARM filters list results by role assignment: an identity with
+ * no Reader gets an empty 200, not a 403. So an empty `items` is only allowed to
+ * render as "none" when `unavailable_reason` is absent, and the screen still
+ * says out loud that ARM's empty list is RBAC-filtered.
+ */
+export interface AzureDiscovery<T> {
+  items: T[];
+  /** Present when the backend answered 200 but could not enumerate. Rendered
+   *  verbatim; its presence means `items` is unknown, not empty. The API build
+   *  this was written against raises a typed HTTP error for that case instead,
+   *  which is stronger — this field is the 200-shaped form of the same claim,
+   *  kept so a future endpoint that degrades rather than fails cannot land as a
+   *  confident empty dropdown. */
+  unavailable_reason?: string | null;
+  /** Present when the list is REAL but CUT OFF — the endpoint bounds every
+   *  listing, and a dropdown silently truncated at the limit fails exactly like
+   *  an empty one: the operator's resource group is missing and the page gives
+   *  them nothing to read. Carried on `x-npr-result-truncated` response headers.
+   */
+  incomplete_reason?: string | null;
+}

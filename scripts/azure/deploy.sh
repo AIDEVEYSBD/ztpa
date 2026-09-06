@@ -313,7 +313,7 @@ else
   PG_EXISTED=0
   PG_PASSWORD="$(gen_pg_password)"
   info "creating $PG_SERVER ($PG_TIER / $PG_SKU, PG $PG_VERSION, ${PG_STORAGE_GB}GB) — a few minutes"
-  # --public-access None: public networking on, but NO firewall rule, so the
+  # --public-access Enabled: public endpoint on, but NO firewall rule yet, so the
   # server is unreachable until the explicit Azure-services rule below. Left to
   # its own devices this command adds a rule for whatever IP the deploy happened
   # to run from, which is not a thing that should quietly become infrastructure.
@@ -321,7 +321,7 @@ else
     --resource-group "$RESOURCE_GROUP" --name "$PG_SERVER" --location "$LOCATION" \
     --admin-user "$PG_ADMIN_USER" --admin-password "$PG_PASSWORD" \
     --tier "$PG_TIER" --sku-name "$PG_SKU" --version "$PG_VERSION" \
-    --storage-size "$PG_STORAGE_GB" --public-access None \
+    --storage-size "$PG_STORAGE_GB" --public-access Enabled \
     --yes "${TAGS_ARGS[@]}" -o none
   ok "created $PG_SERVER"
 fi
@@ -341,6 +341,18 @@ info "host         : $PG_FQDN (admin: $PG_ADMIN_LOGIN)"
 # whose source is Azure. This is the documented trade for not running a VNet, and
 # it is why the connection is TLS-only and the password carries 28 random
 # characters from a 62-character alphabet.
+#
+# NOTE `--public-access Enabled` on the create above, NOT `None`. `None` does not
+# mean "public endpoint with no rules yet" -- it DISABLES the public endpoint
+# outright, and every firewall-rule call against such a server then fails with
+# "Firewall rule operations are not supported for a server without public access
+# enabled". That is what it did on the first run of this script.
+#
+# The 0.0.0.0-0.0.0.0 rule is Azure's special form meaning "allow Azure
+# services", which is broader than it looks: it admits any resource in ANY Azure
+# tenant, not only ours. It is narrowed below to the Container Apps
+# environment's static outbound IP as soon as that environment exists, which is
+# the address the apps actually egress from.
 if az postgres flexible-server firewall-rule show --resource-group "$RESOURCE_GROUP" \
   --server-name "$PG_SERVER" --name AllowAllAzureServices -o none 2>/dev/null; then
   ok "firewall rule AllowAllAzureServices exists"
@@ -521,10 +533,20 @@ build_image() { # repo dockerfile-relative-to-context context
     return 0
   fi
   info "building $repo:$IMAGE_TAG from $dockerfile"
-  az acr build --registry "$ACR_NAME" --resource-group "$RESOURCE_GROUP" \
-    --platform linux/amd64 \
-    --image "${repo}:${IMAGE_TAG}" --image "${repo}:latest" \
-    --file "$dockerfile" "$context"
+  # RUN FROM INSIDE THE CONTEXT. `az acr build` resolves --file against the
+  # SHELL'S CWD, not against the context directory it is given, so with the
+  # script's cwd at the repo root `--file Dockerfile <repo>/frontend` looks for
+  # <repo>/Dockerfile, does not find it, and dies with the rather misleading
+  # "Unable to find 'Dockerfile'" -- naming the file it was asked for rather
+  # than the path it actually tried.
+  #
+  # The backend hid this: its --file is `backend/Dockerfile`, which happens to
+  # resolve correctly from the repo root, so one image built and the other did
+  # not. Subshell so the caller's cwd is untouched.
+  ( cd "$context" && az acr build --registry "$ACR_NAME" --resource-group "$RESOURCE_GROUP" \
+      --platform linux/amd64 \
+      --image "${repo}:${IMAGE_TAG}" --image "${repo}:latest" \
+      --file "$dockerfile" . )
   ok "pushed ${ACR_LOGIN_SERVER}/${repo}:${IMAGE_TAG}"
 }
 
