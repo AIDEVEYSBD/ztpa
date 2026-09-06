@@ -1,0 +1,30 @@
+# Build context = frontend/. Keep this lean: everything here is either rebuilt
+# inside the image, host-specific, or a secret.
+
+# Installed in the image by `npm ci` (host arch is arm64, image is amd64 —
+# copying host node_modules in would ship the wrong native binaries).
+node_modules
+
+# Rebuilt by `next build` in the builder stage.
+.next
+out
+dist
+*.tsbuildinfo
+
+# SECRETS. frontend/.env is a symlink to the repo-root .env, which lives OUTSIDE
+# this build context — excluding it also stops Docker choking on the dangling
+# link. Nothing here is needed to build; see the env table in the Dockerfile.
+.env
+.env.*
+
+# Repo/VCS + editor noise.
+.git
+.gitignore
+.DS_Store
+npm-debug.log*
+yarn-error.log*
+
+# Not inputs to the build.
+Dockerfile
+.dockerignore
+coverage

@@ -5,7 +5,29 @@
 -- Invite-only: users are created by an admin; passwords/magic links are set via tokens.
 
 CREATE SCHEMA IF NOT EXISTS ztpa;
-CREATE EXTENSION IF NOT EXISTS pgcrypto;  -- gen_random_uuid()
+
+-- `gen_random_uuid()` is BUILT IN from Postgres 13 -- db/schema.sql:26 says the
+-- same thing and never asks for the extension. This file did, and that is the
+-- only thing it ever wanted pgcrypto for.
+--
+-- On a managed Postgres that is not a harmless extra: Azure Database for
+-- PostgreSQL Flexible Server REFUSES `CREATE EXTENSION` for anything absent from
+-- its `azure.extensions` server parameter, which is empty by default. The
+-- statement therefore aborted the whole file, ztpa.app_users was never created,
+-- and the deploy produced a database nobody could log into -- with no error
+-- until someone tried to sign in.
+--
+-- So it is attempted, not required: on <13 with pgcrypto available it still
+-- installs, and everywhere else the failure is swallowed and the built-in is
+-- used. The DO block is needed because plain `IF NOT EXISTS` does not help --
+-- the extension genuinely is not installed, the server simply will not allow it.
+DO $$
+BEGIN
+    CREATE EXTENSION IF NOT EXISTS pgcrypto;
+EXCEPTION WHEN insufficient_privilege OR feature_not_supported OR OTHERS THEN
+    RAISE NOTICE 'pgcrypto unavailable (%), continuing: gen_random_uuid() is built in on PG13+', SQLERRM;
+END
+$$;
 
 CREATE TABLE IF NOT EXISTS ztpa.app_users (
     id             text PRIMARY KEY DEFAULT gen_random_uuid()::text,

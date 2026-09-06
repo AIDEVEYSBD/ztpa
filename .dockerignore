@@ -1,0 +1,89 @@
+# ---------------------------------------------------------------------------
+# Docker build context excludes.
+#
+# The build context is the REPO ROOT for the backend image
+# (`docker build -f backend/Dockerfile .`), so this file governs that build —
+# and any other build that also uses the repo root as its context.
+#
+# This is deliberately a DENY list rather than an allow list. Three things that
+# look like build-time-only noise are in fact shipped and load-bearing:
+#     db/                    the migrations run from the backend image
+#     backend/data/mock/     the seed fixtures the engine reads at startup
+#     backend/scripts/       seed_demo.py / precompute.py run as one-off jobs
+# An allow list is one forgotten line away from an image that builds fine and
+# then cannot migrate its own database, so the safe default here is "included".
+#
+# NOTE: frontend/ SOURCE is intentionally not excluded, only its installed and
+# generated directories. The frontend image may build from this same root
+# context; excluding its source would break that build for no gain, since the
+# backend Dockerfile COPYs named directories and never the whole context.
+# ---------------------------------------------------------------------------
+
+# --- Version control and CI ------------------------------------------------
+.git
+.gitignore
+.gitattributes
+.github
+
+# --- Secrets: these must never even enter the build context -----------------
+# A file in the context can be read by any COPY, including a careless future
+# `COPY . .`, and lands in an image layer that `docker history` will hand to
+# anyone who can pull the image. Keep them out at the door.
+.env
+.env.*
+**/.env
+**/.env.*
+
+# --- Python: virtualenvs, bytecode, tool caches -----------------------------
+# .venv is ~128 MB of the wrong platform's binaries (this repo is developed on
+# arm64, the image is linux/amd64) and would be actively harmful if copied.
+**/.venv
+**/venv
+**/__pycache__
+**/*.py[cod]
+**/*.egg-info
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/.coverage
+htmlcov
+.tox
+
+# --- Backend: what the running service does not need ------------------------
+backend/tests
+backend/conftest.py
+backend/data/scratch
+
+# --- Node / Next.js installed + generated output ----------------------------
+**/node_modules
+frontend/.next
+frontend/out
+frontend/dist
+**/*.tsbuildinfo
+**/npm-debug.log*
+**/yarn-error.log*
+
+# --- Docs and generated documents -------------------------------------------
+docs
+*.md
+*.docx
+*.pdf
+
+# --- Local tooling / editor / OS scratch ------------------------------------
+.claude
+.vscode
+.idea
+**/.DS_Store
+Makefile
+tasks.py
+scripts
+
+# --- Deployment descriptors for other platforms ------------------------------
+# Superseded by the Azure Container Apps deployment; no reason to ship it.
+render.yaml
+
+# --- Container build files themselves ---------------------------------------
+**/Dockerfile
+**/Dockerfile.*
+.dockerignore
+**/docker-compose*.yml
