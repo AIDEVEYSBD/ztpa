@@ -682,6 +682,30 @@ build_backend_env() { # $1 = frontend origin
       BACKEND_ENV+=("ADVISORY_PROVIDER=anthropic" "ANTHROPIC_API_KEY=secretref:model-api-key"
         "ADVISORY_MODEL=${ADVISORY_MODEL:-claude-sonnet-4-6}") ;;
   esac
+
+  # Same rule as the frontend: preserve what this script does not declare.
+  # AZURE_CLIENT_ID is the concrete case that bit -- it is what tells
+  # DefaultAzureCredential WHICH user-assigned identity to present, and without
+  # it every ARM discovery call and every managed-identity model call fails with
+  # "(invalid_scope) 400, Unable to load the proper Managed Identity". A redeploy
+  # erased it and the Configuration page went blind.
+  local existing name value secretref
+  existing="$(az containerapp show -n "$BACKEND_APP" -g "$RESOURCE_GROUP" \
+    --query "properties.template.containers[0].env[].[name,value,secretRef]" \
+    -o tsv 2>/dev/null || true)"
+  if [ -n "$existing" ]; then
+    while IFS=$'\t' read -r name value secretref; do
+      [ -n "$name" ] || continue
+      case " ${BACKEND_ENV[*]} " in *" ${name}="*) continue ;; esac
+      if [ -n "${secretref:-}" ] && [ "$secretref" != "None" ]; then
+        BACKEND_ENV+=("${name}=secretref:${secretref}")
+        info "preserved ${name} (secretref) set outside this script"
+      elif [ -n "${value:-}" ] && [ "$value" != "None" ]; then
+        BACKEND_ENV+=("${name}=${value}")
+        info "preserved ${name} set outside this script"
+      fi
+    done <<< "$existing"
+  fi
 }
 
 build_frontend_env() { # $1 = backend url  $2 = app url
@@ -701,41 +725,43 @@ build_frontend_env() { # $1 = backend url  $2 = app url
     if [ -n "$v" ]; then FRONTEND_ENV+=("${n}=${v}"); fi
   done
 
-  # PRESERVE AN ARMED BREAK-GLASS ACROSS A REDEPLOY.
+  # PRESERVE EVERY OPERATOR-SET VARIABLE THIS SCRIPT DOES NOT ITSELF MANAGE.
   #
-  # `az containerapp update --yaml` REPLACES the template, so every variable an
-  # operator set out of band is dropped. That is usually what you want from a
-  # declarative deploy -- except here, where the dropped variables are the only
-  # way back into an SSO-only application. Measured, not theorised: a redeploy
-  # silently disarmed break-glass on this very deployment, leaving an app with
-  # no SSO configured and no emergency door, and the deploy reported success.
+  # `az containerapp update --yaml` REPLACES the template, so anything set out of
+  # band is silently dropped -- and the deploy still reports success. Measured
+  # twice on this deployment, not theorised: the first redeploy disarmed
+  # break-glass; the second erased the entire SSO configuration
+  # (SSO_CLIENT_ID/SECRET/ISSUER/RESOURCE) and AZURE_CLIENT_ID, leaving an
+  # SSO-only application with no way for anyone to sign in.
   #
-  # The secret (breakglass-password-hash) survives, because secrets are not part
-  # of the template -- so only the three variables referencing it need carrying
-  # forward. An explicit BREAKGLASS_EMAIL in the environment still wins, so a
-  # deliberate rotation is not blocked by the old value.
-  local armed
-  armed="$(az containerapp show -n "$FRONTEND_APP" -g "$RESOURCE_GROUP" \
-    --query "properties.template.containers[0].env[?name=='BREAKGLASS_PASSWORD_HASH'].value" \
+  # The first fix special-cased break-glass, which was treating the symptom. The
+  # rule that actually holds: a declarative deploy should own what it DECLARES
+  # and leave everything else alone. So carry forward any variable already on the
+  # running app that this script does not set itself. A variable this script does
+  # set still wins, so a deliberate change is never blocked by a stale value.
+  local existing name value secretref
+  existing="$(az containerapp show -n "$FRONTEND_APP" -g "$RESOURCE_GROUP" \
+    --query "properties.template.containers[0].env[].[name,value,secretRef]" \
     -o tsv 2>/dev/null || true)"
-  if [ -n "$armed" ]; then
-    case " ${FRONTEND_ENV[*]} " in
-      *" AUTH_LOCAL_LOGIN="*) : ;;
-      *) FRONTEND_ENV+=("AUTH_LOCAL_LOGIN=true") ;;
-    esac
-    case " ${FRONTEND_ENV[*]} " in
-      *" BREAKGLASS_EMAIL="*) : ;;
-      *)
-        local kept_email
-        kept_email="$(az containerapp show -n "$FRONTEND_APP" -g "$RESOURCE_GROUP" \
-          --query "properties.template.containers[0].env[?name=='BREAKGLASS_EMAIL'].value" \
-          -o tsv 2>/dev/null || true)"
-        [ -n "$kept_email" ] && FRONTEND_ENV+=("BREAKGLASS_EMAIL=${kept_email}")
-        ;;
-    esac
-    FRONTEND_ENV+=("BREAKGLASS_PASSWORD_HASH=${armed}")
-    warn "break-glass is ARMED and was preserved across this deploy (docs/BREAKGLASS.md to disarm)"
+  if [ -n "$existing" ]; then
+    while IFS=$'\t' read -r name value secretref; do
+      [ -n "$name" ] || continue
+      # Already declared by this run? Ours is authoritative.
+      case " ${FRONTEND_ENV[*]} " in *" ${name}="*) continue ;; esac
+      if [ -n "${secretref:-}" ] && [ "$secretref" != "None" ]; then
+        FRONTEND_ENV+=("${name}=secretref:${secretref}")
+        info "preserved ${name} (secretref) set outside this script"
+      elif [ -n "${value:-}" ] && [ "$value" != "None" ]; then
+        FRONTEND_ENV+=("${name}=${value}")
+        info "preserved ${name} set outside this script"
+      fi
+    done <<< "$existing"
   fi
+  case " ${FRONTEND_ENV[*]} " in
+    *" BREAKGLASS_PASSWORD_HASH="*)
+      warn "break-glass is ARMED (docs/BREAKGLASS.md to disarm)" ;;
+  esac
+
   if [ -n "${SSO_CLIENT_SECRET:-}" ]; then FRONTEND_ENV+=("SSO_CLIENT_SECRET=secretref:sso-client-secret"); fi
   if [ -n "${RESEND_API_KEY:-}" ]; then FRONTEND_ENV+=("RESEND_API_KEY=secretref:resend-api-key"); fi
 }
