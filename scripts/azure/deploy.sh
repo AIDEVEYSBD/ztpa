@@ -696,10 +696,46 @@ build_frontend_env() { # $1 = backend url  $2 = app url
   local n v
   for n in SSO_CLIENT_ID SSO_ISSUER SSO_RESOURCE SSO_SCOPE SSO_SESSION_MAX_AGE \
     SSO_ROLE_MAP SSO_POST_LOGOUT_REDIRECT_URI SSO_TOKEN_AUTH_METHOD \
-    ADMIN_EMAIL EMAIL_FROM AUTH_LOCAL_LOGIN; do
+    ADMIN_EMAIL EMAIL_FROM AUTH_LOCAL_LOGIN BREAKGLASS_EMAIL; do
     v="${!n:-}"
     if [ -n "$v" ]; then FRONTEND_ENV+=("${n}=${v}"); fi
   done
+
+  # PRESERVE AN ARMED BREAK-GLASS ACROSS A REDEPLOY.
+  #
+  # `az containerapp update --yaml` REPLACES the template, so every variable an
+  # operator set out of band is dropped. That is usually what you want from a
+  # declarative deploy -- except here, where the dropped variables are the only
+  # way back into an SSO-only application. Measured, not theorised: a redeploy
+  # silently disarmed break-glass on this very deployment, leaving an app with
+  # no SSO configured and no emergency door, and the deploy reported success.
+  #
+  # The secret (breakglass-password-hash) survives, because secrets are not part
+  # of the template -- so only the three variables referencing it need carrying
+  # forward. An explicit BREAKGLASS_EMAIL in the environment still wins, so a
+  # deliberate rotation is not blocked by the old value.
+  local armed
+  armed="$(az containerapp show -n "$FRONTEND_APP" -g "$RESOURCE_GROUP" \
+    --query "properties.template.containers[0].env[?name=='BREAKGLASS_PASSWORD_HASH'].value" \
+    -o tsv 2>/dev/null || true)"
+  if [ -n "$armed" ]; then
+    case " ${FRONTEND_ENV[*]} " in
+      *" AUTH_LOCAL_LOGIN="*) : ;;
+      *) FRONTEND_ENV+=("AUTH_LOCAL_LOGIN=true") ;;
+    esac
+    case " ${FRONTEND_ENV[*]} " in
+      *" BREAKGLASS_EMAIL="*) : ;;
+      *)
+        local kept_email
+        kept_email="$(az containerapp show -n "$FRONTEND_APP" -g "$RESOURCE_GROUP" \
+          --query "properties.template.containers[0].env[?name=='BREAKGLASS_EMAIL'].value" \
+          -o tsv 2>/dev/null || true)"
+        [ -n "$kept_email" ] && FRONTEND_ENV+=("BREAKGLASS_EMAIL=${kept_email}")
+        ;;
+    esac
+    FRONTEND_ENV+=("BREAKGLASS_PASSWORD_HASH=${armed}")
+    warn "break-glass is ARMED and was preserved across this deploy (docs/BREAKGLASS.md to disarm)"
+  fi
   if [ -n "${SSO_CLIENT_SECRET:-}" ]; then FRONTEND_ENV+=("SSO_CLIENT_SECRET=secretref:sso-client-secret"); fi
   if [ -n "${RESEND_API_KEY:-}" ]; then FRONTEND_ENV+=("RESEND_API_KEY=secretref:resend-api-key"); fi
 }
