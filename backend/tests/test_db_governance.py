@@ -646,11 +646,10 @@ def test_every_projected_column_exists_in_the_database(cur: Any, eng, table: str
 
 
 def test_the_engine_emits_a_correlation_the_shipped_check_constraint_rejected(
-        cur: Any, eng, as_admin: str) -> None:
+        cur: Any, as_admin: str) -> None:
     """The drift the audit named, from the direction that matters.
 
-    Phase 1's identity layer emits `match_key='manual_review'` for a merge the
-    guards withheld -- the demo dataset produces one. The shipped
+    Phase 1's identity layer emits `match_key='manual_review'`. The shipped
     `asset_correlations_match_key_check` listed only cloud_id/hostname/mac/
     context_ip, so that row was a CheckViolation that aborted the entire snapshot
     persist. It did not fire in practice only because `persist._ensure_merges`
@@ -658,9 +657,21 @@ def test_the_engine_emits_a_correlation_the_shipped_check_constraint_rejected(
     path -- i.e. the write worked because of an accident of call ordering. With
     that helper deleted, the migration is the only thing standing between the
     engine and a failed persist, which is exactly what this asserts.
+
+    WHERE THE ROW COMES FROM MOVED, and the move made this stronger. It used to
+    ride on the demo's WITHHELD merge (confidence 0.0), which existed only
+    because the fixtures declared no namespace for the 10.30.7.7 collision; they
+    declare one now, so the merge happens on evidence and nothing is withheld.
+    The row is therefore taken from the other producer of that match_key -- an
+    operator's CONFIRMED merge (confidence 1.0, `by: human-confirmed`), which is
+    the direction that actually persists in production, since a confirmed merge
+    is a decision the system of record has to keep. Both producers write the same
+    `match_key`, so the constraint under test is the same one either way.
     """
+    from src.analyzers.run_all import run
     from src.persist import correlation_rows, persist_engine_result
 
+    eng = run(manual_merges=[("db-prod-01", "rds-prod-customers")])
     assert any(r["match_key"] == "manual_review" for r in correlation_rows(eng)), \
         "the demo dataset no longer exercises the widened constraint"
     persist_engine_result(cur, eng)               # raises CheckViolation without migration 0001

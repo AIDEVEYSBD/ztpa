@@ -7,14 +7,16 @@
       "env": "prod",
       "tags": [
         "prod"
-      ]
+      ],
+      "vpcId": "vpc-0a7d3e91c4b28f56"
     },
     "app-server-08": {
       "role": "app",
       "env": "prod",
       "tags": [
         "prod"
-      ]
+      ],
+      "vpcId": "vpc-0a7d3e91c4b28f56"
     },
     "internal-app": {
       "role": "segment",
@@ -23,6 +25,16 @@
         "prod",
         "internal-app"
       ]
+    },
+    "internal-app-01": {
+      "role": "app",
+      "env": "prod",
+      "tags": [
+        "prod",
+        "internal-app"
+      ],
+      "ip": "10.40.0.5",
+      "vpcId": "vpc-0a7d3e91c4b28f56"
     },
     "web-tier": {
       "role": "web",
@@ -65,6 +77,15 @@
       "policy_id": "GC-001",
       "src_label": "app-server-07",
       "dst_label": "internal-app",
+      "port": 8443,
+      "protocol": "tcp",
+      "action": "allow",
+      "ruleset": "app-east-west"
+    },
+    {
+      "policy_id": "GC-002",
+      "src_label": "app-server-07",
+      "dst_label": "internal-app-01",
       "port": 8443,
       "protocol": "tcp",
       "action": "allow",

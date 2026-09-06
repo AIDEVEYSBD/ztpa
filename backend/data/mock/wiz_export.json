@@ -12,7 +12,8 @@
         "internet-facing",
         "prod",
         "cloud"
-      ]
+      ],
+      "vpcId": "vpc-0a7d3e91c4b28f56"
     },
     "lb-public-02": {
       "cloud": "aws",
@@ -24,7 +25,8 @@
         "internet-facing",
         "prod",
         "cloud"
-      ]
+      ],
+      "vpcId": "vpc-0a7d3e91c4b28f56"
     },
     "appsrv-07": {
       "cloud": "aws",
@@ -33,7 +35,8 @@
       "ip": "10.30.7.7",
       "tags": [
         "prod"
-      ]
+      ],
+      "vpcId": "vpc-0a7d3e91c4b28f56"
     },
     "app-server-08": {
       "cloud": "aws",
@@ -42,7 +45,8 @@
       "ip": "10.30.7.8",
       "tags": [
         "prod"
-      ]
+      ],
+      "vpcId": "vpc-0a7d3e91c4b28f56"
     },
     "rds-prod-customers": {
       "cloud": "aws",
@@ -54,7 +58,8 @@
         "customer-data",
         "prod",
         "cloud"
-      ]
+      ],
+      "vpcId": "vpc-0a7d3e91c4b28f56"
     }
   },
   "exposures": [

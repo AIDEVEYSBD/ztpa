@@ -42,13 +42,14 @@ from __future__ import annotations
 
 import logging
 import types
+from dataclasses import replace
 
 import networkx as nx
 import pytest
 
 from src.agent import tools
 from src.analyzers import path_trace
-from src.analyzers.run_all import run
+from src.analyzers.run_all import normalize_all, run
 from src.analyzers.severity import score_cross_tool_path
 from src.config import SENSITIVE_TAGS
 from src.graph import reachability
@@ -58,7 +59,7 @@ from src.graph.reachability import (
     find_paths, internet_entries, reachable, who_can_reach,
 )
 from src.graph.zones import zone_of
-from src.identity import resolve_identities
+from src.identity import CONTEXT_IDENTIFIER_KEYS, resolve_identities
 from src.normalizers import algosec, guardicore
 from src.normalizers.common import INTERNET_CIDR, NormalizeResult
 
@@ -72,32 +73,44 @@ from tests.test_analyzers import FOUR_ENCODINGS
 # a change to the rule (or to how a normalizer labels a node concrete/abstract)
 # has to be an explicit edit here rather than a silent shift in the headline claim.
 #
-# RE-BASELINED for the scoped identity merge (Phase 1). `app-server-07` (AlgoSec,
-# Guardicore) and `appsrv-07` (Wiz) are one host on 10.30.7.7, and the demo
-# exports declare no VPC / account / VRF for either, so `resolve_identities` now
-# REFUSES to fuse them on the shared address and files the collision as a
-# `manual_review` row instead — an unscoped IP is not evidence of identity, and
-# fusing on one is how the engine used to report reachability that does not
-# exist. Split, the two halves of that host hold different edges: Wiz's view
-# receives the internet ingress (lb-public-01 -> appsrv-07) and has no outbound
-# rule, while AlgoSec's view holds the only edge into `internal-app` and is
-# reachable only from the abstract 10.0.0.0/8 (not a legal pivot) and from
-# `monitoring`. So `appsrv-07` enters this set and `app-server-07` and
-# `internal-app` leave it.
+# RE-BASELINED for the scoped identity merge (Phase 1), and again now that the
+# demo exports actually DECLARE the namespace that merge requires.
 #
-# That is a withheld merge, not a lost fact: the engine says so out loud, and
-# `test_confirming_the_withheld_merge_restores_the_old_exposure_set` pins the
-# OTHER half — the operator confirming the merge reproduces the previous set
-# exactly, member for member. Both states are pinned so neither can drift.
+# `app-server-07` (AlgoSec, Guardicore) and `appsrv-07` (Wiz) are one host on
+# 10.30.7.7. `resolve_identities` fuses two names on a shared address only inside
+# a shared DECLARED scope, because an RFC 1918 address identifies a host only
+# relative to the VPC / VRF / account that assigns it. Phase 1 wrote that rule;
+# the fixtures did not carry a namespace, so the rule could never be satisfied
+# and the collision was filed as an `unscoped_ip` review row. All three exports
+# now declare the `vpcId` the cloud workloads genuinely live in, so the merge
+# happens ON EVIDENCE and the two views are one asset again.
+#
+# Nothing about the rule was relaxed to get there, and the proof is
+# `INTERNET_EXPOSED_IF_UNSCOPED` below: delete the declared scope and the merge
+# is withheld again, reproducing the previous set member for member. Both states
+# are pinned so neither can drift.
+#
+# `internal-app-01` (10.40.0.5) is new in the fixture: the CONCRETE host inside
+# the `internal-app` /16 that Guardicore observes and AlgoSec grants from. It is
+# internet-exposed for the same reason `internal-app` is — the merged
+# app-server-07 reaches it — and it is the hop that makes the cross-tool path a
+# chain of machines rather than a pivot through a range.
 INTERNET_EXPOSED = {
-    "10.0.0.0/8", "app-server-08", "app-server-09", "appsrv-07",
-    "db-prod-01", "lb-public-01", "lb-public-02",
+    "10.0.0.0/8", "app-server-07", "app-server-08", "app-server-09",
+    "db-prod-01", "internal-app", "internal-app-01",
+    "lb-public-01", "lb-public-02",
 }
 
-# The same set when an operator confirms the merge the identity layer withheld.
-INTERNET_EXPOSED_IF_MERGED = {
-    "10.0.0.0/8", "app-server-07", "app-server-08", "app-server-09",
-    "db-prod-01", "internal-app", "lb-public-01", "lb-public-02",
+# The same set with every declared namespace stripped out of the entities, i.e.
+# the estate as it looked while the exports named no VPC. The merge is withheld,
+# the two halves of that host hold different edges — Wiz's view receives the
+# internet ingress (lb-public-01 -> appsrv-07) and has no outbound rule, while
+# AlgoSec's view holds the only edges onward and is reachable only from the
+# abstract 10.0.0.0/8 (not a legal pivot) and from `monitoring` — so `appsrv-07`
+# enters the set and `app-server-07`, `internal-app` and `internal-app-01` leave.
+INTERNET_EXPOSED_IF_UNSCOPED = {
+    "10.0.0.0/8", "app-server-08", "app-server-09", "appsrv-07",
+    "db-prod-01", "lb-public-01", "lb-public-02",
 }
 
 
@@ -170,34 +183,45 @@ def test_internet_exposed_set_is_pinned(g):
     assert exposed == INTERNET_EXPOSED
 
 
-def test_the_withheld_merge_is_reported_not_silent(eng):
-    """The reason the set above changed has to be visible in the snapshot.
+def test_the_merge_is_reported_not_silent(eng):
+    """The reason the set above is what it is has to be visible in the snapshot.
 
-    A merge the identity layer declines is only defensible if the operator can
-    SEE it declined: one `manual_review` row, confidence 0.0, naming the address,
-    the missing scope and both names. If this row ever stops being emitted, the
-    demo would simply show two unrelated hosts and nobody could tell that the
-    engine had made a decision."""
-    withheld = [c for c in eng.correlations
-                if c.match_key == "manual_review" and c.evidence.get("status") == "withheld"]
-    assert [(c.confidence, c.evidence["reason"], c.evidence["ip"], c.evidence["names"])
-            for c in withheld] == [(0.0, "unscoped_ip", "10.30.7.7",
-                                    ["app-server-07", "appsrv-07"])]
+    An identity decision is only defensible if the operator can SEE it and check
+    it against the export it came from. The merge that fuses the two views of
+    10.30.7.7 emits one `context_ip` row carrying the address AND the namespace
+    it was keyed on, so "these two names are one host" is auditable rather than
+    asserted. Nothing is withheld any more, because nothing is ambiguous any
+    more — and that is pinned too, so a withheld merge cannot creep back in
+    unnoticed."""
+    merged = [c for c in eng.correlations if c.match_key == "context_ip"]
+    assert [(c.confidence, c.evidence["ip"], c.evidence["context"], c.evidence["names"])
+            for c in merged] == [(0.95, "10.30.7.7", "vpc-0a7d3e91c4b28f56",
+                                  ["app-server-07", "appsrv-07"])]
+    assert [c for c in eng.correlations if c.match_key == "manual_review"] == []
+    assert eng.alias_map["appsrv-07"] == eng.alias_map["app-server-07"] == "app-server-07"
 
 
-def test_confirming_the_withheld_merge_restores_the_old_exposure_set():
-    """The other half of the re-baseline above, and the proof it is a WITHHELD
-    merge rather than a lost one: the operator's confirmation is the only thing
-    missing, and supplying it reproduces the previous headline set exactly."""
-    merged = run(manual_merges=[("app-server-07", "appsrv-07")])
-    exposed = {n for n in merged.graph.nodes
-               if who_can_reach(merged.graph, n)["internet_exposed"]}
+def test_stripping_the_declared_scope_withholds_the_merge_again():
+    """The other half of the re-baseline above, and the proof the merge rests on
+    EVIDENCE rather than on a lax rule.
 
-    assert exposed == INTERNET_EXPOSED_IF_MERGED
-    # ...and the confirmed merge is itself one asset with both tools' views on it.
-    assert merged.alias_map["appsrv-07"] == merged.alias_map["app-server-07"] == "app-server-07"
-    # The snapshot id follows the merge set, so the two runs are not confusable.
-    assert merged.snapshot_id != run().snapshot_id
+    The union key is `(context, ip)`. Delete the context and the shared address
+    is no longer evidence of identity: the merge is withheld as `unscoped_ip`,
+    the host splits back into two assets, and the internet-exposed set collapses
+    to exactly what it was before the fixtures declared a namespace — member for
+    member. If this ever stops happening, the fail-safe has stopped failing safe
+    and every merge in the product is suspect."""
+    nr = normalize_all()
+    stripped = [replace(e, identifiers={k: v for k, v in e.identifiers.items()
+                                        if k not in CONTEXT_IDENTIFIER_KEYS})
+                for e in nr.entities]
+    idr = resolve_identities(stripped)
+    g = build_graph(nr.records, idr.assets, idr.alias_map)
+
+    exposed = {n for n in g.nodes if who_can_reach(g, n)["internet_exposed"]}
+    assert exposed == INTERNET_EXPOSED_IF_UNSCOPED
+    assert idr.suppressed_by_reason == {"unscoped_ip": 1}
+    assert idr.alias_map["appsrv-07"] == "appsrv-07"        # not fused onto app-server-07
 
 
 def test_app_segment_is_not_internet_exposed(g):

@@ -189,10 +189,21 @@ def test_the_digest_actually_moves_when_the_engine_state_moves():
     It is also the Phase 1 exit criterion "changing only ... the manual_merges
     list produces a DIFFERENT snapshot_id", checked end to end through a real
     process rather than against the fingerprint function in isolation.
+
+    THE PAIR MOVED, and the reason matters. This used to merge
+    `app-server-07`/`appsrv-07`, which the engine now merges BY ITSELF: the demo
+    exports declare the shared `vpcId` that `identity.resolve_identities`
+    requires, so asking for that merge by hand is a no-op on the asset set and
+    the last assertion could never hold again. `db-prod-01`/`rds-prod-customers`
+    replaces it and is a better lever anyway -- it is the near-duplicate the
+    embedding suggester flags for review (see `scripts/seed_demo.py`), so it is
+    exactly the shape of decision `manual_merges` exists to carry: two names the
+    guards will never fuse on their own (different addresses, no shared scope)
+    that a human confirms are one database.
     """
     import json
     base = _dump("0")
-    merged = _dump("0", merges=(("app-server-07", "appsrv-07"),))
+    merged = _dump("0", merges=(("db-prod-01", "rds-prod-customers"),))
     assert _digest(base) != _digest(merged)
     assert json.loads(base)["snapshot_id"] != json.loads(merged)["snapshot_id"]
     # ...and the merge is what moved: two names became one asset.
@@ -203,8 +214,8 @@ def test_the_merged_run_is_itself_deterministic_across_seeds():
     """The identity layer's union-find, guards and suppression counters are the
     newest and most set-heavy code in the engine (`identity.resolve_identities`
     groups by IP, by context and by environment class). Determinism has to hold
-    on the path where a merge actually HAPPENS, not only on the demo's default
-    path where every guard withholds."""
-    merges = (("app-server-07", "appsrv-07"),)
+    on the path where a HUMAN-CONFIRMED merge bypasses the guards, not only on
+    the demo's default path (which now performs one scoped merge of its own)."""
+    merges = (("db-prod-01", "rds-prod-customers"),)
     digests = {seed: _digest(_dump(seed, merges=merges)) for seed in ("0", "random")}
     assert len(set(digests.values())) == 1, digests

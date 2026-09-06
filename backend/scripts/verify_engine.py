@@ -1,4 +1,4 @@
-"""Demo acceptance check: regression-check the seeded 27-rule demo dataset.
+"""Demo acceptance check: regression-check the seeded demo dataset.
 
 Exit 0 = all pass. Run any time: `python backend/scripts/verify_engine.py`
 (or `make verify` / `python tasks.py verify`).
@@ -29,14 +29,21 @@ TWO STRUCTURAL WEAKNESSES THE AUDIT NAMED, AND HOW THEY ARE FIXED HERE
    CIDRs, the port class and the forced reasons all live -- entirely unchecked.
    Both determinism checks now compare the complete model dump.
 
-THE GOLDENS WERE DELIBERATELY RE-BASELINED IN PHASE 1
+THE GOLDENS HAVE BEEN DELIBERATELY RE-BASELINED TWICE
 -----------------------------------------------------
-The demo moved from 17 findings / `snap_d065e3248774` to 30 findings /
-`snap_e013ae7930ae`. Every difference is attributed in
-`backend/tests/test_demo_golden.py`, which is the file that pins the counts. The
-one check in here that CHANGED MEANING rather than merely moving is P5, the
-cross-tool path -- see `_check_p5` for the full reasoning. Nothing was deleted
-to make this file green.
+Phase 1 moved the demo from 17 findings / `snap_d065e3248774` to 30 /
+`snap_e013ae7930ae` (then 31 on a round-2 analyzer fix). The cross-tool path
+re-baseline moved it to 35 / `snap_7aa6db6c2ddb`. Every difference of both is
+attributed in `backend/tests/test_demo_golden.py`, which is the file that pins
+the counts.
+
+P5 is the check that has changed MEANING rather than merely moving, and it has
+now changed twice: Phase 1 turned it into a pin on the flagship path's ABSENCE
+(the chain pivoted through a /16 and rested on an unscoped IP merge, so it was
+not true); it is now a pin on a path that IS true, walked hop by hop. Crucially,
+the two rules that deleted the old one are unchanged and are still asserted here
+in the negative -- see `_check_p5`. Nothing was ever deleted to make this file
+green.
 """
 
 from __future__ import annotations
@@ -46,17 +53,32 @@ import json
 import os
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 BACKEND = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND))
 
-from src.analyzers.run_all import EngineResult, run          # noqa: E402
-from src.graph.reachability import _valid_traversal          # noqa: E402
+from src.analyzers.run_all import EngineResult, normalize_all, run   # noqa: E402
+from src.config import SENSITIVE_TAGS                        # noqa: E402
+from src.graph.build import build_graph                      # noqa: E402
+from src.graph.reachability import _valid_traversal, cross_tool_paths   # noqa: E402
+from src.identity import CONTEXT_IDENTIFIER_KEYS, resolve_identities    # noqa: E402
 
-# The chain the demo's cross-tool path used to traverse. Kept as a constant
-# because P5 now asserts things ABOUT it -- that its edges still exist, and that
-# the traversal rule is what removes it -- rather than asserting it is reported.
+# THE cross-tool path: the exposure no single console can see. Every pivot on it
+# is a concrete host and every hop is a grant from a different tool's export.
+CROSS_TOOL_CHAIN = ["0.0.0.0/0", "lb-public-01", "app-server-07",
+                    "internal-app-01", "db-prod-01"]
+# ...and the rule that grants each hop, in hop order, with the tool that saw it.
+CROSS_TOOL_HOPS = [("0.0.0.0/0", "lb-public-01", "wiz", "WIZ-001"),
+                   ("lb-public-01", "app-server-07", "wiz", "WIZ-002"),
+                   ("app-server-07", "internal-app-01", "guardicore", "GC-002"),
+                   ("internal-app-01", "db-prod-01", "algosec", "ALGO-029")]
+
+# The chain the demo's cross-tool path used to traverse, through the /16
+# `internal-app`. Kept as a constant because P5 still asserts things ABOUT it --
+# that its edges exist and that `_valid_traversal` STILL refuses it. The real
+# path above does not rescue this one; the abstract-pivot rule is untouched.
 LEGACY_CROSS_TOOL_CHAIN = ["0.0.0.0/0", "lb-public-01", "app-server-07",
                            "internal-app", "db-prod-01"]
 # ...and the four rules that granted its hops, in hop order. The chain is a
@@ -122,101 +144,148 @@ def _model_dumps(result: EngineResult) -> list[dict]:
 # P5 -- the cross-tool path, re-baselined
 # --------------------------------------------------------------------------
 
+def _paths_with_contexts_stripped() -> list[dict]:
+    """The cross-tool paths that survive when every declared namespace is removed.
+
+    The counterfactual half of P5. `identity.resolve_identities` fuses two tools'
+    names for one address only inside a SHARED declared scope, so deleting the
+    scope must delete the merge -- and with it the path. Running it here proves
+    the reported path rests on evidence in the export rather than on the merge
+    being lax: if this ever returns a path, the fail-safe has stopped failing safe.
+
+    Deliberately re-derived from the normalizers rather than by editing the
+    fixture on disk: the check must not be able to leave the demo data mutated.
+    """
+    nr = normalize_all()
+    stripped = []
+    for e in nr.entities:
+        clone = replace(e, identifiers={k: v for k, v in e.identifiers.items()
+                                        if k not in CONTEXT_IDENTIFIER_KEYS})
+        stripped.append(clone)
+    idr = resolve_identities(stripped)
+    g = build_graph(nr.records, idr.assets, idr.alias_map)
+    return cross_tool_paths(g, SENSITIVE_TAGS)
+
+
 def _check_p5(r: EngineResult, out: list[Check]) -> None:
-    """The demo's flagship path is GONE, on purpose. This pins WHY, and pins it
-    hard enough that it cannot come back -- or stay away -- by accident.
+    """The demo's flagship path is BACK, and this time every hop of it is real.
 
-    Before Phase 1 the demo reported exactly one `cross_tool_path`:
-    `0.0.0.0/0 -> lb-public-01 -> app-server-07 -> internal-app -> db-prod-01`,
-    severity 100, forced critical. TWO independent Phase 1 changes remove it,
-    and both are corrections the audit asked for by name:
+    THE PATH
+    --------
+        0.0.0.0/0       --wiz WIZ-001--------> lb-public-01
+        lb-public-01    --wiz WIZ-002--------> app-server-07     (Wiz: "appsrv-07")
+        app-server-07   --guardicore GC-002--> internal-app-01
+        internal-app-01 --algosec ALGO-029---> db-prod-01        (pci, customer-data)
 
-    (1) `internal-app` is the AlgoSec object `{"type": "network", "value":
-        "10.40.0.0/16"}` -- a SUBNET. It reached the graph as `concrete` only
-        because the normalizer left `abstract` at its default for non-host
-        object types, so `_valid_traversal` -- whose entire job is to reject
-        paths that pivot through a range -- let it through. The audit filed this
-        as a BLOCKER (`reachability.py:47`: "the headline cross-tool path pivots
-        THROUGH a /16, the exact fallacy `_valid_traversal` claims to reject")
-        and offered two fixes: (a) mark range-denoting objects abstract, which
-        "will delete the current money-shot until (b) lands", or (b) implement
-        CIDR-membership expansion so the path is rebuilt through the concrete
-        hosts inside the range. Phase 1 landed (a). (b) is not built.
+    Three tools, four grants, and NO abstract node anywhere but the two
+    endpoints. It is the exposure no single console can see: Wiz knows the
+    internet reaches the load balancer and the LB reaches the app server, but
+    calls that server `appsrv-07`; Guardicore knows the app server reaches the
+    internal app host; only AlgoSec knows that host reaches the PCI database.
 
-    (2) Wiz's `appsrv-07` and AlgoSec/Guardicore's `app-server-07` are no longer
-        fused. They used to be unioned on a bare shared IP with no namespace on
-        either side, which is the collision the Phase 1 exit criterion
-        ("`resolve_identities` refuses to union two entities on an unscoped IP
-        collision and emits a manual_review correlation instead") exists to
-        prevent. The demo data declares no VPC/VRF/account on either entity, so
-        the merge is now WITHHELD for review rather than asserted.
+    WHY THIS IS NOT THE OLD FABRICATION COMING BACK
+    -----------------------------------------------
+    Phase 1 deleted the previous "money shot" because it was not true, and BOTH
+    reasons it was untrue still hold -- nothing in the engine was relaxed:
 
-    Deleting P5 would have made this file green while quietly retiring the
-    product's differentiator from every regression gate. Instead P5 pins the four
-    facts that make the absence explainable and reversible:
+    (1) It pivoted through `internal-app`, the AlgoSec object `{"type":
+        "network", "value": "10.40.0.0/16"}`. A /16 is a RANGE: reaching hosts
+        inside it does not let you originate as it. That object is still
+        `abstract` and `_valid_traversal` still refuses it -- asserted below on
+        the legacy chain, which still exists as edges and is still rejected. The
+        fix was to give the app segment a CONCRETE host (`internal-app-01`,
+        10.40.0.5) that Guardicore actually observes and AlgoSec actually grants
+        from, so the pivot is a machine. That is the audit's option (b) --
+        "the path is rebuilt through the concrete hosts inside the range" --
+        supplied as DATA rather than by weakening the traversal rule.
 
-      * no cross-tool path is reported;
-      * every underlying GRANT still exists (so a data regression that deleted
-        one of the four rules fails here just as loudly as it used to);
-      * cause (2) is recorded as an auditable withheld-merge row, not silence;
-      * cause (1) is independent -- forcing the merge back does NOT restore the
-        path, because the /16 pivot is still rejected.
+    (2) Wiz's `appsrv-07` and AlgoSec/Guardicore's `app-server-07` were unioned
+        on a bare shared IP with no namespace on either side. They are unioned
+        again -- but now because both exports DECLARE THE SAME `vpcId`, which is
+        the evidence `identity.context_of` requires. The union key is still
+        `(context, ip)`; the fail-safe is intact and is simply satisfied for the
+        first time. `_paths_with_contexts_stripped` proves the dependency by
+        deleting the evidence and watching the path vanish.
 
-    The day CIDR-membership expansion lands, these checks fail and force a
-    conscious re-baseline rather than the path silently flipping back.
-
-    Live coverage of `path_trace` / `score_cross_tool_path` / `describe_path` has
-    NOT been lost: `test_engine_invariants.py` runs them against a synthetic
-    three-tool estate whose pivots are all concrete hosts.
+    So P5 now pins the path AND the rules that constrain it, in both directions.
     """
     paths = [f for f in r.findings if f.type == "cross_tool_path"]
-    out.append(Check(
-        "P5 no cross-tool path is reported (the only chain pivots through a /16)",
-        not paths, f"reported {len(paths)}"))
+    out.append(Check("P5 exactly one cross-tool path is reported",
+                     len(paths) == 1, f"reported {len(paths)}"))
+    f = paths[0] if paths else None
+    chain = list(f.signals["path"]) if f else []
 
-    # The four grants that made up the chain must all still be in the record set.
-    # This is the data-regression half of P5: the path is absent because of a
-    # traversal/identity decision, NOT because a rule went missing.
+    out.append(Check("P5 it is the internet -> LB -> app -> internal-app-01 -> PCI-db chain",
+                     chain == CROSS_TOOL_CHAIN, f"path = {chain}"))
+
+    # Hop by hop: each is a REAL edge, granted by the expected rule, seen by the
+    # expected tool. A path the engine merely PRINTS is not evidence; this walks it.
+    g = r.graph
+    bad_hops = [f"{a}->{b}" for a, b, _t, _ref in CROSS_TOOL_HOPS if not g.has_edge(a, b)]
+    out.append(Check("P5 every hop on it is a real edge in the graph",
+                     not bad_hops, f"missing edges: {bad_hops}"))
+    hop_facts = [(h["src"], h["dst"], h["tool"], h["ref"]) for h in f.signals["hops"]] if f else []
+    out.append(Check("P5 each hop is granted by the expected rule from the expected tool",
+                     hop_facts == CROSS_TOOL_HOPS, f"hops = {hop_facts}"))
+
+    # The rule the whole re-baseline turns on: no range may be a PIVOT.
+    kinds = [(n, g.nodes[n].get("kind")) for n in chain if n in g]
+    interior_abstract = [n for n in chain[1:-1] if g.nodes.get(n, {}).get("kind") != "concrete"]
+    out.append(Check("P5 no node on it is abstract -- every pivot is a concrete host",
+                     bool(chain) and not interior_abstract,
+                     f"abstract pivots: {interior_abstract}; kinds = {kinds}"))
+    out.append(Check("P5 _valid_traversal accepts it",
+                     bool(chain) and _valid_traversal(g, chain), f"kinds = {kinds}"))
+
+    tools = sorted(f.signals["tools"]) if f else []
+    out.append(Check("P5 it traverses at least 3 distinct source tools",
+                     len(tools) >= 3, f"tools = {tools}"))
+    out.append(Check("P5 it reaches a regulated asset and is scored critical",
+                     bool(f and f.signals.get("reaches_sensitive") and f.forced_critical
+                          and f.severity_band == "critical"),
+                     f"severity = {f and (f.severity, f.severity_band, f.forced_critical)}"))
+
+    # --- the identity half: the merge happened, and for the RIGHT reason -------
+    merged = [c for c in r.correlations
+              if c.match_key == "context_ip"
+              and set(c.evidence.get("names", [])) == {"app-server-07", "appsrv-07"}]
+    out.append(Check("P5 the app-server-07/appsrv-07 merge happened on a SHARED DECLARED scope",
+                     bool(merged) and bool(merged[0].evidence.get("context")),
+                     f"context_ip rows = {[c.evidence for c in merged]}"))
+    withheld = [c for c in r.correlations if c.match_key == "manual_review"]
+    out.append(Check("P5 ...so nothing is withheld for review any more",
+                     not withheld, f"withheld = {[c.evidence for c in withheld]}"))
+
+    # --- the counterfactuals: both constraints still bite ---------------------
+    out.append(Check("P5 strip the declared scopes and the path DISAPPEARS (it needs the merge)",
+                     not _paths_with_contexts_stripped(),
+                     "a path survived with no scope declared anywhere"))
+
+    # The legacy /16 chain is still edges, and `_valid_traversal` still says no.
+    # This is the guard against "fixing" a future regression by relaxing the rule.
+    legacy_present = all(g.has_edge(a, b) for a, b in
+                         zip(LEGACY_CROSS_TOOL_CHAIN, LEGACY_CROSS_TOOL_CHAIN[1:]))
+    out.append(Check("P5 the legacy chain through the /16 is still a real edge sequence",
+                     legacy_present,
+                     "missing hops: " + ", ".join(
+                         f"{a}->{b}" for a, b in
+                         zip(LEGACY_CROSS_TOOL_CHAIN, LEGACY_CROSS_TOOL_CHAIN[1:])
+                         if not g.has_edge(a, b))))
+    out.append(Check("P5 ...and _valid_traversal STILL rejects it (a /16 is never a pivot)",
+                     legacy_present and not _valid_traversal(g, LEGACY_CROSS_TOOL_CHAIN),
+                     f"kinds along the legacy chain: "
+                     f"{[g.nodes[n].get('kind') for n in LEGACY_CROSS_TOOL_CHAIN if n in g]}"))
+    out.append(Check("P5 internal-app is still abstract (a /16 is an endpoint, never a pivot)",
+                     g.nodes.get("internal-app", {}).get("kind") == "abstract",
+                     f"kind = {g.nodes.get('internal-app', {}).get('kind')!r}"))
+
+    # Data-regression check: every grant of BOTH chains must still be in the
+    # record set. A path is absent-or-present because of a traversal/identity
+    # decision, never because a rule silently went missing from the fixture.
     refs = {rec.raw_ref for rec in r.records}
-    missing = sorted(set(LEGACY_CROSS_TOOL_GRANTS) - refs)
-    out.append(Check(
-        "P5 every grant of the 5-hop chain still exists (data regression check)",
-        not missing, f"missing rules: {missing}"))
-
-    out.append(Check(
-        "P5 internal-app is abstract (a /16 is an endpoint, never a pivot)",
-        r.graph.nodes.get("internal-app", {}).get("kind") == "abstract",
-        f"kind = {r.graph.nodes.get('internal-app', {}).get('kind')!r}"))
-
-    withheld = [c for c in r.correlations
-                if c.match_key == "manual_review"
-                and set(c.evidence.get("names", [])) == {"app-server-07", "appsrv-07"}]
-    out.append(Check(
-        "P5 the withheld app-server-07/appsrv-07 merge is recorded, not silent",
-        bool(withheld) and withheld[0].evidence.get("reason") == "unscoped_ip",
-        f"correlations = {[c.evidence for c in withheld]}"))
-
-    # Restore the merge by hand and prove the path STILL does not come back:
-    # the two causes are independent, and the /16 pivot is the one that would
-    # have to be fixed (audit option (b)) for the money shot to return.
-    merged = run(manual_merges=[("app-server-07", "appsrv-07")])
-    g = merged.graph
-    hops_present = all(g.has_edge(a, b) for a, b in
-                       zip(LEGACY_CROSS_TOOL_CHAIN, LEGACY_CROSS_TOOL_CHAIN[1:]))
-    out.append(Check(
-        "P5 with the merge forced, the chain is a real edge sequence",
-        hops_present,
-        "missing hops: " + ", ".join(
-            f"{a}->{b}" for a, b in zip(LEGACY_CROSS_TOOL_CHAIN, LEGACY_CROSS_TOOL_CHAIN[1:])
-            if not g.has_edge(a, b))))
-    out.append(Check(
-        "P5 ...and _valid_traversal still rejects it (the /16 pivot, not the merge)",
-        hops_present and not _valid_traversal(g, LEGACY_CROSS_TOOL_CHAIN),
-        f"kinds along the chain: "
-        f"{[g.nodes[n].get('kind') for n in LEGACY_CROSS_TOOL_CHAIN if n in g]}"))
-    out.append(Check(
-        "P5 ...so no cross-tool path returns from the merge alone",
-        not [f for f in merged.findings if f.type == "cross_tool_path"]))
+    missing = sorted((set(LEGACY_CROSS_TOOL_GRANTS) | {ref for *_x, ref in CROSS_TOOL_HOPS}) - refs)
+    out.append(Check("P5 every grant of both chains still exists (data regression check)",
+                     not missing, f"missing rules: {missing}"))
 
 
 # --------------------------------------------------------------------------

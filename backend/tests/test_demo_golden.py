@@ -158,6 +158,89 @@ same fixture, same interpreter. Every difference and its cause:
   =   NOT CHANGED, and worth saying: 27 canonical records, 20 resolved-object
       audit rows, 23 graph edges, and every severity, band and forced_critical
       value of every finding that exists in both runs.
+
+THE CROSS-TOOL PATH RE-BASELINE (31 -> 35, snap_10eac3f23a5a -> snap_7aa6db6c2ddb)
+---------------------------------------------------------------------------------
+Phase 1 correctly deleted the demo's flagship `cross_tool_path`, because it was
+not true: it pivoted through `internal-app`, a /16 ADDRESS RANGE, and it rested
+on fusing `appsrv-07` with `app-server-07` on a bare shared IP with no namespace
+on either side. Both deletions were right and BOTH RULES ARE STILL IN FORCE. The
+finding is back because the FIXTURE changed, not because the engine did.
+
+NO ENGINE PREDICATE WAS TOUCHED. `_valid_traversal`, `object_is_abstract`, the
+`abstract` flag, `identity.resolve_identities`' four guards, the `(context, ip)`
+union key and every severity function are byte-identical. The changes are three
+data edits in `scripts/seed_demo.py`:
+
+  (a) All three exports now declare `vpcId` on their cloud-resident nodes -- the
+      namespace an RFC 1918 address is unique inside, which all three tools
+      genuinely record for a cloud workload. `normalizers.common.scope_identifiers`
+      already lifted this field and `identity.context_of` already read it back;
+      no export carried one, so the scoped arm of the merge had never once been
+      satisfiable. With it declared, `appsrv-07` and `app-server-07` fuse on
+      MATCHING declared tenancy. Strip the field and the merge is withheld again
+      as `unscoped_ip` -- pinned in both directions by
+      `verify_engine._check_p5` and `test_reachability`.
+  (b) A CONCRETE host inside the app segment: `internal-app-01` (10.40.0.5),
+      which Guardicore observes (GC-002) and AlgoSec grants from (ALGO-029).
+      This is the audit's option (b) -- "the path is rebuilt through the concrete
+      hosts inside the range" -- supplied as data. The /16 `internal-app` is
+      still abstract and `_valid_traversal` still refuses to pivot through it;
+      the legacy chain still exists as edges and is still rejected, asserted.
+  (c) ALGO-029 sits at order 29, BEFORE the broad ALGO-030, so it reads as the
+      original least-privilege grant that ALGO-030 later widened.
+
+Every one of the four new findings, and the one retitle:
+
+  +1  `cross_tool_path` (severity 100, critical, FORCED) --
+      `0.0.0.0/0 --wiz--> lb-public-01 --wiz--> app-server-07
+       --guardicore--> internal-app-01 --algosec--> db-prod-01`.
+      Three distinct source tools, four grants (WIZ-001, WIZ-002, GC-002,
+      ALGO-029), and no abstract node except the internet endpoint. Scored by
+      the ordinary `score_cross_tool_path` path -- nothing special-cased.
+
+  +1  `cidr_overlap` ALGO-029 + ALGO-030 (severity 30, low). ALGO-029's source
+      (10.40.0.5/32) lies inside ALGO-030's (10.40.0.0/16) and both grant
+      tcp/5432 to db-prod-01. That IS a redundancy and the analyzer is right to
+      say so; it is the direct consequence of keeping both the host rule and the
+      segment rule, which is what makes ALGO-030's over-permissiveness legible.
+
+  +1  `shadowed_rule` ALGO-001 + ALGO-029 (severity 10, low). The 16th of
+      AlgoSec's 17 rules to fall under ALGO-001 (order 1, `0.0.0.0/0 ->
+      10.0.0.0/8`, service any), on exactly the same terms as the other 14:
+      same tool, lower order, source inside 0.0.0.0/0, destination inside
+      10.0.0.0/8, service inside any.
+
+  +1  `transport_exposure` ALGO-020 + WIZ-021 (severity 40, medium) --
+      "app-server-07 is reachable on both tcp/443 and udp/443". This is the
+      finding the Phase 1 entry above records LOSING to the withheld merge, with
+      the note "forcing the merge restores exactly this finding and nothing
+      else". The merge is back on evidence, so the finding is back, at the same
+      severity and band it had before Phase 1.
+
+  ~   `transport_exposure` WIZ-021 retitled "... to appsrv-07" -> "... to
+      app-server-07" (severity 39 / medium / not forced, all unchanged). The
+      exact reverse of the Phase 1 retitle, same mechanism: the canonical asset
+      key is the name the most tools use, and that is `app-server-07` (AlgoSec +
+      Guardicore) over `appsrv-07` (Wiz).
+
+  ~   `over_permissive` is UNCHANGED at 5, and ALGO-030 keeps 70 / high /
+      `source_cidrs == ["10.40.0.0/16"]` / E == 0.7. ALGO-029 does not join it:
+      its source is a single host, E == 0.1, below `sensitive_dest_min_E` (0.3).
+      P8 -- the audit's headline fix -- is therefore untouched by all of this.
+
+  ~   records 27 -> 29 (ALGO-029, GC-002). resolved 20 -> 22 (the
+      `internal-app-01` catalog row, once from each tool that names it). assets
+      26 -> 26 (+internal-app-01, -appsrv-07 folding back into app-server-07).
+      alias_map 26 -> 27. correlations 3 -> 4 (-1 manual_review, +1 context_ip,
+      +1 hostname for internal-app-01). nodes 26 -> 26. edges 23 -> 25 (the two
+      new grants; the Wiz edge into that host is RENAMED by the merge, not
+      added). snapshot id follows the changed input, as it must.
+
+  =   NOT CHANGED: every severity, band and forced_critical of all 31 findings
+      that exist in both runs, `degraded_analyzers == []`, and both determinism
+      checks (same-process full dump, and cross-process under PYTHONHASHSEED 0
+      vs random).
 """
 
 from __future__ import annotations
@@ -167,6 +250,8 @@ from collections import Counter
 from pathlib import Path
 
 import pytest
+
+from src.graph.reachability import _valid_traversal
 
 _SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "verify_engine.py"
 
@@ -220,13 +305,21 @@ EXPECTED_CHECKS = [
     "P3 overlap present + low",
     "P4 shadowed-deny present + low",
     "P4 the shadower is the broad rule at the top of the rulebase",
-    "P5 no cross-tool path is reported (the only chain pivots through a /16)",
-    "P5 every grant of the 5-hop chain still exists (data regression check)",
-    "P5 internal-app is abstract (a /16 is an endpoint, never a pivot)",
-    "P5 the withheld app-server-07/appsrv-07 merge is recorded, not silent",
-    "P5 with the merge forced, the chain is a real edge sequence",
-    "P5 ...and _valid_traversal still rejects it (the /16 pivot, not the merge)",
-    "P5 ...so no cross-tool path returns from the merge alone",
+    "P5 exactly one cross-tool path is reported",
+    "P5 it is the internet -> LB -> app -> internal-app-01 -> PCI-db chain",
+    "P5 every hop on it is a real edge in the graph",
+    "P5 each hop is granted by the expected rule from the expected tool",
+    "P5 no node on it is abstract -- every pivot is a concrete host",
+    "P5 _valid_traversal accepts it",
+    "P5 it traverses at least 3 distinct source tools",
+    "P5 it reaches a regulated asset and is scored critical",
+    "P5 the app-server-07/appsrv-07 merge happened on a SHARED DECLARED scope",
+    "P5 ...so nothing is withheld for review any more",
+    "P5 strip the declared scopes and the path DISAPPEARS (it needs the merge)",
+    "P5 the legacy chain through the /16 is still a real edge sequence",
+    "P5 ...and _valid_traversal STILL rejects it (a /16 is never a pivot)",
+    "P5 internal-app is still abstract (a /16 is an endpoint, never a pivot)",
+    "P5 every grant of both chains still exists (data regression check)",
     "P6 QUIC blind spot present (internet)",
     "P6 QUIC blind spot forced_critical",
     "P6 QUIC decoded l7_app",
@@ -258,42 +351,57 @@ def test_the_standalone_script_still_exits_zero(verify, capsys):
 # 2. The golden itself
 # --------------------------------------------------------------------------
 
-# The content hash of the seeded demo. See the module docstring for why it moved
-# (three times: the Phase 1 fingerprint widening, then `ObservedEntity.cidrs`
-# joining it, then the fingerprint becoming injective -- JSON field encoding plus
-# the resolved-catalog blob). No finding, count, band or structural number below
-# moved with any of them.
-DEMO_SNAPSHOT_ID = "snap_10eac3f23a5a"
+# The content hash of the seeded demo. Unlike the three Phase 1 moves (which were
+# all fingerprint-widening and changed no finding), this one follows a real change
+# to the INPUT: the three exports now declare the `vpcId` their cloud workloads
+# live in, and AlgoSec/Guardicore carry a new concrete host plus the two rules
+# that reach it. See "THE CROSS-TOOL PATH RE-BASELINE" in the module docstring.
+DEMO_SNAPSHOT_ID = "snap_7aa6db6c2ddb"
 
-# 17 before Phase 1. -1 cross_tool_path, -1 transport_exposure, +1 over_permissive,
-# +14 shadowed_rule. Every one of the four is attributed in the module docstring.
-# Then +1 transport_exposure (round-2 audit quick win 3: the any-protocol filter
-# was excluding ALGO-001, a rule in the shipped fixture) -> 31.
-DEMO_FINDING_COUNT = 31
+# 31 before this re-baseline. +4, every one attributed in the module docstring:
+# +1 cross_tool_path, +1 cidr_overlap (ALGO-029/ALGO-030), +1 shadowed_rule
+# (ALGO-029 under ALGO-001), +1 transport_exposure (ALGO-020+WIZ-021, which only
+# lands once the two views of that host are one asset). Nothing was removed.
+DEMO_FINDING_COUNT = 35
 
 DEMO_BY_TYPE = {
-    "cidr_overlap": 2,          # unchanged
-    "over_permissive": 5,       # 4 + ALGO-030 (resolved-CIDR exposure scoring)
-    "shadowed_rule": 15,        # 1 + 14 (containment shadowing sees ALGO-001)
-    "transport_exposure": 9,    # 9 - 1 (withheld merge) + 1 (ALGO-001, any-protocol filter dropped)
-    # "cross_tool_path": 0      # 1 -> 0 (the /16 pivot is no longer a pivot)
+    "cidr_overlap": 3,          # 2 + 1: ALGO-029's /32 source sits inside ALGO-030's /16
+    "over_permissive": 5,       # unchanged -- ALGO-029's source is one host (E 0.1),
+                                # below sensitive_dest_min_E 0.3, so it is not over-permissive
+    "shadowed_rule": 16,        # 15 + 1: ALGO-029 is dead under ALGO-001 like the other 14
+    "transport_exposure": 10,   # 9 + 1: ALGO-020 (tcp/443) + WIZ-021 (udp/443) on ONE asset
+    "cross_tool_path": 1,       # 0 -> 1: the real chain, pivoting through a concrete host
 }
 
 DEMO_BY_BAND = {
-    "critical": 3,   # 4 - 1 (the cross-tool path was the fourth)
-    "high": 1,       # 0 + 1 (ALGO-030 -- the demo's first-ever high)
-    "medium": 9,     # 9 - 1 (withheld-merge pair) + 1 (ALGO-001 transport_exposure)
-    "low": 18,       # 4 + 14 (the dead-allow findings)
+    "critical": 4,   # 3 + 1 (the cross-tool path, forced)
+    "high": 1,       # unchanged (ALGO-030)
+    "medium": 10,    # 9 + 1 (the restored ALGO-020/WIZ-021 pair)
+    "low": 20,       # 18 + 2 (the new cidr_overlap and shadowed_rule)
 }
 
-DEMO_FORCED_CRITICAL = 3        # 4 - 1, same cause as the critical band
+DEMO_FORCED_CRITICAL = 4        # 3 + 1, same cause as the critical band
 
 # The full per-finding table: (type, sorted raw_refs, severity, band, forced).
 # This is what a re-baseline must be diffed against -- a total alone would hide a
 # severity that moved while another moved the opposite way.
 DEMO_FINDINGS = [
     ("cidr_overlap", ("ALGO-010", "ALGO-011"), 30, "low", False),
+    # NEW: ALGO-029 (10.40.0.5/32 -> db-prod-01) and ALGO-030 (10.40.0.0/16 ->
+    # db-prod-01) grant the same service to the same destination and the /32 is
+    # inside the /16. Genuine redundancy, and the point of the pair: the host
+    # rule is the original least-privilege grant, ALGO-030 the later widening.
+    ("cidr_overlap", ("ALGO-029", "ALGO-030"), 30, "low", False),
     ("cidr_overlap", ("ALGO-060", "ALGO-061"), 10, "low", False),
+    # THE DIFFERENTIATOR, back and REAL this time:
+    #   0.0.0.0/0 --wiz--> lb-public-01 --wiz--> app-server-07
+    #             --guardicore--> internal-app-01 --algosec--> db-prod-01
+    # Three tools, four grants, every pivot a concrete host. It exists because
+    # the fixtures now declare the `vpcId` that lets appsrv-07 and app-server-07
+    # merge on evidence, and because the pivot is the host internal-app-01 rather
+    # than the /16 internal-app -- NOT because any engine rule was relaxed.
+    # `verify_engine._check_p5` walks it hop by hop and proves both dependencies.
+    ("cross_tool_path", ("ALGO-029", "GC-002", "WIZ-001", "WIZ-002"), 100, "critical", True),
     ("over_permissive", ("ALGO-001",), 60, "critical", True),
     ("over_permissive", ("ALGO-002",), 100, "critical", True),
     # NEW: the audit's headline blocker, fixed. E went 0.1 -> 0.7.
@@ -307,6 +415,10 @@ DEMO_FINDINGS = [
     ("shadowed_rule", ("ALGO-001", "ALGO-011"), 10, "low", False),
     ("shadowed_rule", ("ALGO-001", "ALGO-020"), 10, "low", False),
     ("shadowed_rule", ("ALGO-001", "ALGO-021"), 19, "low", False),   # the dead deny
+    # NEW: the 16th AlgoSec rule to fall under ALGO-001, on the same terms as the
+    # other 14 -- same tool, lower order, source inside 0.0.0.0/0, destination
+    # inside 10.0.0.0/8, service inside any.
+    ("shadowed_rule", ("ALGO-001", "ALGO-029"), 10, "low", False),
     ("shadowed_rule", ("ALGO-001", "ALGO-030"), 10, "low", False),
     ("shadowed_rule", ("ALGO-001", "ALGO-046"), 10, "low", False),
     ("shadowed_rule", ("ALGO-001", "ALGO-050"), 10, "low", False),
@@ -323,6 +435,12 @@ DEMO_FINDINGS = [
     # already handled protocol == "any", so the filter was removing the widest
     # grant in the fixture from the analyzer whose docs claimed to cover it.
     ("transport_exposure", ("ALGO-001",), 40, "medium", False),
+    # RESTORED by the merge. app-server-07 is reachable on tcp/443 (ALGO-020,
+    # AlgoSec) and udp/443 (WIZ-021, Wiz); the pair can only land on ONE
+    # destination once the two tools' names for that host are one asset. Phase 1
+    # recorded losing exactly this finding to the withheld merge ("forcing the
+    # merge restores exactly this finding and nothing else") -- and it is back.
+    ("transport_exposure", ("ALGO-020", "WIZ-021"), 40, "medium", False),
     ("transport_exposure", ("ALGO-060", "ALGO-061", "ALGO-082", "WIZ-011"), 40, "medium", False),
     ("transport_exposure", ("ALGO-070", "ALGO-080"), 40, "medium", False),
     ("transport_exposure", ("ALGO-080",), 78, "critical", True),
@@ -330,19 +448,26 @@ DEMO_FINDINGS = [
     ("transport_exposure", ("GC-020",), 34, "low", False),
     ("transport_exposure", ("WIZ-001", "WIZ-020"), 40, "medium", False),
     ("transport_exposure", ("WIZ-020",), 57, "medium", False),
-    # Retitled "to app-server-07" -> "to appsrv-07"; the numbers are unchanged.
+    # Retitled back "to appsrv-07" -> "to app-server-07" (the canonical key is the
+    # name two tools use); the numbers are unchanged, as they were in Phase 1.
     ("transport_exposure", ("WIZ-021",), 39, "medium", False),
 ]
 
 # Structural counts. records / resolved / edges are UNCHANGED by Phase 1, which
 # is itself the point: no rule and no dereference was lost, only how they score.
-DEMO_RECORD_COUNT = 27
-DEMO_RESOLVED_COUNT = 20
-DEMO_ASSET_COUNT = 26       # 25 + 1: app-server-07 and appsrv-07 are two assets
-DEMO_ALIAS_COUNT = 26       # unchanged in size; appsrv-07 now maps to itself
-DEMO_CORRELATION_COUNT = 3  # 4 - 1: one context_ip row became one manual_review row
+DEMO_RECORD_COUNT = 29      # 27 + 2: ALGO-029 and GC-002
+DEMO_RESOLVED_COUNT = 22    # 20 + 2: the internal-app-01 catalog row, from each tool
+DEMO_ASSET_COUNT = 26       # 26 + 1 (internal-app-01) - 1 (appsrv-07 folds into
+                            # app-server-07 again, now on declared tenancy)
+DEMO_ALIAS_COUNT = 27       # 26 + 1: internal-app-01; appsrv-07 re-points at app-server-07
+DEMO_CORRELATION_COUNT = 4  # 3 - 1 (the manual_review row: nothing is withheld now)
+                            #   + 1 (context_ip 0.95, evidence = ip AND the shared vpcId)
+                            #   + 1 (hostname, internal-app-01 seen by algosec + guardicore)
 DEMO_NODE_COUNT = 26        # tracks the asset count
-DEMO_EDGE_COUNT = 23        # unchanged
+DEMO_EDGE_COUNT = 25        # 23 + 2: app-server-07->internal-app-01 (GC-002) and
+                            # internal-app-01->db-prod-01 (ALGO-029). The Wiz edge
+                            # lb-public-01->appsrv-07 is RENAMED to ->app-server-07
+                            # by the merge, not added.
 
 
 @pytest.fixture(scope="module")
@@ -385,13 +510,36 @@ def test_the_full_finding_table(demo):
     assert actual == sorted(DEMO_FINDINGS)
 
 
-def test_no_cross_tool_path_and_the_reason_is_recorded(demo):
-    """Called out on its own because it is the single most consequential change
-    in the re-baseline: the product's differentiator produces nothing on the
-    shipped demo, and anyone reading a green suite deserves to trip over that
-    fact rather than infer it from a count."""
-    assert [f for f in demo.findings if f.type == "cross_tool_path"] == []
-    assert demo.graph.nodes["internal-app"]["kind"] == "abstract"
+def test_the_cross_tool_path_is_real(demo):
+    """Called out on its own because it is the single most consequential entry in
+    the table: the product's differentiator, and the one finding a reader of a
+    green suite should be able to check without trusting a count.
+
+    So this does not assert the finding EXISTS -- it walks it. Every hop is a
+    real edge, no pivot is abstract, and it spans three tools. A path the engine
+    merely prints is not evidence of anything.
+    """
+    paths = [f for f in demo.findings if f.type == "cross_tool_path"]
+    assert len(paths) == 1
+    path = paths[0].signals["path"]
+    assert path == ["0.0.0.0/0", "lb-public-01", "app-server-07",
+                    "internal-app-01", "db-prod-01"]
+
+    g = demo.graph
+    assert all(g.has_edge(a, b) for a, b in zip(path, path[1:]))
+    # No pivot may be a range. The endpoints may be (the internet is one).
+    assert [g.nodes[n]["kind"] for n in path[1:-1]] == ["concrete"] * 3
+    assert _valid_traversal(g, path)
+    assert sorted(paths[0].signals["tools"]) == ["algosec", "guardicore", "wiz"]
+    assert [(h["tool"], h["ref"]) for h in paths[0].signals["hops"]] == [
+        ("wiz", "WIZ-001"), ("wiz", "WIZ-002"),
+        ("guardicore", "GC-002"), ("algosec", "ALGO-029")]
+
+    # ...and the rule that deleted the OLD path is untouched: `internal-app` is
+    # still a /16, still abstract, and still refused as a pivot.
+    assert g.nodes["internal-app"]["kind"] == "abstract"
+    assert not _valid_traversal(g, ["0.0.0.0/0", "lb-public-01", "app-server-07",
+                                    "internal-app", "db-prod-01"])
 
 
 def test_structural_counts(demo):
@@ -404,12 +552,24 @@ def test_structural_counts(demo):
     assert demo.graph.number_of_edges() == DEMO_EDGE_COUNT
 
 
-def test_the_withheld_merge_is_the_only_manual_review_row(demo):
-    """The withheld merge is a user-visible output of this phase ("1 merge
-    withheld pending review"), not an internal detail -- so it is pinned."""
-    rows = [c for c in demo.correlations if c.match_key == "manual_review"]
-    assert len(rows) == 1
-    assert rows[0].asset_key == "app-server-07"
-    assert rows[0].confidence == 0.0
-    assert rows[0].evidence["reason"] == "unscoped_ip"
-    assert sorted(rows[0].evidence["names"]) == ["app-server-07", "appsrv-07"]
+def test_the_merge_happened_on_declared_tenancy_and_nothing_is_withheld(demo):
+    """The identity decision is a user-visible output, not an internal detail.
+
+    Phase 1 pinned the WITHHELD state ("1 merge withheld pending review") because
+    the fixtures declared no namespace and the `(context, ip)` union key could
+    never be satisfied. The fixtures declare one now, so the merge happens -- and
+    what is pinned is that it happened FOR THE RIGHT REASON: a `context_ip` row
+    whose evidence names the address AND the scope it was keyed on. A merge that
+    reappeared with a null context would mean the fail-safe had been weakened,
+    and would fail here.
+    """
+    merged = [c for c in demo.correlations if c.match_key == "context_ip"]
+    assert len(merged) == 1
+    assert merged[0].asset_key == "app-server-07"
+    assert merged[0].confidence == 0.95
+    assert merged[0].evidence["ip"] == "10.30.7.7"
+    assert merged[0].evidence["context"] == "vpc-0a7d3e91c4b28f56"   # NOT None
+    assert sorted(merged[0].evidence["names"]) == ["app-server-07", "appsrv-07"]
+
+    # Nothing is ambiguous any more, so nothing is queued for a human.
+    assert [c for c in demo.correlations if c.match_key == "manual_review"] == []

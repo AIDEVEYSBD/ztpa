@@ -357,7 +357,7 @@ export function Landing() {
                 <DiagramNode left="7%" top="69.4%" label="Internet" color="var(--text-3)" below />
                 <DiagramNode left="29%" top="33.3%" label="lb-public-01" color="var(--accent)" />
                 <DiagramNode left="51%" top="69.4%" label="app-server-07" color="var(--accent)" sub="= appsrv-07 · merged" below />
-                <DiagramNode left="73%" top="33.3%" label="internal-app" color="var(--accent)" />
+                <DiagramNode left="73%" top="33.3%" label="internal-app-01" color="var(--accent)" />
                 <DiagramNode left="94%" top="63.9%" label="db-prod-01" color="var(--sev-critical)" sub="PCI · customer data" below critical />
               </div>
             </div>
@@ -368,14 +368,15 @@ export function Landing() {
               <div className="text-[13px] font-bold uppercase tracking-[0.02em] text-sev-critical">Critical · force-flagged</div>
               <div className="mt-3 text-[16px] leading-[1.55] text-text2">
                 A public load balancer reaches the customer database through a chain that crosses three tools:{" "}
-                <span className="text-text">Internet → lb-public-01 → app-server-07 → internal-app → db-prod-01</span>. Nothing you own would have shown you this.
+                <span className="text-text">Internet → lb-public-01 → app-server-07 → internal-app-01 → db-prod-01</span>. Nothing you own would have shown you this.
               </div>
             </div>
             <div className="bg-bg p-7">
               <div className="text-[13px] font-bold uppercase tracking-[0.02em] text-accent">Why it&apos;s even visible</div>
               <div className="mt-3 text-[16px] leading-[1.55] text-text2">
                 Wiz calls that server <span className="text-text">appsrv-07</span>; the identity layer merged it with AlgoSec&apos;s{" "}
-                <span className="text-text">app-server-07</span> by attribute. That deterministic merge is the only reason the path connects at all.
+                <span className="text-text">app-server-07</span> because both exports place the same address in the same{" "}
+                <span className="text-text">VPC</span>. That deterministic, evidence-backed merge is the only reason the path connects at all.
               </div>
             </div>
           </Reveal>
