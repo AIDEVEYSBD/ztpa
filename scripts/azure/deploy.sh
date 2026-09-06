@@ -1045,6 +1045,24 @@ if [ -n "$ACTUAL_FRONTEND_FQDN" ] && [ "$ACTUAL_FRONTEND_FQDN" != "$FRONTEND_FQD
 fi
 FRONTEND_URL="https://${FRONTEND_FQDN}"
 
+# A BOUND CUSTOM DOMAIN WINS OVER THE azurecontainerapps.io FQDN.
+#
+# APP_URL is what Auth.js builds session cookies and OIDC callback URLs from. If
+# a custom hostname is bound and this keeps naming the default FQDN, users arrive
+# on the custom domain, get a cookie issued for a different host, and sign-in
+# fails in a redirect loop that looks like a broken login rather than a wrong
+# variable. scripts/azure/bind-domain.sh sets it correctly; this line is what
+# used to overwrite it on the next deploy.
+#
+# `hostname list` returns the bound custom names; there is at most one here, and
+# the default FQDN is not among them.
+CUSTOM_HOSTNAME="$(az containerapp hostname list -n "$FRONTEND_APP" -g "$RESOURCE_GROUP" \
+  --query "[?bindingType!='Disabled'].name | [0]" -o tsv 2>/dev/null || true)"
+if [ -n "$CUSTOM_HOSTNAME" ] && [ "$CUSTOM_HOSTNAME" != "None" ]; then
+  FRONTEND_URL="https://${CUSTOM_HOSTNAME}"
+  info "custom domain bound: using $FRONTEND_URL for APP_URL / FRONTEND_ORIGIN"
+fi
+
 # ---------------------------------------------------------------------------
 # 14. Converge both templates with the REAL FQDNs, and add the probes.
 #     This is the pass that closes the ordering cycle: whatever the two apps
