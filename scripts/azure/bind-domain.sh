@@ -34,14 +34,14 @@
 # the azurecontainerapps.io FQDN while users arrive on the custom domain, the
 # session cookie is issued for the wrong host and sign-in fails in a redirect
 # loop that looks like a broken login rather than a misconfiguration. The SSO
-# redirect URIs registered with AutoX are for https://ztpa.autogrc.cloud, so
+# redirect URIs registered with AutoX must be for https://npr.autogrc.cloud, so
 # this value must match them exactly.
 set -euo pipefail
 
 RESOURCE_GROUP="${RESOURCE_GROUP:-npr-demo-rg}"
 FRONTEND_APP="${FRONTEND_APP:-npr-frontend}"
 ENVIRONMENT="${ENVIRONMENT:-npr-env}"
-CUSTOM_DOMAIN="${CUSTOM_DOMAIN:-ztpa.autogrc.cloud}"
+CUSTOM_DOMAIN="${CUSTOM_DOMAIN:-npr.autogrc.cloud}"
 
 BOLD=$'\033[1m'; DIM=$'\033[2m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; RED=$'\033[31m'; OFF=$'\033[0m'
 step() { printf '\n%s==> %s%s\n' "$BOLD" "$*" "$OFF"; }
@@ -96,8 +96,8 @@ if [ "$CNAME_OK" != true ] || [ "$TXT_OK" != true ]; then
     CNAME ${CUSTOM_DOMAIN} -> ${RESOLVED:-<unset>}   $([ "$CNAME_OK" = true ] && echo OK || echo "expected ${APP_FQDN}")
     TXT   asuid.${CUSTOM_DOMAIN} -> ${TXT_VALUE:-<unset>}   $([ "$TXT_OK" = true ] && echo OK || echo MISMATCH)
 
-  If ${CUSTOM_DOMAIN} is still bound to another host (it previously pointed at
-  Vercel), remove it there first or the CNAME cannot be repointed.
+  If ${CUSTOM_DOMAIN} is already bound elsewhere, remove it there first or the
+  CNAME cannot be repointed.
 
 EOF
   exit 2
