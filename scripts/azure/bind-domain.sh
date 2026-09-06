@@ -110,6 +110,19 @@ step "Bind the hostname and issue the managed certificate"
 if az containerapp hostname list -n "$FRONTEND_APP" -g "$RESOURCE_GROUP" -o tsv 2>/dev/null | grep -q "$CUSTOM_DOMAIN"; then
   ok "hostname already bound"
 else
+  # TWO STEPS, IN THIS ORDER. `hostname bind` issues the managed certificate, but
+  # Azure refuses to issue one for a hostname the environment does not already
+  # know about:
+  #   (RequireCustomHostnameInEnvironment) Creating managed certificate requires
+  #   hostname '...' added as a custom hostname to a container app or route
+  # `hostname add` registers it (the TXT/CNAME records are what let that
+  # succeed); `hostname bind` then issues and attaches the certificate. Doing
+  # only the bind fails with the error above, which reads like a DNS problem and
+  # is not one.
+  az containerapp hostname add -n "$FRONTEND_APP" -g "$RESOURCE_GROUP" \
+    --hostname "$CUSTOM_DOMAIN" -o none
+  ok "registered $CUSTOM_DOMAIN on the app"
+
   # --validation-method CNAME is what makes Azure create the free managed
   # certificate; without it the bind expects a certificate you supply yourself.
   az containerapp hostname bind -n "$FRONTEND_APP" -g "$RESOURCE_GROUP" \

@@ -340,17 +340,32 @@ function ResidencyChip({ ai, error }: { ai?: Residency; error?: ApiError }) {
     );
   }
 
-  const hosted = ai.active_provider !== "ollama";
-  const degraded = !hosted && !ai.ollama_reachable;
-  const label = hosted ? "Hosted — data leaves this host"
-    : degraded ? "Local — model unreachable"
+  // Azure AI Foundry is hosted, but it is hosted IN THE CUSTOMER'S OWN TENANT --
+  // their subscription, their resource group, their region. Labelling that
+  // "data leaves this host" the same way as a third-party API is true but
+  // useless: it collapses the one distinction a compliance reader cares about.
+  const isAzure = ai.active_provider === "azure";
+  const hosted = ai.active_provider !== "ollama" && !isAzure;
+  // "Local — model unreachable" described the CONFIGURATION rather than the
+  // consequence, and read as a fault on a deployment that simply has no local
+  // model and never will. What matters to the reader is that no model is
+  // answering, so every capability is serving its deterministic fallback.
+  const degraded = !hosted && !isAzure && !ai.ollama_reachable;
+  const label = isAzure ? "Azure AI Foundry — your tenant"
+    : hosted ? "Hosted — data leaves this host"
+    : degraded ? "No model — deterministic fallback"
     : "Local — stays on this host";
-  const title = hosted
+  const title = isAzure
+    ? `Provider: azure · judge ${ai.judge_model} · prose ${ai.prose_model} · residency: ${ai.data_residency}. `
+      + "Prompts go to an Azure AI Foundry deployment in your own subscription — they leave this "
+      + "container, but not your tenant."
+    : hosted
     ? `Provider: ${ai.active_provider} · judge ${ai.judge_model} · prose ${ai.prose_model} · residency: ${ai.data_residency}. `
       + "Finding text, rule text and asset names are sent to this hosted provider."
     : degraded
       ? `Provider: ollama · judge ${ai.judge_model} · residency: ${ai.data_residency}. Ollama is not reachable, `
-        + "so every AI capability is serving its deterministic engine fallback. Nothing leaves this host."
+        + "so no model is answering and every AI capability is serving its deterministic engine "
+        + "fallback. Nothing leaves this host. Configure a provider on the Configuration screen."
       : `Provider: ollama · judge ${ai.judge_model} · prose ${ai.prose_model} · embed ${ai.embed_model} · `
         + `residency: ${ai.data_residency}. Nothing leaves this host.`;
 
