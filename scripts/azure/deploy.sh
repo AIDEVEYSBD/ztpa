@@ -689,23 +689,27 @@ build_backend_env() { # $1 = frontend origin
   # it every ARM discovery call and every managed-identity model call fails with
   # "(invalid_scope) 400, Unable to load the proper Managed Identity". A redeploy
   # erased it and the Configuration page went blind.
-  local existing name value secretref
+  # JSON, not `-o tsv` -- see the note in build_frontend_env. A tsv row whose
+  # `value` is null collapses the column, secretRef lands in the value field, and
+  # a secret-backed variable is rewritten as the literal SECRET NAME.
+  local existing
   existing="$(az containerapp show -n "$BACKEND_APP" -g "$RESOURCE_GROUP" \
-    --query "properties.template.containers[0].env[].[name,value,secretRef]" \
-    -o tsv 2>/dev/null || true)"
-  if [ -n "$existing" ]; then
-    while IFS=$'\t' read -r name value secretref; do
-      [ -n "$name" ] || continue
-      case " ${BACKEND_ENV[*]} " in *" ${name}="*) continue ;; esac
-      if [ -n "${secretref:-}" ] && [ "$secretref" != "None" ]; then
-        BACKEND_ENV+=("${name}=secretref:${secretref}")
-        info "preserved ${name} (secretref) set outside this script"
-      elif [ -n "${value:-}" ] && [ "$value" != "None" ]; then
-        BACKEND_ENV+=("${name}=${value}")
-        info "preserved ${name} set outside this script"
-      fi
-    done <<< "$existing"
-  fi
+    --query "properties.template.containers[0].env" -o json 2>/dev/null || echo '[]')"
+  while IFS=$'\x1f' read -r name ref val; do
+    [ -n "$name" ] || continue
+    case " ${BACKEND_ENV[*]} " in *" ${name}="*) continue ;; esac
+    if [ -n "$ref" ]; then
+      BACKEND_ENV+=("${name}=secretref:${ref}")
+      info "preserved ${name} (secretref) set outside this script"
+    elif [ -n "$val" ]; then
+      BACKEND_ENV+=("${name}=${val}")
+      info "preserved ${name} set outside this script"
+    fi
+  done <<< "$(printf '%s' "$existing" | python3 -c '
+import json, sys
+for e in json.load(sys.stdin) or []:
+    print("\x1f".join([e.get("name") or "", e.get("secretRef") or "", (e.get("value") or "").replace("\x1f", " ")]))
+' 2>/dev/null || true)"
 }
 
 build_frontend_env() { # $1 = backend url  $2 = app url
@@ -739,24 +743,33 @@ build_frontend_env() { # $1 = backend url  $2 = app url
   # and leave everything else alone. So carry forward any variable already on the
   # running app that this script does not set itself. A variable this script does
   # set still wins, so a deliberate change is never blocked by a stale value.
-  local existing name value secretref
+  # NB: JSON, not `-o tsv`. `--query "env[].[name,value,secretRef]" -o tsv` on an
+  # entry whose `value` is null COLLAPSES the empty column, so secretRef lands in
+  # the value field and a secret-backed variable is preserved as the literal
+  # SECRET NAME. That is not hypothetical: it wrote SSO_CLIENT_SECRET="sso-client-secret"
+  # (17 characters), Auth.js saw a secret it could not use, chose
+  # token_endpoint_auth_method "none", sent no client credentials, and every
+  # sign-in died with `invalid_client` and an unhelpful "problem with the server
+  # configuration" page. A preservation routine that silently corrupts what it
+  # preserves is worse than not preserving at all.
+  local existing
   existing="$(az containerapp show -n "$FRONTEND_APP" -g "$RESOURCE_GROUP" \
-    --query "properties.template.containers[0].env[].[name,value,secretRef]" \
-    -o tsv 2>/dev/null || true)"
-  if [ -n "$existing" ]; then
-    while IFS=$'\t' read -r name value secretref; do
-      [ -n "$name" ] || continue
-      # Already declared by this run? Ours is authoritative.
-      case " ${FRONTEND_ENV[*]} " in *" ${name}="*) continue ;; esac
-      if [ -n "${secretref:-}" ] && [ "$secretref" != "None" ]; then
-        FRONTEND_ENV+=("${name}=secretref:${secretref}")
-        info "preserved ${name} (secretref) set outside this script"
-      elif [ -n "${value:-}" ] && [ "$value" != "None" ]; then
-        FRONTEND_ENV+=("${name}=${value}")
-        info "preserved ${name} set outside this script"
-      fi
-    done <<< "$existing"
-  fi
+    --query "properties.template.containers[0].env" -o json 2>/dev/null || echo '[]')"
+  while IFS=$'\x1f' read -r name ref val; do
+    [ -n "$name" ] || continue
+    case " ${FRONTEND_ENV[*]} " in *" ${name}="*) continue ;; esac
+    if [ -n "$ref" ]; then
+      FRONTEND_ENV+=("${name}=secretref:${ref}")
+      info "preserved ${name} (secretref) set outside this script"
+    elif [ -n "$val" ]; then
+      FRONTEND_ENV+=("${name}=${val}")
+      info "preserved ${name} set outside this script"
+    fi
+  done <<< "$(printf '%s' "$existing" | python3 -c '
+import json, sys
+for e in json.load(sys.stdin) or []:
+    print("\x1f".join([e.get("name") or "", e.get("secretRef") or "", (e.get("value") or "").replace("\x1f", " ")]))
+' 2>/dev/null || true)"
   case " ${FRONTEND_ENV[*]} " in
     *" BREAKGLASS_PASSWORD_HASH="*)
       warn "break-glass is ARMED (docs/BREAKGLASS.md to disarm)" ;;
