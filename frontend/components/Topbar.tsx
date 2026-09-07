@@ -3,8 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useSession } from "next-auth/react";
 import {
-  RefreshCw, ChevronDown, FlaskConical, Check, History, RotateCcw, AlertTriangle, X, Cloud, HardDrive,
-  HelpCircle,
+  RefreshCw, ChevronDown, FlaskConical, Check, History, RotateCcw, AlertTriangle, X,
 } from "lucide-react";
 import { api, asApiError, type ApiError } from "@/lib/api";
 import type { ProviderStatus } from "@/lib/types";
@@ -25,7 +24,6 @@ type Scenario = { id: string; label: string; description: string };
  *  read its own provider status (`{"error": "..."}`, health.py never 500s over
  *  it). Carried explicitly so the chip can say WHY it does not know, instead of
  *  reading `active_provider: undefined` as "not ollama" and claiming "Hosted". */
-type Residency = ProviderStatus & { error?: string };
 
 const short = (id: string) => id.replace(/^snap_/, "").slice(0, 7);
 
@@ -51,8 +49,6 @@ export function Topbar({ title, sub, viewSnap, onViewSnap, snaps = [], snapsUnkn
   const [dsOpen, setDsOpen] = useState(false);
   const [snapOpen, setSnapOpen] = useState(false);
   const [busy, setBusy] = useState<Busy | null>(null);
-  const [ai, setAi] = useState<Residency>();
-  const [aiError, setAiError] = useState<ApiError>();
   const snapRef = useRef<HTMLDivElement>(null);
   const dsRef = useRef<HTMLDivElement>(null);
 
@@ -66,21 +62,6 @@ export function Topbar({ title, sub, viewSnap, onViewSnap, snaps = [], snapsUnkn
       .catch((e) => setScenarioError(asApiError(e)));
   }, []);
 
-  // Residency signal. The backend already computes this on every /api/health;
-  // until now nothing on screen read it, so a hosted fallback (render.yaml pins
-  // ADVISORY_PROVIDER=openai) was completely undisclosed.
-  //
-  // A DEGRADED backend still knows its own provider. /api/health returns 503 with
-  // a full payload when it cannot reach the database, and `api.health` resolves
-  // on that (lib/api.readHealth) rather than discarding it — so this chip now
-  // reads "Hosted — data leaves this host" in exactly the deployment where that
-  // warning matters most, instead of "AI residency unknown" out of a body that
-  // was sitting right there. Only a real failure to read health lands in catch.
-  useEffect(() => {
-    api.health()
-      .then((h) => { setAi(h.ai); setAiError(undefined); })
-      .catch((e) => { setAi(undefined); setAiError(asApiError(e)); });
-  }, []);
 
   // Click-away + Escape for the popovers. A document listener is used (rather than
   // a `fixed inset-0` catcher) because the glass header sets `backdrop-filter`,
@@ -140,7 +121,6 @@ export function Topbar({ title, sub, viewSnap, onViewSnap, snaps = [], snapsUnkn
         <div className="flex-1" />
 
         {/* where prompt content goes (permanent, all users) */}
-        <ResidencyChip ai={ai} error={aiError} />
 
         {/* snapshot timeline (permanent, all users) */}
         <div ref={snapRef} className="relative">
@@ -311,72 +291,3 @@ export function Topbar({ title, sub, viewSnap, onViewSnap, snaps = [], snapsUnkn
   );
 }
 
-/**
- * Where the prompt content goes — the one thing a "local-first" product must not
- * leave to a README. `/api/health` has always returned `ai.active_provider` and
- * `ai.data_residency`; no component read them, so a hosted fallback was silent.
- *
- * The rule is deliberately blunt: anything other than ollama means the finding
- * text, rule text and asset names of this estate are sent off this host, so the
- * chip says exactly that. render.yaml pins ADVISORY_PROVIDER=openai, so on the
- * only documented deployment this reads "Hosted" — which is the point.
- */
-function ResidencyChip({ ai, error }: { ai?: Residency; error?: ApiError }) {
-  // Unknown is its own state: never fall back to claiming "Local", and never let
-  // a payload the backend could not fill in (`{"error": ...}`, so no
-  // `active_provider`) fall through to the `!== "ollama"` test below and read as
-  // a confident "Hosted".
-  if (!ai?.active_provider) {
-    const why = ai?.error
-      ? `The API could not read its model provider status — ${ai.error}`
-      : error
-        ? `Could not read /api/health — ${error.status ? `HTTP ${error.status}: ` : ""}${error.detail}`
-        : "Reading the model provider from /api/health…";
-    return (
-      <span className="chip !h-8 border-dashed border-borderStrong text-[10.5px] text-text3" title={why}>
-        <HelpCircle size={13} />
-        <span className="hidden lg:inline">AI residency unknown</span>
-      </span>
-    );
-  }
-
-  // Azure AI Foundry is hosted, but it is hosted IN THE CUSTOMER'S OWN TENANT --
-  // their subscription, their resource group, their region. Labelling that
-  // "data leaves this host" the same way as a third-party API is true but
-  // useless: it collapses the one distinction a compliance reader cares about.
-  const isAzure = ai.active_provider === "azure";
-  const hosted = ai.active_provider !== "ollama" && !isAzure;
-  // "Local — model unreachable" described the CONFIGURATION rather than the
-  // consequence, and read as a fault on a deployment that simply has no local
-  // model and never will. What matters to the reader is that no model is
-  // answering, so every capability is serving its deterministic fallback.
-  const degraded = !hosted && !isAzure && !ai.ollama_reachable;
-  const label = isAzure ? "Azure AI Foundry — your tenant"
-    : hosted ? "Hosted — data leaves this host"
-    : degraded ? "No model — deterministic fallback"
-    : "Local — stays on this host";
-  const title = isAzure
-    ? `Provider: azure · judge ${ai.judge_model} · prose ${ai.prose_model} · residency: ${ai.data_residency}. `
-      + "Prompts go to an Azure AI Foundry deployment in your own subscription — they leave this "
-      + "container, but not your tenant."
-    : hosted
-    ? `Provider: ${ai.active_provider} · judge ${ai.judge_model} · prose ${ai.prose_model} · residency: ${ai.data_residency}. `
-      + "Finding text, rule text and asset names are sent to this hosted provider."
-    : degraded
-      ? `Provider: ollama · judge ${ai.judge_model} · residency: ${ai.data_residency}. Ollama is not reachable, `
-        + "so no model is answering and every AI capability is serving its deterministic engine "
-        + "fallback. Nothing leaves this host. Configure a provider on the Configuration screen."
-      : `Provider: ollama · judge ${ai.judge_model} · prose ${ai.prose_model} · embed ${ai.embed_model} · `
-        + `residency: ${ai.data_residency}. Nothing leaves this host.`;
-
-  return (
-    <span title={title}
-      className={cn("chip !h-8 text-[10.5px]",
-        hosted ? "border-sev-high-line bg-sev-high-bg text-sev-high"
-          : degraded ? "border-sev-medium-line bg-sev-medium-bg text-sev-medium"
-          : "border-ok-line bg-ok-bg text-ok")}>
-      {hosted ? <Cloud size={13} /> : <HardDrive size={13} />}
-      <span className="hidden lg:inline">{label}</span>
-    </span>
-  );
-}

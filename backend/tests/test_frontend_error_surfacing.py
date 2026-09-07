@@ -363,14 +363,21 @@ SURFACING_CONTRACT: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
         ("setPage({ items: []",),
     ),
     (
-        # The chip must not read a missing provider as "not ollama" and print a
-        # confident "Hosted" out of a payload the backend could not fill in --
-        # and, in the snapshot dropdown, "no snapshots yet" is a claim about the
+        # In the snapshot dropdown, "no snapshots yet" is a claim about the
         # database, so it may only be made when the database was actually read
         # (`snapsUnknown` carries the API's reason when it was not).
+        #
+        # The residency chip's clause ("!ai?.active_provider") was removed with
+        # the chip itself: the provider is now shown on the Configuration screen,
+        # which is where an operator changes it and where the CURRENTLY ACTIVE
+        # panel already distinguishes a stored choice from an environment
+        # default. Deleting the assertion is correct ONLY because the call site
+        # is gone -- there is no longer an `ai` payload rendered here to misread.
+        # If a provider indicator ever returns to this component, its
+        # unknown-vs-hosted guard must be pinned again.
         "components/Topbar.tsx",
-        ("!ai?.active_provider", "snapsUnknown"),
-        ("if (!ai) {",),
+        ("snapsUnknown",),
+        (),
     ),
 )
 
