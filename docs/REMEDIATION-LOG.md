@@ -18,6 +18,7 @@ Claims that could **not** be verified in this environment are called out explici
 | **1** — Engine math defensible | Resolved CIDRs, port ranges, internet classification, identity scoping, content-hash snapshot id | ✅ Complete |
 | **2** — System of record | Governance survival, audit identity, migrations, logging, transaction boundaries | ✅ Complete (2 gaps carried) |
 | **3** — Pilot-ready | Real ingestion path, bounded algorithms, analyzer coverage | ⬜ Next |
+| **Network Analyser** | Sources → Inventory → Topology → Resilience; multi-console reconstruction | ✅ Complete |
 | **4** — Production hardening | Provider parity, cost/latency limits, full coverage, reproducible builds | ⬜ Not started |
 
 | Metric | Baseline | Now |
@@ -337,3 +338,126 @@ moment fail-closed has taken everything away.
 **3. The archived compliance record has no reader.** `GET /api/change-decisions` hard-codes
 `WHERE archived_at IS NULL` with no `include_archived` parameter, so reset-demo's archived governance rows
 are retained but unreadable.
+
+---
+
+## Network Analyser revamp ✅
+
+**Branch:** `feature/network-analyser` · **Plan:** `docs/NETWORK-ANALYSER-PLAN.md`
+
+The console could describe policy and could not describe the network the policy
+runs on. `grep -rn vlan backend/` returned nothing, so "which VLAN is this host
+in", "how many subnets do we have" and "what does the edge look like" were
+unanswerable rather than merely unrendered — and the console opened on the
+reachability graph, step 3 of a five-step review with the first two missing.
+
+### What was delivered
+
+| Area | Change |
+|---|---|
+| Infrastructure model | `NetDevice`, `NetInterface`, `NetLink`, `Vlan`, `Subnet`, `Circuit`, each carrying `Provenance` with the source's **tier**. `l2_switch`/`l3_switch` are distinct roles |
+| Reconstruction | Layers derived from **observed connections**, never names. The smoke case names its devices `alpha`/`bravo`/`delta`/`echo` and still lands modem → edge → core → access |
+| Multi-console merge | Nine sources, overlapping views folded on one rule: **a stated fact is never overwritten by an absent one**. Conflicts recorded, not resolved away |
+| Source registry | One copy replacing five that could not disagree loudly. Records what each console is **blind to** |
+| Vendor connectors | FortiManager, FortiGate, carrier portal, Catalyst Center, Meraki, AlgoSec topology, Junos Space — each a projection of one canonical estate, each emitting **zero** PolicyRecords |
+| Resilience | Articulation points, bridges, shared-carrier and single-homed findings, per-device blast radius |
+| API | 5 reads with the provenance envelope; both required filters (IP containment, source) |
+| UI | Sources, Inventory, Topology (fullscreen + finding walkthrough), all honouring the no-fabrication rules |
+| Scale | `estate.build(branches=N)` + `bench_topology.py` |
+
+**1,899 tests pass** (from 1,674), `verify_engine` green including its fifteen
+checks on the cross-tool path, `tsc` clean, production build clean.
+
+### Real defects found and fixed
+
+1. **The console reported a different trust zone than the engine scored with.**
+   `/api/graph` re-derived zones with the 2-argument `zone_of` while the engine
+   used the 4-argument form. Measured: `ANY-EXTERNAL` rendered `internal` where
+   the engine scored `internet` — severity used a 1.5 boundary multiplier, the
+   screen implied 1.0. Named objects are how real AlgoSec and Palo Alto policies
+   express `any`, so this was the common case.
+
+2. **The provenance relabel.** `profile.py` recorded any unlisted tool's records
+   as `source_tool="algosec"`. Bring-your-own-connector — a shipped feature —
+   ingested cleanly under a different vendor's name, and every downstream
+   provenance claim was wrong with nothing to notice it by.
+
+3. **`MAX_IP_FANOUT = 3` was a stale constant.** Correct for exactly the three
+   host-describing tools that existed when written. A fourth would have withheld
+   a legitimate merge, split an asset, and made a cross-tool path vanish with no
+   error. Now computed per address from the tools that actually named it —
+   stricter where it counts, looser only in the case that was a bug.
+
+4. **The management VLAN was a near-complete mesh.** Containment linked every
+   pair sharing a block; every device holds a management address in
+   `10.255.0.0/24`. 34 fabricated links on a network with 18 real ones — and a
+   mesh has no articulation points, so the resilience analyzer returned a
+   flawless network for an estate with four designed single points of failure.
+   A drawing heuristic was silently cancelling the analysis.
+
+5. **Duplicate devices across consoles.** 19 devices for a 13-device estate. The
+   naive fix was worse: last-write-wins would let the device-tier FortiGate read
+   overwrite `model` and `ha_role` with `None`, so onboarding MORE sources would
+   produce a THINNER inventory.
+
+6. **Every address in the world was internet-reachable.** `/api/ip` matched an
+   any→internal rule's `0.0.0.0/0` **source** and read it as reachability AT the
+   address. Reachability is a claim about traffic arriving.
+
+7. **`source_rows` excluded every topology-only console**, so six of nine sources
+   would have been absent from the Sources screen while visibly supplying the
+   devices on the Topology screen.
+
+8. **An accidental quadratic**, found by the benchmark within a minute of it
+   existing: `Estate.interfaces_of` was a linear scan called once per device by
+   five connectors. 592 ms → 100 ms at 1,013 devices; ~15 s at 5,000.
+
+### Two decisions worth recording
+
+**The fingerprint covers the topology even though no analyzer reads it.** The
+tempting answer is to leave it out and keep the golden id stable. But the id
+keys `devices`/`topology_links`/`vlans`, so two ingests differing only in
+topology would share one id and the rows a reader gets back would depend on
+which run wrote last. An id that does not cover the content it keys is not a
+content hash. The sixth blob is appended only when non-empty, so an estate with
+no infrastructure keeps the id it always had.
+
+**Redundancy grouping is directional and cannot live on the model.** Derived
+onto `NetLink.redundant_group` it immediately deleted real findings — every
+access→core uplink landed in one group, so `asw-acc-03`'s single uplink looked
+redundant. The deeper reason: `rtr-edge-01` has two modems, which is redundancy
+*for the router* and a single point of failure *for each modem*. One field
+cannot hold both. It is now computed in the response, for display only.
+
+### What was NOT done, and why
+
+- **Stale rules.** Requires rule hit counts. AlgoSec
+  `POST /api/v1/rules/hit-count`, Palo Alto Policy Optimizer and FortiManager
+  `_last_hit` are the three real sources; none is connected. Named as unknown
+  with the API that would close it, never computed from absence.
+- **Live connectors.** Every export is seeded, and every surface says
+  `simulated` — `sources.config.mode` was already being written and read by
+  nothing.
+- **Gaps + evidence register.** The OSCAL-shaped register is designed in the
+  plan and not built. Carried forward.
+- **`ap-wifi-01` has no observed uplink.** Meraki reports no neighbour table and
+  the Catalyst switch it plugs into belongs to a console that correctly refuses
+  to borrow the answer. Reported as a coverage gap with its remedy, not drawn.
+
+### ⚠️ Carried forward
+
+**1. No DATABASE_URL starves the API.** With no Postgres the six DB-backed
+console feeds each block for the 30 s pool timeout and saturate uvicorn's
+threadpool, so unrelated requests fail. Surfaced while driving a real browser
+against the app. The five new reads deliberately do not probe the database, but
+the underlying behaviour is untouched and will bite any demo run without a
+database.
+
+**2. Remediation has no path for a non-policy finding.** `RiskTodo`'s accept
+button is `disabled unless validation.resolves`, which re-simulates a
+`PolicyRecord` delta. A resilience finding has no policy change, so step 4 of the
+five-step process has no route for the findings this work introduces.
+
+**3. `advisory/explain.py` has no branch for the new finding classes**, and
+`rank_deterministic` has no type weighting — hygiene findings would swamp the
+Risk To-Do.
