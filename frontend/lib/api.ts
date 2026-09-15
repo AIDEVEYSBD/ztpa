@@ -9,7 +9,7 @@ import type {
 // The topology canvas's two reads. A second import statement rather than five
 // more names in the block above, so this addition cannot collide with an edit
 // to the original list.
-import type { AnalysisState, ResilienceResponse, TopologyResponse } from "./types";
+import type { AnalysisState, ResilienceFinding, ResilienceResponse, TopologyResponse } from "./types";
 
 /**
  * A failed API call, carrying the two facts a UI needs in order to tell the
@@ -651,7 +651,52 @@ export type TopologyPayload = TopologyResponse & AnalysisState & Provenance;
  * one in the browser, because a number derived from the lanes that happen to be
  * on screen would disagree with the report for a reason nobody could find.
  */
-export type ResiliencePayload = ResilienceResponse & Provenance;
+/**
+ * One resilience finding as the API actually serves it.
+ *
+ * Wider than `ResilienceFinding` in lib/types.ts (owned elsewhere) in three
+ * ways that the canvas depends on, and narrower in one:
+ *
+ *   `failing`      THE ELEMENT WHOSE LOSS CAUSES THE DAMAGE, which is not the
+ *                  same as the element the finding is named after: a
+ *                  single-homed modem is scored on its PARENT's blast radius,
+ *                  because the parent is what fails. A UI that animated the
+ *                  named device would print a severity computed from one
+ *                  device's cut beside a picture of a different one's.
+ *   `devices` /
+ *   `circuits`     the rest of what the finding turns on, already unioned into
+ *                  `involved` alongside the link keys.
+ *   `raw_refs`     device keys and circuit ids, NOT rule references. They are
+ *                  rendered as plain identifiers; handing them to RuleRef would
+ *                  send a rule lookup after a router.
+ *   `remediation`  OPTIONAL here, because this API build does not send one.
+ *                  Typed as required elsewhere, which would have let a screen
+ *                  render `undefined` into a remediation box.
+ */
+export type ResilienceFindingRow = Omit<ResilienceFinding, "remediation"> & {
+  remediation?: string;
+  failing?: string[];
+  devices?: string[];
+  circuits?: string[];
+  source_tools?: string[];
+  raw_refs?: string[];
+};
+
+export type ResiliencePayload = Omit<ResilienceResponse, "findings"> & Provenance & {
+  findings: ResilienceFindingRow[];
+  /**
+   * What the analyzer examined and deliberately did not flag, and what it could
+   * not see at all — the backend's own words. Declared here rather than in
+   * lib/types.ts (owned elsewhere) so nothing in that file has to move for a
+   * screen to read them.
+   *
+   * They are not decoration: an empty `findings` list is only readable
+   * ALONGSIDE them, because "found nothing" and "could not look at half of it"
+   * produce the same empty array.
+   */
+  caveats?: string[];
+  device_count?: number;
+};
 
 export const api = {
   health: readHealth,

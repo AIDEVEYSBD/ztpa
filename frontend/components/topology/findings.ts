@@ -18,7 +18,8 @@
  * contain.
  */
 
-import type { Band, BlastRadius, Finding, ResilienceFinding, TopoNode } from "@/lib/types";
+import type { ResilienceFindingRow } from "@/lib/api";
+import type { Band, BlastRadius, Finding, TopoNode } from "@/lib/types";
 
 export type WalkKind = "resilience" | "policy";
 
@@ -34,10 +35,35 @@ export interface WalkFinding {
   severity: number;
   band: Band;
   forcedCritical: boolean;
-  /** Keys the finding names. Not all of them are on the canvas. */
+  /** Keys the finding names — devices, circuits AND link ids. Not all of them
+   *  are on the canvas. */
   involved: string[];
+  /**
+   * The element whose loss causes the damage, which is not always the element
+   * the finding is named after: a single-homed modem is scored on its PARENT's
+   * cut. The canvas turns this one critical, and the severity vector beside it
+   * is the one measured from this device's failure. They have to be the same
+   * device or the panel is showing two different failures at once.
+   */
+  failing: string[];
+  /** Everything that loses its path when `failing` goes: stranded circuits
+   *  first, then isolated devices. Off the payload; never recomputed. */
+  lost: string[];
+  /** The circuits the finding itself names as at risk. */
+  circuits: string[];
+  /**
+   * True when `failing` names more than one element, i.e. the severity was
+   * measured over their SIMULTANEOUS loss. No per-device blast radius explains
+   * such a finding — the engine computed a combined cut that this payload does
+   * not carry — so none is shown beside it. Putting one device's numbers under
+   * a vector measured from several is the same defect as a count derived from a
+   * failed fetch: a real number answering a different question.
+   */
+  combinedFailure: boolean;
   remediation?: string;
   ruleRefs: string[];
+  /** Device keys / circuit ids a resilience finding cites. Not rule refs. */
+  rawRefs: string[];
   sourceTools: string[];
   /** R·L·S for resilience; the raw signal bag for a policy finding. */
   vector: Record<string, unknown>;
@@ -57,10 +83,22 @@ const TITLE_CASE = (s: string) =>
  * the lanes it happens to be drawing would produce a number that disagrees with
  * the report for a reason nobody could find.
  */
-export function fromResilience(findings: ResilienceFinding[], blast: BlastRadius[]): WalkFinding[] {
+export function fromResilience(findings: ResilienceFindingRow[], blast: BlastRadius[]): WalkFinding[] {
   const byDevice = new Map(blast.map((b) => [b.device_key, b]));
   return findings.map((f) => {
-    const hit = f.involved.map((k) => byDevice.get(k)).find((b): b is BlastRadius => !!b);
+    const failing = f.failing ?? [];
+    const circuits = f.circuits ?? [];
+    // A per-device radius is attached only when exactly one device fails. With
+    // several, the engine scored the combined cut (`calc.of("carrier:X",
+    // removed_nodes=cpes)`) and this payload carries only the per-device list —
+    // so there is no row here whose fraction equals the vector's R, and the
+    // honest thing is to show none rather than the closest-looking one.
+    const single =
+      failing.length === 1
+        ? byDevice.get(failing[0])
+        : failing.length === 0
+          ? f.involved.map((k) => byDevice.get(k)).find((b): b is BlastRadius => !!b)
+          : undefined;
     return {
       id: f.id,
       kind: "resilience" as const,
@@ -71,11 +109,20 @@ export function fromResilience(findings: ResilienceFinding[], blast: BlastRadius
       band: f.severity_band,
       forcedCritical: false,
       involved: f.involved,
+      failing,
+      circuits,
+      combinedFailure: failing.length > 1,
+      // Stranded circuits before isolated devices: the loss is drawn outside-in,
+      // which is the direction the canvas is read in. With no measured radius
+      // it is the circuits the finding itself names — its own claim, not a
+      // browser-side inference.
+      lost: single ? [...single.circuits_stranded, ...single.devices_isolated] : circuits,
       remediation: f.remediation,
       ruleRefs: [],
-      sourceTools: [],
+      rawRefs: f.raw_refs ?? [],
+      sourceTools: f.source_tools ?? [],
       vector: f.severity_vector ?? {},
-      blast: hit,
+      blast: single,
     };
   });
 }
@@ -118,7 +165,12 @@ export function fromPolicy(findings: Finding[], nodes: TopoNode[]): { items: Wal
       band: f.severity_band,
       forcedCritical: f.forced_critical,
       involved,
+      failing: [],
+      lost: [],
+      circuits: [],
+      combinedFailure: false,
       ruleRefs: f.raw_refs ?? [],
+      rawRefs: [],
       sourceTools: f.source_tools ?? [],
       vector: f.signals ?? {},
     });
@@ -156,9 +208,9 @@ export function blastLines(b: BlastRadius): { label: string; value: string }[] {
   return [
     { label: "Paths to a circuit lost", value: `${b.paths_lost} of ${b.paths_before}` },
     { label: "Share of reachability destroyed", value: `${Math.round(b.fraction * 1000) / 10}%` },
-    { label: "Devices isolated", value: String(b.devices_isolated.length) },
-    { label: "Devices degraded", value: String(b.devices_degraded) },
     { label: "Circuits stranded", value: b.circuits_stranded.length ? b.circuits_stranded.join(", ") : "none" },
+    { label: "Devices isolated (no path at all)", value: String(b.devices_isolated.length) },
+    { label: "Devices degraded (fewer paths)", value: String(b.devices_degraded) },
     { label: "Components after the cut", value: String(b.components_after) },
   ];
 }

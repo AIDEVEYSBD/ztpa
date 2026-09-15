@@ -37,8 +37,11 @@ export interface FocusView {
   lit: ReadonlySet<string>;
   /** The hop currently travelling. */
   activeLink?: string;
-  /** Resilience only: the device whose failure is being shown. */
-  failed?: string;
+  /** Resilience only: the device(s) whose failure is being shown. A set, not
+   *  one id, because a shared-carrier finding fails two CPEs at once and
+   *  turning only one of them critical would draw a different failure from the
+   *  one the severity was measured over. */
+  failed: ReadonlySet<string>;
   /** Resilience only: the cards revealed as isolated so far. */
   isolated: ReadonlySet<string>;
   mode: "path" | "blast";
@@ -128,7 +131,7 @@ export function Canvas({
   const nodeState = (id: string): NodeState => {
     if (!focus) return "normal";
     if (focus.mode === "blast") {
-      if (focus.failed === id) return "failed";
+      if (focus.failed.has(id)) return "failed";
       if (focus.isolated.has(id)) return "isolated";
       return focus.nodes.has(id) ? "focus" : "normal";
     }
@@ -139,7 +142,7 @@ export function Canvas({
     if (!focus) return 1;
     if (focus.mode === "blast") {
       const touched =
-        (focus.failed && (l.a === focus.failed || l.b === focus.failed)) ||
+        focus.failed.has(l.a) || focus.failed.has(l.b) ||
         focus.isolated.has(l.a) || focus.isolated.has(l.b);
       return touched ? 0.12 : 1;
     }
@@ -193,8 +196,19 @@ export function Canvas({
               const lit = !!focus && focus.mode === "path" && focus.lit.has(l.id);
               const active = focus?.activeLink === l.id;
               return (
-                <g key={l.id} opacity={linkOpacity(l)} className={cn(!reduced && "transition-opacity duration-300")}>
+                // `pointerEvents: stroke` re-enables hover on the line itself
+                // inside an otherwise pointer-transparent svg, so the evidence
+                // and provenance behind a link are one hover away. The wide
+                // transparent path under it is the hit area — a 1.3px hairline
+                // is not something anyone can reliably point at.
+                <g
+                  key={l.id}
+                  opacity={linkOpacity(l)}
+                  style={{ pointerEvents: "stroke" }}
+                  className={cn(!reduced && "transition-opacity duration-300")}
+                >
                   <title>{linkTip(l)}</title>
+                  <path d={l.d} fill="none" stroke="transparent" strokeWidth={12} strokeLinecap="round" />
                   {l.redundantGroup ? (
                     <path d={l.d} fill="none" stroke={stroke} strokeWidth={HALO_W} strokeOpacity={0.16} strokeLinecap="round" />
                   ) : null}

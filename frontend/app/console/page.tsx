@@ -17,6 +17,9 @@ import { Assistant } from "@/components/Assistant";
 import { ReportPanel } from "@/components/ReportPanel";
 import { Connectors } from "@/components/Connectors";
 import { AssetsPanel } from "@/components/AssetsPanel";
+import { SourcesPanel } from "@/components/SourcesPanel";
+import { InventoryPanel } from "@/components/InventoryPanel";
+import { TopologyPanel } from "@/components/TopologyPanel";
 import { IngestInspector } from "@/components/IngestInspector";
 import { Staging } from "@/components/Staging";
 import { SnapshotsAdmin } from "@/components/admin/SnapshotsAdmin";
@@ -28,7 +31,10 @@ import { ErrorState } from "@/components/ui/Feedback";
 import { PanelHealthProvider, useScreenFailures } from "@/components/PanelHealth";
 
 const META: Record<ScreenId, { title: string; sub: string }> = {
-  map: { title: "Network Map", sub: "Unified reachability across AlgoSec, Guardicore and Wiz" },
+  sources: { title: "Sources", sub: "What we read, from which rung of the ladder \u2014 and what each console cannot tell us" },
+  inventory: { title: "Inventory", sub: "Every device, VLAN, subnet, circuit and asset, and where each one was found" },
+  topology: { title: "Topology", sub: "The network as the onboarded consoles describe it, layer by layer" },
+  map: { title: "Reachability", sub: "Unified cross-tool reachability across AlgoSec, Guardicore and Wiz" },
   risks: { title: "Risk To-Do", sub: "Prioritized actions — iterate a fix, then send it to the Change Gate" },
   change: { title: "Change Gate", sub: "Simulated delta, then auto-approve or escalate — then send to staging" },
   staging: { title: "Staging Area", sub: "Approved changes, ready to push to the source system" },
@@ -65,7 +71,9 @@ function settle<T>(p: Promise<T>, set: (r: Resource<T>) => void, alive: () => bo
 }
 
 export default function Dashboard() {
-  const [screen, setScreen] = useState<ScreenId>("map");
+  // Opens on Sources: the review starts at "what are we reading", not at a
+  // conclusion drawn from it.
+  const [screen, setScreen] = useState<ScreenId>("sources");
   const [health, setHealth] = useState<Resource<HealthReport>>(LOADING);
   // Each feed keeps the WHOLE payload rather than the array inside it, because
   // the backend attaches `served_from`/`degraded_reason` to the envelope: with
@@ -213,6 +221,12 @@ export default function Dashboard() {
               <motion.div key={`${screen}:${viewSnap ?? "live"}`}
                 initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
                 transition={{ duration: 0.15, ease: "easeOut" }}>
+                {screen === "sources" && <SourcesPanel snapshot={viewSnap} />}
+                {screen === "inventory" && <InventoryPanel snapshot={viewSnap} />}
+                {screen === "topology" && (
+                  <TopologyPanel snapshot={viewSnap} findings={findingList}
+                    findingsError={findings.error} />
+                )}
                 {screen === "map" && (
                   <NetworkMap graph={graph.data} findings={findingList} counts={counts.data?.counts ?? {}}
                     loading={graph.status === "loading"} graphError={graph.error}

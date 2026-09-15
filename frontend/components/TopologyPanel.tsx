@@ -60,6 +60,17 @@ const MAX_BLAST_TICKS = 14;
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
+/**
+ * The lowest zoom "Fit" will choose.
+ *
+ * Fit fits the WIDTH, and it stops here rather than shrinking until everything
+ * is on screen, because a diagram whose hostnames cannot be read is not a
+ * diagram that fits — it is a picture of one. Below this the canvas scrolls
+ * instead, and the lane layout has already narrowed itself to the space
+ * available (see `maxRowW` below), so it rarely comes to that.
+ */
+const FIT_MIN = 0.72;
+
 function useReducedMotion(): boolean {
   const [reduced, setReduced] = useState(false);
   useEffect(() => {
@@ -84,7 +95,7 @@ function Count({ label, value }: { label: string; value: number | null | undefin
           : undefined
       }
     >
-      <StatPill label={label} value={unknown ? "—" : value} tone={unknown ? "neutral" : "accent"} />
+      <StatPill label={label} value={unknown ? <span className="text-text3">—</span> : value} tone="neutral" />
     </div>
   );
 }
@@ -99,7 +110,12 @@ function ZoomBar({ zoom, setZoom, onFit }: { zoom: number; setZoom: (z: number) 
       <button type="button" onClick={() => setZoom(clamp(zoom + 0.1, 0.5, 1.6))} className="btn-ghost !h-7 !w-7 !px-0" aria-label="Zoom in">
         <ZoomIn size={13} />
       </button>
-      <button type="button" onClick={onFit} className="btn-ghost !h-7 px-2 text-[11px]" title="Fit the canvas to the width available">
+      <button
+        type="button"
+        onClick={onFit}
+        className="btn-ghost !h-7 px-2 text-[11px]"
+        title="Fit the canvas to the width available — stopping at 72%, below which the hostnames stop being readable"
+      >
         <Scan size={12} /> Fit
       </button>
     </div>
@@ -134,9 +150,11 @@ export function TopologyPanel({ snapshot, findings, findingsError }: TopologyPan
 
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set<string>());
   const [zoom, setZoom] = useState(1);
+  /** Width of the scroll viewport, as the canvas last measured it. */
+  const [viewW, setViewW] = useState(0);
   const [fullscreen, setFullscreen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [selIndex, setSelIndex] = useState<number | null>(null);
+  const [selIndexState, setSelIndex] = useState<number | null>(null);
   const [stage, setStage] = useState(0);
   const [replayNonce, setReplayNonce] = useState(0);
   const [explainingId, setExplainingId] = useState<string>();
@@ -174,9 +192,17 @@ export function TopologyPanel({ snapshot, findings, findingsError }: TopologyPan
   const lanes = useMemo(() => topo?.lanes ?? [], [topo]);
   const links = useMemo(() => topo?.links ?? [], [topo]);
 
+  // The lanes wrap to the width actually available rather than to a constant,
+  // so a 1024px projector — or a fullscreen canvas with the sidebar open beside
+  // it — gets a narrower, taller picture at full zoom instead of a wide one
+  // shrunk until the hostnames stop being readable.
+  const maxRowW = viewW > 0
+    ? clamp(viewW - GEOM.labelW - GEOM.padRight, GEOM.minContentW, GEOM.maxRowW)
+    : GEOM.maxRowW;
+
   const layout: Layout = useMemo(
-    () => buildLayout(lanes, links, { expanded }),
-    [lanes, links, expanded],
+    () => buildLayout(lanes, links, { expanded, maxRowW }),
+    [lanes, links, expanded, maxRowW],
   );
 
   const allNodes = useMemo(() => lanes.flatMap((l) => l.nodes), [lanes]);
@@ -232,22 +258,40 @@ export function TopologyPanel({ snapshot, findings, findingsError }: TopologyPan
     return items.map((i) => (explained[i.id] ? { ...i, detail: explained[i.id] } : i));
   }, [res, policy.items, explained]);
 
+  // Clamped against the CURRENT list: a reload that shrinks the findings must
+  // not leave a selection pointing past the end, which would put "4 of 2" in
+  // the sidebar and dim the canvas for a finding that is no longer there.
+  const selIndex = selIndexState != null && selIndexState >= 0 && selIndexState < walk.length ? selIndexState : null;
   const sel: WalkFinding | undefined = selIndex == null ? undefined : walk[selIndex];
 
   // ── The staged animation ────────────────────────────────────────────────
   const anim = useMemo(() => {
     if (!sel) return null;
     const nodes = involvedCards(sel, layout.cardFor);
-    const hops = orderHops(layout, nodes);
-    const isolated = sel.blast
-      ? [...new Set(sel.blast.devices_isolated.map((k) => layout.cardFor.get(k)).filter((k): k is string => !!k))]
-      : [];
-    const failed = sel.blast ? layout.cardFor.get(sel.blast.device_key) : undefined;
-    const mode: FocusView["mode"] = sel.blast ? "blast" : "path";
-    const batch = isolated.length > 0 ? Math.max(1, Math.ceil(isolated.length / MAX_BLAST_TICKS)) : 1;
-    const ticks = isolated.length > 0 ? Math.ceil(isolated.length / batch) : 0;
+    // The adjacencies the finding names outright, resolved to drawn lines.
+    const named = new Set(
+      sel.involved.map((k) => layout.linkByRawId.get(k)).filter((id): id is string => !!id),
+    );
+    // A named link's two ends are part of the finding whether or not the
+    // payload also listed them as devices.
+    for (const id of named) {
+      const l = layout.linkById.get(id);
+      if (l) { nodes.add(l.a); nodes.add(l.b); }
+    }
+    const hops = orderHops(layout, nodes, named);
+    // What the cut costs, straight off `blast_radius`: the stranded circuits
+    // and the isolated devices, in that order, resolved to cards. Nothing here
+    // is derived from the lanes on screen — a browser-side recount would
+    // disagree with the report for a reason nobody could find.
+    const lost = [...new Set(sel.lost.map((k) => layout.cardFor.get(k)).filter((k): k is string => !!k))];
+    const failedKeys = sel.failing.length > 0 ? sel.failing : sel.blast ? [sel.blast.device_key] : [];
+    const failed = new Set(failedKeys.map((k) => layout.cardFor.get(k)).filter((k): k is string => !!k));
+    // A resilience finding shows the FAILURE; anything else traces the path.
+    const mode: FocusView["mode"] = sel.kind === "resilience" && failed.size > 0 ? "blast" : "path";
+    const batch = lost.length > 0 ? Math.max(1, Math.ceil(lost.length / MAX_BLAST_TICKS)) : 1;
+    const ticks = lost.length > 0 ? Math.ceil(lost.length / batch) : 0;
     const total = mode === "blast" ? 1 + ticks : Math.max(1, hops.length);
-    return { nodes, hops, isolated, failed, mode, batch, total };
+    return { nodes, hops, lost, failed, mode, batch, total };
   }, [sel, layout]);
 
   const totalStages = anim?.total ?? 0;
@@ -273,8 +317,8 @@ export function TopologyPanel({ snapshot, findings, findingsError }: TopologyPan
     // `replayNonce` restarts the same finding's animation on demand.
   }, [selId, totalStages, reduced, replayNonce]);
 
-  const isolatedShown = anim && anim.mode === "blast"
-    ? (stage === 0 ? 0 : Math.min(anim.isolated.length, stage * anim.batch))
+  const lostShown = anim && anim.mode === "blast"
+    ? (stage === 0 ? 0 : Math.min(anim.lost.length, stage * anim.batch))
     : 0;
 
   const focus: FocusView | null = useMemo(() => {
@@ -283,13 +327,13 @@ export function TopologyPanel({ snapshot, findings, findingsError }: TopologyPan
     // alternative — an empty involved set fed to the dimmer — blanks the whole
     // picture and reads as a rendering failure; the sidebar says so in words
     // instead.
-    if (anim.nodes.size === 0 && !anim.failed) return null;
+    if (anim.nodes.size === 0 && anim.failed.size === 0) return null;
     if (anim.mode === "blast") {
       return {
         nodes: anim.nodes,
         lit: new Set<string>(),
         failed: anim.failed,
-        isolated: new Set(anim.isolated.slice(0, isolatedShown)),
+        isolated: new Set(anim.lost.slice(0, lostShown)),
         mode: "blast",
       };
     }
@@ -299,10 +343,11 @@ export function TopologyPanel({ snapshot, findings, findingsError }: TopologyPan
       nodes: anim.nodes,
       lit,
       activeLink: stage < anim.hops.length ? anim.hops[stage]?.id : undefined,
+      failed: new Set<string>(),
       isolated: new Set<string>(),
       mode: "path",
     };
-  }, [anim, stage, isolatedShown]);
+  }, [anim, stage, lostShown]);
 
   // ── Viewport, zoom, fullscreen ──────────────────────────────────────────
   const viewportW = useRef(0);
@@ -314,15 +359,23 @@ export function TopologyPanel({ snapshot, findings, findingsError }: TopologyPan
 
   const onViewport = useCallback((w: number) => {
     viewportW.current = w;
-    if (fitPending.current && w > 0) {
-      fitPending.current = false;
-      setZoom(clamp(w / layoutW.current, 0.5, 1));
-    }
+    // A few px of jitter (a scrollbar appearing) must not re-flow the lanes.
+    setViewW((prev) => (Math.abs(prev - w) > 8 ? w : prev));
   }, []);
+
+  // A pending fit is applied HERE rather than inside `onViewport`, because a new
+  // viewport width re-flows the lanes and therefore changes `layout.width`. Run
+  // in the callback, the fit would divide by the width the canvas had a moment
+  // ago and land on the wrong zoom.
+  useEffect(() => {
+    if (!fitPending.current || viewW <= 0) return;
+    fitPending.current = false;
+    setZoom(clamp(viewW / layout.width, FIT_MIN, 1));
+  }, [viewW, layout.width]);
 
   const fit = useCallback(() => {
     const w = viewportW.current;
-    if (w > 0) setZoom(clamp(w / layoutW.current, 0.5, 1));
+    if (w > 0) setZoom(clamp(w / layoutW.current, FIT_MIN, 1));
     else fitPending.current = true;
   }, []);
 
@@ -341,8 +394,8 @@ export function TopologyPanel({ snapshot, findings, findingsError }: TopologyPan
   const step = useCallback((delta: number) => {
     setSelIndex((cur) => {
       if (walk.length === 0) return null;
-      const next = clamp((cur ?? -1) + delta, 0, walk.length - 1);
-      return next;
+      const base = cur == null || cur >= walk.length ? -1 : cur;
+      return clamp(base + delta, 0, walk.length - 1);
     });
   }, [walk.length]);
 
@@ -450,7 +503,8 @@ export function TopologyPanel({ snapshot, findings, findingsError }: TopologyPan
       analysed={res ? res.analysed : null}
       notAnalysedReason={res?.reason}
       blastBasis={res?.blast_basis}
-      isolatedShown={isolatedShown}
+      lostShown={lostShown}
+      lostTotal={anim?.lost.length ?? 0}
       involvedOnCanvas={anim ? anim.nodes.size : 0}
       replayDone={stage >= totalStages}
       onReplay={() => setReplayNonce((n) => n + 1)}
@@ -472,8 +526,9 @@ export function TopologyPanel({ snapshot, findings, findingsError }: TopologyPan
             <Eyebrow>Topology</Eyebrow>
             <p className="mt-1.5 max-w-3xl text-[12px] leading-relaxed text-text2">
               The estate drawn outside-in — internet to endpoint, one band per layer — from what the onboarded consoles
-              reported. A lane nobody observed is named rather than drawn, a device nobody cabled is railed rather than
-              floated, and a link inferred from address containment is dashed rather than blended in.
+              reported. A lane nobody observed is named rather than drawn, a device nobody reported a cable for is
+              listed on its own rail rather than left floating, and a link that rests on address containment is dashed
+              rather than blended in with the cables.
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
@@ -485,7 +540,10 @@ export function TopologyPanel({ snapshot, findings, findingsError }: TopologyPan
             >
               {fullscreen ? <Minimize2 size={13} /> : <Maximize2 size={13} />} Fullscreen
             </button>
-            {walk.length > 0 ? (
+            {/* No count while the resilience read is failed or in flight: "Walk
+                3 findings" out of a half-loaded set is a claim about how many
+                there are. */}
+            {resErr ? null : resLoading ? null : walk.length > 0 ? (
               <button type="button" onClick={() => openFullscreen(0)} className="btn-primary text-[12px]">
                 <Play size={12} /> Walk {walk.length} finding{walk.length === 1 ? "" : "s"}
               </button>
@@ -674,7 +732,7 @@ export function TopologyPanel({ snapshot, findings, findingsError }: TopologyPan
                   {policy.skipped > 0 ? ` · ${policy.skipped} elsewhere` : ""}
                 </span>
               )}
-              {walk.length > 0 ? (
+              {walk.length > 0 && !resErr ? (
                 <button type="button" onClick={() => openFullscreen(0)} className="btn-ghost ml-auto text-[11.5px]">
                   <Play size={12} /> Walk them fullscreen
                 </button>
@@ -720,6 +778,21 @@ export function TopologyPanel({ snapshot, findings, findingsError }: TopologyPan
                 ))}
               </ul>
             )}
+
+            {/* The analyzer's caveats. An empty findings list is only readable
+                next to what the analysis could not see. */}
+            {res && res.caveats && res.caveats.length > 0 ? (
+              <div className="mt-3 border-t border-hair pt-2">
+                <div className="label mb-1">What this analysis could not see</div>
+                <ul className="space-y-1">
+                  {res.caveats.map((c, i) => (
+                    <li key={i} className="text-[11px] leading-snug text-text2">
+                      {c}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
 
             {res && (res.suppressed.length > 0 || res.excluded_adjacencies.length > 0) ? (
               <details className="mt-3 border-t border-hair pt-2">

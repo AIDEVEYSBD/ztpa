@@ -165,6 +165,16 @@ export interface Layout {
   cardFor: Map<string, string>;
   units: PlacedUnit[];
   links: PlacedLink[];
+  /** Placed link id -> the link. */
+  linkById: Map<string, PlacedLink>;
+  /**
+   * A payload link id -> the placed line that draws it. Resilience findings
+   * name the exact adjacency they are about (`cdp:asw-acc-03:Gi1/0/48~...`),
+   * and this is what turns that string into the line to light: without it the
+   * walkthrough can only guess at "every link between the involved devices",
+   * which is a superset and sometimes a wrong one.
+   */
+  linkByRawId: Map<string, string>;
   /**
    * Links naming a device that is not on this canvas. Never silently dropped:
    * a missing line is indistinguishable from an absent one, so the count is
@@ -424,6 +434,10 @@ export function buildLayout(lanes: TopoLane[], links: TopoLink[], opts: LayoutOp
     });
   }
 
+  const linkById = new Map(placedLinks.map((l) => [l.id, l]));
+  const linkByRawId = new Map<string, string>();
+  for (const l of placedLinks) for (const m of l.merged) linkByRawId.set(m.id, l.id);
+
   return {
     width: GEOM.labelW + contentW + GEOM.padRight,
     height: y + GEOM.padBottom,
@@ -433,14 +447,30 @@ export function buildLayout(lanes: TopoLane[], links: TopoLink[], opts: LayoutOp
     cardFor,
     units,
     links: placedLinks,
+    linkById,
+    linkByRawId,
     unresolved,
     hiddenInGroups,
   };
 }
 
-/** Links with both ends inside `keys` — the lines a finding actually runs on. */
-export function linksWithin(layout: Layout, keys: ReadonlySet<string>): PlacedLink[] {
-  return layout.links.filter((l) => keys.has(l.a) && keys.has(l.b));
+/**
+ * The lines a finding runs on: every link named outright, plus every link whose
+ * two ends are both involved.
+ *
+ * Both halves are needed. A finding that names its adjacency (`single_homed_
+ * device` does) should light exactly that cable and no other; a finding that
+ * names only devices (`shared_circuit_handoff`) has to fall back to the links
+ * between them, and lighting one too many there is better than lighting none.
+ */
+export function linksWithin(
+  layout: Layout,
+  keys: ReadonlySet<string>,
+  named?: ReadonlySet<string>,
+): PlacedLink[] {
+  return layout.links.filter(
+    (l) => (keys.has(l.a) && keys.has(l.b)) || (named?.has(l.id) ?? false),
+  );
 }
 
 /**
@@ -452,8 +482,12 @@ export function linksWithin(layout: Layout, keys: ReadonlySet<string>): PlacedLi
  * within one finding — are appended rather than dropped, because a hop that is
  * never animated is a hop the viewer never learns about.
  */
-export function orderHops(layout: Layout, keys: ReadonlySet<string>): PlacedLink[] {
-  const involved = linksWithin(layout, keys);
+export function orderHops(
+  layout: Layout,
+  keys: ReadonlySet<string>,
+  named?: ReadonlySet<string>,
+): PlacedLink[] {
+  const involved = linksWithin(layout, keys, named);
   if (involved.length < 2) return involved;
 
   const adjacency = new Map<string, PlacedLink[]>();

@@ -4,16 +4,34 @@ import { useSession } from "next-auth/react";
 import {
   Network, ListChecks, GitBranch, MessageSquare, FileText, Plug, Fingerprint,
   LogOut, Database, History, Rocket, SlidersHorizontal, BarChart3, ScrollText, Cog,
+  Boxes, Route,
 } from "lucide-react";
 import { Brand, cn } from "./ui";
 import { ThemeToggle } from "./theme";
 
-export type ScreenId = "map" | "risks" | "change" | "staging" | "ask" | "report" | "connectors" | "assets" | "ingest" | "snapshots" | "tools" | "metrics" | "audit" | "config";
+export type ScreenId = "sources" | "inventory" | "topology" | "map" | "risks" | "change" | "staging" | "ask" | "report" | "connectors" | "assets" | "ingest" | "snapshots" | "tools" | "metrics" | "audit" | "config";
 
 type NavDef = { id: ScreenId; label: string; icon: typeof Network };
 
+// Ordered as the review is actually conducted, which is also the order the
+// brief asks for ("Order of tables: Sources, assets"):
+//
+//   Sources    what we read, and from which rung of the collection ladder
+//   Inventory  what that found, and where each thing was found
+//   Topology   what the network looks like, and what fails with what
+//   Risk       what is wrong, then the gate, then staging
+//
+// The console used to open on the reachability graph -- step 3 of that process
+// with the first two missing, so a reviewer was shown conclusions before the
+// evidence and had no way to ask where any of it came from.
 const CONSOLE: NavDef[] = [
-  { id: "map", label: "Network Map", icon: Network },
+  { id: "sources", label: "Sources", icon: Plug },
+  { id: "inventory", label: "Inventory", icon: Boxes },
+  { id: "topology", label: "Topology", icon: Network },
+  // The cross-tool reachability graph. KEPT, and kept adjacent: it is the one
+  // computation in this product that no single console can perform, and the
+  // revamp must not bury it under a screen whose lead content is a diagram.
+  { id: "map", label: "Reachability", icon: Route },
   { id: "risks", label: "Risk To-Do", icon: ListChecks },
   { id: "change", label: "Change Gate", icon: GitBranch },
   { id: "staging", label: "Staging Area", icon: Rocket },
@@ -22,7 +40,7 @@ const CONSOLE: NavDef[] = [
 ];
 const REFERENCE: NavDef[] = [
   { id: "connectors", label: "Connectors", icon: Plug },
-  { id: "assets", label: "Assets & Identity", icon: Fingerprint },
+  { id: "assets", label: "Identity & merges", icon: Fingerprint },
 ];
 const ADMIN: NavDef[] = [
   { id: "tools", label: "Tools & Usage", icon: SlidersHorizontal },

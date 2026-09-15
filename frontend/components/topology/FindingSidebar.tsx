@@ -55,8 +55,10 @@ export interface FindingSidebarProps {
   analysed: boolean | null;
   notAnalysedReason?: string | null;
   blastBasis?: string;
-  /** How many isolated devices the staged replay has revealed so far. */
-  isolatedShown: number;
+  /** How many of the lost cards the staged replay has faded so far, and how
+   *  many there are. Both counts are of things actually on the canvas. */
+  lostShown: number;
+  lostTotal: number;
   /** How many of the finding's devices are actually drawn on the canvas. Zero
    *  is a real answer — a capped response, or a finding about something in no
    *  lane — and it is said rather than left as a canvas that lights nothing. */
@@ -174,9 +176,17 @@ export function FindingSidebar(p: FindingSidebarProps) {
         </button>
       </header>
 
+      {/* The state of the resilience read, reported ALONGSIDE the list rather
+          than instead of it. A failed read does not make the policy findings
+          below untrue — it makes the list incomplete, and those are different
+          sentences. */}
       {p.error ? (
         <div className="p-3">
           <ErrorState resource="the resilience analysis" error={p.error} onRetry={p.onRetry} />
+          <p className="mt-2 text-[11px] leading-snug text-text3">
+            Anything listed below is a policy finding only. The single-point-of-failure analysis is missing from this
+            walkthrough because the read failed, which is not the same as it having found nothing.
+          </p>
         </div>
       ) : p.loading ? (
         <div className="flex items-center gap-2 p-4 text-[12px] text-text2">
@@ -193,13 +203,21 @@ export function FindingSidebar(p: FindingSidebarProps) {
           </p>
           {p.notAnalysedReason ? <div className="mono mt-1.5 text-[11px] text-text3">{p.notAnalysedReason}</div> : null}
         </div>
-      ) : p.items.length === 0 ? (
-        <div className="p-4 text-[12px] leading-relaxed text-text2">
-          The analysis ran and returned no finding that names a device on this canvas.
-          {p.skippedPolicy > 0 ? (
-            <> {p.skippedPolicy} policy finding{p.skippedPolicy === 1 ? "" : "s"} in this snapshot name nothing here; they are on the Risk To-Do screen.</>
-          ) : null}
-        </div>
+      ) : null}
+
+      {p.items.length === 0 ? (
+        p.loading && !p.error ? null : (
+          <div className="p-4 text-[12px] leading-relaxed text-text2">
+            {p.error
+              ? "Nothing is listed: the resilience read failed, and no policy finding names a device on this canvas."
+              : p.analysed === false
+                ? "Nothing is listed, and nothing was analysed."
+                : "The analysis ran and returned no finding that names a device on this canvas."}
+            {p.skippedPolicy > 0 ? (
+              <> {p.skippedPolicy} policy finding{p.skippedPolicy === 1 ? "" : "s"} in this snapshot name nothing here; they are on the Risk To-Do screen.</>
+            ) : null}
+          </div>
+        )
       ) : item == null ? (
         <>
           <div className="px-3.5 py-3 text-[12px] leading-relaxed text-text2">
@@ -259,25 +277,38 @@ export function FindingSidebar(p: FindingSidebarProps) {
                   {item.blast.paths_lost} of {item.blast.paths_before}
                 </div>
                 <div className="mt-1 text-[11.5px] leading-snug text-text2">
-                  paths to a circuit are lost when <span className="mono">{item.blast.device_key}</span> fails.
+                  device-to-circuit paths are lost when <span className="mono">{item.blast.device_key}</span> fails.
                 </div>
-                {item.blast.devices_isolated.length > 0 ? (
+                {/* The live count while the failure plays out. It counts cards
+                    actually fading on the canvas, so it can never get ahead of
+                    what the viewer can see, and it lands on the payload's own
+                    totals rather than on an interpolation. */}
+                {p.lostTotal > 0 ? (
                   <div className="mono mt-1.5 text-[11px] tabular-nums text-text2">
-                    {p.replayDone ? item.blast.devices_isolated.length : p.isolatedShown} of{" "}
-                    {item.blast.devices_isolated.length} device
-                    {item.blast.devices_isolated.length === 1 ? "" : "s"} isolated
-                    {p.replayDone ? "" : " …"}
+                    {p.replayDone ? p.lostTotal : p.lostShown} of {p.lostTotal}{" "}
+                    {item.blast.circuits_stranded.length > 0 && item.blast.devices_isolated.length > 0
+                      ? "circuits and devices"
+                      : item.blast.circuits_stranded.length > 0
+                        ? `circuit${p.lostTotal === 1 ? "" : "s"}`
+                        : `device${p.lostTotal === 1 ? "" : "s"}`}{" "}
+                    lose their path{p.replayDone ? "" : " …"}
                   </div>
-                ) : null}
+                ) : (
+                  <div className="mt-1.5 text-[11px] leading-snug text-text2">
+                    No circuit is stranded and no device is left with no path at all —{" "}
+                    {item.blast.devices_degraded} lose a path they had. Nothing fades on the canvas because nothing is
+                    cut off; the cost here is redundancy, not reachability.
+                  </div>
+                )}
               </div>
               <div className="mt-2">
                 {blastLines(item.blast).map((l) => (
                   <KV key={l.label} k={l.label} v={l.value} mono={l.label !== "Circuits stranded"} />
                 ))}
               </div>
-              {item.blast.devices_isolated.length > 0 ? (
+              {item.lost.length > 0 ? (
                 <div className="mt-1.5 flex flex-wrap gap-1">
-                  {item.blast.devices_isolated.map((d) => (
+                  {item.lost.map((d) => (
                     <span key={d} className="mono border border-border bg-sunk px-1 text-[10px] text-text2" title={d}>
                       {p.nameFor(d)}
                     </span>
@@ -291,14 +322,65 @@ export function FindingSidebar(p: FindingSidebarProps) {
                 <RotateCw size={12} /> Replay the failure
               </button>
             </Section>
+          ) : item.failing.length > 0 ? (
+            // A finding scored over the loss of SEVERAL elements at once. The
+            // engine measured a combined cut for it; this payload carries only
+            // per-device radii, and not one of them is the number behind the
+            // vector below. So the failure is shown and the radius is not —
+            // printing the nearest-looking row would be a real number answering
+            // a different question.
+            <Section title="Simultaneous failure">
+              <div className="border border-sev-critical-line bg-sev-critical-bg px-2.5 py-2">
+                <div className="text-[11.5px] leading-snug text-text2">
+                  {item.failing.length} element{item.failing.length === 1 ? "" : "s"} fail together:{" "}
+                  {item.failing.map((f, i) => (
+                    <span key={f}>
+                      {i > 0 ? ", " : ""}
+                      <span className="mono text-text">{p.nameFor(f)}</span>
+                    </span>
+                  ))}
+                  . The severity below was measured over losing all of them at once.
+                </div>
+                {p.lostTotal > 0 ? (
+                  <div className="mono mt-1.5 text-[11px] tabular-nums text-text2">
+                    {p.replayDone ? p.lostTotal : p.lostShown} of {p.lostTotal} circuit
+                    {p.lostTotal === 1 ? "" : "s"} lose their path{p.replayDone ? "" : " …"}
+                  </div>
+                ) : null}
+              </div>
+              {item.circuits.length > 0 ? (
+                <div className="mt-1.5 flex flex-wrap gap-1">
+                  {item.circuits.map((c) => (
+                    <span key={c} className="mono border border-border bg-sunk px-1 text-[10px] text-text2">
+                      {c}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+              <p className="mt-2 text-[11px] leading-snug text-text3">
+                No blast radius is printed here. This response carries a radius per DEVICE, and a combined failure has
+                its own — the one the R term below was measured from. It is not in the payload, so it is not shown.
+              </p>
+              <button type="button" onClick={p.onReplay} className="btn-ghost mt-2 text-[11.5px]">
+                <RotateCw size={12} /> Replay the failure
+              </button>
+            </Section>
           ) : null}
 
           {Object.keys(item.vector).length > 0 ? (
             <Section title={item.kind === "resilience" ? "Severity vector" : "Signals"}>
               {item.kind === "resilience" ? (
-                <p className="mb-1.5 mono text-[10.5px] leading-snug text-text3">
-                  severity = round(100 × min(1, R × L × S))
-                </p>
+                <>
+                  <p className="mono mb-1 text-[10.5px] leading-snug text-text3">
+                    severity = round(100 × min(1, R × L × S))
+                  </p>
+                  <p className="mb-1.5 text-[10.5px] leading-snug text-text3">
+                    R is the share of circuit reachability this failure destroys, measured
+                    {item.combinedFailure ? " over the simultaneous loss of every element named above" : ""}; L is how
+                    long it stays destroyed, by lane; S is how much the redundancy that should cover it is nominal
+                    rather than real. Recomputable by hand from these three.
+                  </p>
+                </>
               ) : null}
               {Object.entries(item.vector).map(([k, v]) => (
                 <KV key={k} k={k} v={typeof v === "object" && v !== null ? JSON.stringify(v) : String(v)} />
@@ -313,6 +395,21 @@ export function FindingSidebar(p: FindingSidebarProps) {
                   <RuleRef key={r} refId={r} snapshot={p.snapshot} />
                 ))}
               </div>
+            </Section>
+          ) : null}
+
+          {item.rawRefs.length > 0 ? (
+            <Section title="Raw references">
+              <div className="flex flex-wrap gap-1">
+                {item.rawRefs.map((r) => (
+                  <span key={r} className="mono border border-border bg-sunk px-1 text-[10px] text-text2">
+                    {r}
+                  </span>
+                ))}
+              </div>
+              <p className="mt-1 text-[10.5px] leading-snug text-text3">
+                Device keys and circuit ids, not rule references — the records this finding was computed from.
+              </p>
             </Section>
           ) : null}
 
@@ -334,8 +431,9 @@ export function FindingSidebar(p: FindingSidebarProps) {
               </div>
             ) : (
               <p className="text-[12px] leading-relaxed text-text3">
-                This payload carries no remediation for this finding. A proposed change for a policy finding is generated
-                on the Risk To-Do screen, where it is validated before it can be submitted.
+                {item.kind === "resilience"
+                  ? "This build's resilience payload carries no remediation sentence for this finding. What the fix is follows from the finding itself — a second path that does not share the element named above — and it is not invented here."
+                  : "A proposed change for a policy finding is generated on the Risk To-Do screen, where it is validated against the engine before it can be submitted."}
               </p>
             )}
           </Section>
