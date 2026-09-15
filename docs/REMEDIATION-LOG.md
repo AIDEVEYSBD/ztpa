@@ -3,7 +3,7 @@
 Running record of work against `docs/PROD-READINESS-AUDIT.md` (155 surviving findings, 19 blockers).
 One entry per phase. Updated as each phase completes.
 
-**Started:** 2026-09-01 · **Branch:** `main` · **Baseline commit:** `c0789d6`
+**Started:** 2026-09-01 · **Branch:** `remediation/prod-readiness`, merged to `main` 2026-09-15 · **Baseline commit:** `c0789d6`
 
 Every number below was verified by running the command, not taken from an agent's report.
 Claims that could **not** be verified in this environment are called out explicitly as such.
@@ -16,16 +16,16 @@ Claims that could **not** be verified in this environment are called out explici
 |---|---|---|
 | **0** — Stop the bleeding | Crash, authz, audit-trail wipe, silent failures, CI | ✅ Complete |
 | **1** — Engine math defensible | Resolved CIDRs, port ranges, internet classification, identity scoping, content-hash snapshot id | ✅ Complete |
-| **2** — System of record | Governance survival, audit identity, migrations, logging, transaction boundaries | ⬜ Next |
-| **3** — Pilot-ready | Real ingestion path, bounded algorithms, analyzer coverage | ⬜ Not started |
+| **2** — System of record | Governance survival, audit identity, migrations, logging, transaction boundaries | ✅ Complete (2 gaps carried) |
+| **3** — Pilot-ready | Real ingestion path, bounded algorithms, analyzer coverage | ⬜ Next |
 | **4** — Production hardening | Provider parity, cost/latency limits, full coverage, reproducible builds | ⬜ Not started |
 
 | Metric | Baseline | Now |
 |---|---|---|
-| Tests passing | 16 | **1,107** |
-| Test suite runtime | 60.2s | **2.2s** |
+| Tests passing | 16 | **1,674** |
+| Test suite runtime | 60.2s | **5.2s** |
 | Silent frontend catches (`.catch(() => {})`) | 11 | **0** |
-| Bare `except Exception:` (backend) | 29 | **16** |
+| Bare `except Exception:` (backend) | 29 | **9** |
 | CI | none | pytest + verify_engine + typecheck + lint |
 | Engine output | `snap_9909fd547587`, 17 findings | `snap_6f12b7b48a9c`, **30 findings** (see Phase 1 caveat) |
 
