@@ -48,7 +48,45 @@ def _fallback(f: Finding) -> str:
     if f.type == "shadowed_rule":
         return (f"{s.get('reason', 'A later rule can never fire because an earlier rule matches first.')} "
                 f"Reorder or remove rule {s.get('shadowed_ref')} so the intended policy is actually enforced.")
-    return f"{f.title} (refs: {ref})."
+    if f.type == "transport_exposure":
+        app = (s.get("l7_app") or "").upper() or s.get("service")
+        how = ("the export named it" if s.get("l7_source") == "declared"
+               else "we decoded it from the protocol and port")
+        src = "the internet (0.0.0.0/0)" if s.get("source") == "0.0.0.0/0" else s.get("source")
+        tags = ", ".join(s.get("dest_tags") or []) or "internal"
+        if s.get("subtype") == "quic_blind_spot":
+            return (f"{app} ({s.get('service')}) is reachable from {src} to "
+                    f"{s.get('dest_display')} ({tags}). QUIC carries HTTP inside UDP and is "
+                    f"encrypted end to end, so most inspection stacks see an opaque UDP flow "
+                    f"rather than the web traffic it actually is -- the rule looks narrow and the "
+                    f"visibility is not there. Identified because {how}. Suggested fix: block "
+                    f"{s.get('service')} so clients fall back to the inspectable TCP path, or "
+                    f"terminate and inspect QUIC explicitly.")
+        return (f"{app} ({s.get('service')}) is reachable from {src} to "
+                f"{s.get('dest_display')} ({tags}), on a transport this estate is unlikely to be "
+                f"inspecting. Identified because {how}. Suggested fix: restrict the source, or "
+                f"move the service onto a transport the inspection stack actually decodes.")
+    # Deliberately NOT a generic "see the signals". `title` is the analyzer's own
+    # deterministic one-line statement of the finding, and `raw_refs` says which
+    # rules it came from -- together they are a real sentence, not a placeholder.
+    return f"{f.title} (refs: {ref})." if ref else f.title
+
+
+def engine_explanation(f: Finding) -> str:
+    """The deterministic explanation. ALWAYS available, no model, no network.
+
+    This exists because the console used to render "No explanation has been
+    written for this finding yet" on every finding nobody had manually clicked
+    "Ask the advisory layer" for -- which was false. The engine can always say
+    what a finding means; it computed it. What it cannot do without a model is
+    write *prose*, and those are different claims.
+
+    So the two travel in separate fields and stay separately attributed:
+    `engine_explanation` (this, always) and `explanation` (model prose, null
+    until asked). A reader is never shown an absence where a fact exists, and
+    never shown a deterministic sentence dressed up as model judgment.
+    """
+    return _fallback(f)
 
 
 def explain(f: Finding, timeout: float | None = None) -> dict:

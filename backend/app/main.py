@@ -34,6 +34,7 @@ from src import ai_config, azure_arm, request_ctx, settings, tools_registry  # n
 from src.advisory import authoring, campaign as campaign_mod, classify_change, entity_suggest, explain as explain_mod  # noqa: E402
 from src.advisory import intake as intake_mod, orchestrator, rank as rank_mod, remediation, report as report_mod  # noqa: E402
 from src.advisory import client as llm_client  # noqa: E402
+from src.advisory.explain import engine_explanation  # noqa: E402
 from src.advisory.client import provider_status  # noqa: E402
 from src.agent.assistant import ask as agent_ask  # noqa: E402
 from src.analyzers.run_all import EngineResult, reanalyze, run  # noqa: E402
@@ -1223,9 +1224,69 @@ def findings(snapshot: str | None = None,
     has_more = len(rows) > limit
     rows = rows[:limit]
     next_cursor = _encode_cursor(rows[-1]) if has_more and rows else None
+    _attach_engine_explanations(rows)
     return {"findings": rows, "total": total, "limit": limit,
             "next_cursor": next_cursor, "has_more": has_more,
             **_analysis_block(t), **provenance}
+
+
+def _attach_engine_explanations(rows: list[dict]) -> None:
+    """Give every finding the explanation the ENGINE can always write.
+
+    The console rendered "No explanation has been written for this finding yet"
+    on every finding nobody had manually pressed "Ask the advisory layer" for.
+    That sentence was false. The engine computed the finding; it can always say
+    what it means. What it cannot do without a model is write PROSE, and those
+    are two different claims that were collapsed into one empty panel.
+
+    So two fields travel, separately attributed and never merged:
+
+      engine_explanation  deterministic, always present, no model, no network
+      explanation         model prose, null until somebody asks for it
+
+    The UI shows the first immediately and offers the second as an upgrade. A
+    reader is never shown an absence where a fact exists, and a deterministic
+    sentence is never dressed up as model judgment.
+
+    Built from the row's own signals rather than from a lookup, so it works
+    identically on the persisted path and the in-memory fallback.
+    """
+    for row in rows:
+        try:
+            row["engine_explanation"] = engine_explanation(_FindingLike(row))
+        except Exception:
+            # A malformed signals blob must not take down the findings list --
+            # but it must not pass in silence either. The title is the
+            # analyzer's own deterministic one-liner and is still a true
+            # sentence about the finding, so the row degrades to that.
+            log.warning("could not build the engine explanation for a finding",
+                        exc_info=True,
+                        extra={"event": "engine_explanation_failed",
+                               "finding_id": row.get("finding_id"),
+                               "finding_type": row.get("type")})
+            row["engine_explanation"] = row.get("signals", {}).get("title") or row.get("type", "")
+
+
+class _FindingLike:
+    """Adapts a findings ROW to the attribute access `explain._fallback` expects.
+
+    The row comes back from SQL as a dict and from the memory path as a dict
+    too, while `_fallback` was written against the pydantic `Finding`. Adapting
+    here keeps one implementation of every explanation rather than a second copy
+    that reads dicts -- two copies of this prose would drift, and the drift would
+    only show on whichever path is less exercised.
+    """
+
+    def __init__(self, row: dict) -> None:
+        self.id = row.get("finding_id", "")
+        self.type = row.get("type", "")
+        self.signals = row.get("signals") or {}
+        self.raw_refs = row.get("raw_refs") or []
+        self.source_tools = row.get("source_tools") or []
+        self.severity = row.get("severity", 0)
+        self.severity_band = row.get("severity_band", "low")
+        self.forced_critical = row.get("forced_critical", False)
+        self.title = self.signals.get("title") or row.get("title") or ""
 
 
 @app.get("/api/findings/{fid}")
@@ -3254,6 +3315,22 @@ def topology(snapshot: str | None = None, lane_cap: int = Query(40, ge=5, le=400
     for i in topo.interfaces:
         if i.vlan_id is not None:
             vlans_by_dev.setdefault(i.device_key, set()).add(i.vlan_id)
+    # Interfaces travel WITH the node rather than behind a second request. The
+    # explorer's node drawer is the screen that answers "what is this box", and
+    # its ports are most of the answer -- a drawer that has to round-trip before
+    # it can say anything is a drawer nobody opens twice. `admin_up` is carried
+    # as the three-valued thing it is: null means the source did not report link
+    # state, and a UI that renders that as "down" invents an outage.
+    ifaces_by_dev: dict[str, list[dict]] = {}
+    for i in topo.interfaces:
+        ifaces_by_dev.setdefault(i.device_key, []).append({
+            "name": i.name, "addresses": list(i.addresses), "vlan_id": i.vlan_id,
+            "zone": i.zone, "admin_up": i.admin_up, "oper_up": i.oper_up,
+            "speed_mbps": i.speed_mbps, "lag_group": i.lag_group,
+            "description": i.description,
+            "neighbor_device": i.neighbor_device, "neighbor_interface": i.neighbor_interface,
+            "networks_behind": list(i.networks_behind),
+        })
     addrs_by_dev: dict[str, set[str]] = {}
     for i in topo.interfaces:
         addrs_by_dev.setdefault(i.device_key, set()).update(i.addresses)
@@ -3267,7 +3344,13 @@ def topology(snapshot: str | None = None, lane_cap: int = Query(40, ge=5, le=400
             "vendor": d.vendor, "model": d.model,
             "addresses": sorted(addrs_by_dev.get(d.device_key, ())),
             "vlan_ids": sorted(vlans_by_dev.get(d.device_key, ())),
+            "interfaces": sorted(ifaces_by_dev.get(d.device_key, []),
+                                 key=lambda x: x["name"]),
             "ha_group": d.ha_group, "ha_role": d.ha_role,
+            "role_source": d.role_source, "role_reason": d.role_reason,
+            "os_version": d.os_version, "serial": d.serial, "site": d.site,
+            "mgmt_ip": d.mgmt_ip, "tags": list(d.tags),
+            "conflicts": list(d.conflicts),
             "layer_reason": d.layer_reason,
             "observed_by": list(d.observed_by) or [{
                 "tool": d.provenance.source_tool, "tier": d.provenance.source_tier,

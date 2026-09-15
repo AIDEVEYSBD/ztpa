@@ -10,7 +10,20 @@ export interface Finding {
   involved: string[];
   raw_refs: string[];
   source_tools: string[];
+  /** MODEL PROSE, and null until somebody asks for it. Not the only explanation
+   *  available — see `engine_explanation`. */
   explanation?: string | null;
+  /** The ENGINE's own explanation. Always present, deterministic, no model and
+   *  no network: it is written from the finding's own signals by the same code
+   *  that computed them.
+   *
+   *  These two are separate fields and must stay separately attributed. The
+   *  console used to render "No explanation has been written for this finding
+   *  yet" whenever `explanation` was null, which was false — the engine can
+   *  always say what a finding means, because it computed it. What it cannot do
+   *  without a model is write prose, and collapsing those two claims into one
+   *  empty panel is what made a fully-explained finding look unexamined. */
+  engine_explanation?: string;
 }
 
 /** One spot where path enumeration hit its scan cap, as `_record_truncations`
@@ -686,13 +699,46 @@ export interface InventoryResponse {
   };
 }
 
+/** One port, SVI or logical interface, as the explorer's node drawer needs it.
+ *  `admin_up`/`oper_up` are THREE-VALUED: null means the source did not report
+ *  link state, and rendering that as "down" invents an outage. */
+export interface TopoInterface {
+  name: string;
+  addresses: string[];
+  vlan_id?: number | null;
+  zone?: string | null;
+  admin_up?: boolean | null;
+  oper_up?: boolean | null;
+  speed_mbps?: number | null;
+  lag_group?: string | null;
+  description?: string | null;
+  neighbor_device?: string | null;
+  neighbor_interface?: string | null;
+  networks_behind: string[];
+}
+
 export interface TopoNode {
   key: string;
   name: string;
   kind: string;
   role?: DeviceRole;
+  /** Whether the ROLE was stated by a console or worked out by the engine, and
+   *  why. The explorer must be able to show its working for "why do you call
+   *  this an L3 switch". */
+  role_source?: "declared" | "derived" | "unknown";
+  role_reason?: string;
   vendor?: string | null;
   model?: string | null;
+  os_version?: string | null;
+  serial?: string | null;
+  site?: string | null;
+  mgmt_ip?: string | null;
+  tags?: string[];
+  /** Ports, carried with the node so the drawer needs no second request. */
+  interfaces?: TopoInterface[];
+  /** Fields two consoles stated differently. Not an error — a fact about the
+   *  estate's own record-keeping, and what a review is for. */
+  conflicts?: SourceConflict[];
   addresses: string[];
   vlan_ids: number[];
   ha_group?: string | null;
