@@ -274,12 +274,18 @@ def test_the_memory_rows_are_the_columns_the_query_selects(blind_client) -> None
     of pinning the shape.
     """
     rows = blind_client.get("/api/findings").json()["findings"]
-    expected = main._FINDING_COLS + ("engine_explanation",)
+    expected = main._FINDING_COLS + ("title", "engine_explanation")
 
     assert all(tuple(r) == expected for r in rows)
     # ...and it is always populated. An empty one would put the console back to
     # rendering "no explanation has been written", which is what it is for.
     assert all(r["engine_explanation"] for r in rows)
+    # ...and so is the title. Without it the console title-cased the TYPE, so
+    # all five over-permissive findings shared one heading.
+    assert all(r["title"] for r in rows)
+    assert not any(r["title"] == r["type"] for r in rows), (
+        "a title equal to the type means the analyzer's own one-liner was lost"
+    )
 
 
 def test_nothing_is_persisted_while_the_database_is_unreachable(blind_client) -> None:

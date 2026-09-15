@@ -1231,7 +1231,16 @@ def findings(snapshot: str | None = None,
 
 
 def _attach_engine_explanations(rows: list[dict]) -> None:
-    """Give every finding the explanation the ENGINE can always write.
+    """Give every finding its deterministic TITLE and EXPLANATION.
+
+    THE TITLE. Every analyzer writes `Finding.title` -- a specific, deterministic
+    one-liner like "RDP open from the internet to db-prod-01". It is not a
+    findings COLUMN (it lives inside the signals blob), so it never reached the
+    wire, and the console fell back to title-casing the type: every one of the
+    five over-permissive findings rendered under the identical heading
+    "Over Permissive", with the sentence that distinguishes them sitting three
+    rows down inside the signals table. A walkthrough whose steps are all called
+    the same thing is a walkthrough nobody can navigate.
 
     The console rendered "No explanation has been written for this finding yet"
     on every finding nobody had manually pressed "Ask the advisory layer" for.
@@ -1253,7 +1262,9 @@ def _attach_engine_explanations(rows: list[dict]) -> None:
     """
     for row in rows:
         try:
-            row["engine_explanation"] = engine_explanation(_FindingLike(row))
+            like = _FindingLike(row)
+            row["title"] = like.title
+            row["engine_explanation"] = engine_explanation(like)
         except Exception:
             # A malformed signals blob must not take down the findings list --
             # but it must not pass in silence either. The title is the
@@ -1264,7 +1275,8 @@ def _attach_engine_explanations(rows: list[dict]) -> None:
                         extra={"event": "engine_explanation_failed",
                                "finding_id": row.get("finding_id"),
                                "finding_type": row.get("type")})
-            row["engine_explanation"] = row.get("signals", {}).get("title") or row.get("type", "")
+            row["title"] = (row.get("signals") or {}).get("title") or row.get("type", "")
+            row["engine_explanation"] = row["title"]
 
 
 class _FindingLike:
