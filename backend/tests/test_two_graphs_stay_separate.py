@@ -105,31 +105,42 @@ def _infra_result() -> NormalizeResult:
 
 
 def test_populating_the_topology_changes_no_finding():
-    """THE EQUIVALENCE. Run the engine, then run it again with a full
-    infrastructure layer folded in, and assert every finding is byte-identical.
+    """THE EQUIVALENCE. Run the engine with NO infrastructure and again with a
+    full one, and assert every finding is identical.
 
     `cross_tool_paths` in particular: it is the flagship computation, it is the
     one a reviewer is shown, and it is exactly what a leaked topology edge would
     corrupt.
-    """
-    without = run_all.run(label="two-graph-a")
 
-    infra = _infra_result()
+    The policy-only run is produced by stripping the infrastructure off the real
+    ingest rather than by deleting the export files, so this test does not depend
+    on which consoles happen to be onboarded in the working tree.
+    """
     real_normalize = run_all.normalize_all
 
-    def normalize_with_infra():
+    def normalize_policy_only():
         nr = real_normalize()
+        nr.devices, nr.interfaces, nr.links = [], [], []
+        nr.vlans, nr.subnets, nr.circuits = [], [], []
+        return nr
+
+    infra = _infra_result()
+
+    def normalize_with_infra():
+        nr = normalize_policy_only()
         nr.devices, nr.interfaces = infra.devices, infra.interfaces
         nr.links, nr.circuits = infra.links, infra.circuits
         return nr
 
-    run_all.normalize_all = normalize_with_infra
     try:
+        run_all.normalize_all = normalize_policy_only
+        without = run_all.run(label="two-graph-a")
+        run_all.normalize_all = normalize_with_infra
         with_infra = run_all.run(label="two-graph-a")
     finally:
         run_all.normalize_all = real_normalize
 
-    # The topology genuinely arrived...
+    # The topology genuinely arrived on one side and not the other...
     assert len(with_infra.topology.devices) == 13
     assert without.topology.devices == []
 

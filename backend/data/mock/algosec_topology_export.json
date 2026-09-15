@@ -1,0 +1,1001 @@
+{
+  "/api/v1/devices": [
+    {
+      "id": "fw-perim-01",
+      "name": "fw-perim-01",
+      "vendor": "Fortinet",
+      "model": "FortiGate-200F",
+      "type": "firewall",
+      "version": "FortiOS 7.4.3",
+      "managementIp": "10.255.0.21"
+    },
+    {
+      "id": "fw-perim-02",
+      "name": "fw-perim-02",
+      "vendor": "Fortinet",
+      "model": "FortiGate-200F",
+      "type": "firewall",
+      "version": "FortiOS 7.4.3",
+      "managementIp": "10.255.0.22"
+    },
+    {
+      "id": "rtr-edge-01",
+      "name": "rtr-edge-01",
+      "vendor": "Cisco",
+      "model": "ISR4331",
+      "type": "router",
+      "version": "IOS-XE 17.9.4",
+      "managementIp": "10.255.0.11"
+    },
+    {
+      "id": "rtr-edge-02",
+      "name": "rtr-edge-02",
+      "vendor": "Juniper",
+      "model": "MX204",
+      "type": "router",
+      "version": "Junos 21.4R3-S4",
+      "managementIp": "10.255.0.12"
+    }
+  ],
+  "/api/v1/interfaces": [
+    {
+      "deviceId": "fw-perim-01",
+      "interfaces": [
+        {
+          "interfaceId": "fw-perim-01:mgmt",
+          "hwName": "mgmt",
+          "logicalName": "mgmt",
+          "ip": "10.255.0.21",
+          "netmask": "255.255.255.0",
+          "zone": null,
+          "zoneType": null,
+          "vips": [],
+          "IPs behind interface": []
+        },
+        {
+          "interfaceId": "fw-perim-01:port1",
+          "hwName": "port1",
+          "logicalName": "port1",
+          "ip": "10.254.1.2",
+          "netmask": "255.255.255.252",
+          "zone": null,
+          "zoneType": null,
+          "vips": [],
+          "IPs behind interface": []
+        },
+        {
+          "interfaceId": "fw-perim-01:port2",
+          "hwName": "port2",
+          "logicalName": "port2",
+          "ip": "10.254.1.10",
+          "netmask": "255.255.255.252",
+          "zone": null,
+          "zoneType": null,
+          "vips": [],
+          "IPs behind interface": []
+        },
+        {
+          "interfaceId": "fw-perim-01:port3",
+          "hwName": "port3",
+          "logicalName": "port3",
+          "ip": "10.254.2.1",
+          "netmask": "255.255.255.252",
+          "zone": null,
+          "zoneType": null,
+          "vips": [],
+          "IPs behind interface": [
+            "10.20.0.0/24",
+            "10.30.0.0/16",
+            "10.31.0.0/24",
+            "10.40.0.0/16",
+            "10.50.0.0/24",
+            "10.60.0.0/24",
+            "10.254.2.8/30",
+            "10.254.2.12/30"
+          ]
+        },
+        {
+          "interfaceId": "fw-perim-01:port4",
+          "hwName": "port4",
+          "logicalName": "port4",
+          "ip": "10.254.2.5",
+          "netmask": "255.255.255.252",
+          "zone": null,
+          "zoneType": null,
+          "vips": [],
+          "IPs behind interface": [
+            "10.20.0.0/24",
+            "10.30.0.0/16",
+            "10.31.0.0/24",
+            "10.40.0.0/16",
+            "10.50.0.0/24",
+            "10.60.0.0/24",
+            "10.254.2.8/30",
+            "10.254.2.12/30"
+          ]
+        }
+      ]
+    },
+    {
+      "deviceId": "fw-perim-02",
+      "interfaces": [
+        {
+          "interfaceId": "fw-perim-02:mgmt",
+          "hwName": "mgmt",
+          "logicalName": "mgmt",
+          "ip": "10.255.0.22",
+          "netmask": "255.255.255.0",
+          "zone": null,
+          "zoneType": null,
+          "vips": [],
+          "IPs behind interface": []
+        },
+        {
+          "interfaceId": "fw-perim-02:port1",
+          "hwName": "port1",
+          "logicalName": "port1",
+          "ip": "10.254.1.6",
+          "netmask": "255.255.255.252",
+          "zone": null,
+          "zoneType": null,
+          "vips": [],
+          "IPs behind interface": []
+        },
+        {
+          "interfaceId": "fw-perim-02:port2",
+          "hwName": "port2",
+          "logicalName": "port2",
+          "ip": "10.254.1.14",
+          "netmask": "255.255.255.252",
+          "zone": null,
+          "zoneType": null,
+          "vips": [],
+          "IPs behind interface": []
+        },
+        {
+          "interfaceId": "fw-perim-02:port3",
+          "hwName": "port3",
+          "logicalName": "port3",
+          "ip": "10.254.2.9",
+          "netmask": "255.255.255.252",
+          "zone": null,
+          "zoneType": null,
+          "vips": [],
+          "IPs behind interface": [
+            "10.20.0.0/24",
+            "10.30.0.0/16",
+            "10.31.0.0/24",
+            "10.40.0.0/16",
+            "10.50.0.0/24",
+            "10.60.0.0/24",
+            "10.254.2.0/30",
+            "10.254.2.4/30"
+          ]
+        },
+        {
+          "interfaceId": "fw-perim-02:port4",
+          "hwName": "port4",
+          "logicalName": "port4",
+          "ip": "10.254.2.13",
+          "netmask": "255.255.255.252",
+          "zone": null,
+          "zoneType": null,
+          "vips": [],
+          "IPs behind interface": [
+            "10.20.0.0/24",
+            "10.30.0.0/16",
+            "10.31.0.0/24",
+            "10.40.0.0/16",
+            "10.50.0.0/24",
+            "10.60.0.0/24",
+            "10.254.2.0/30",
+            "10.254.2.4/30"
+          ]
+        }
+      ]
+    },
+    {
+      "deviceId": "rtr-edge-01",
+      "interfaces": [
+        {
+          "interfaceId": "rtr-edge-01:Gi0/0/0",
+          "hwName": "Gi0/0/0",
+          "logicalName": "Gi0/0/0",
+          "ip": "10.254.0.2",
+          "netmask": "255.255.255.252",
+          "zone": null,
+          "zoneType": null,
+          "vips": [],
+          "IPs behind interface": []
+        },
+        {
+          "interfaceId": "rtr-edge-01:Gi0/0/2",
+          "hwName": "Gi0/0/2",
+          "logicalName": "Gi0/0/2",
+          "ip": "10.254.0.10",
+          "netmask": "255.255.255.252",
+          "zone": null,
+          "zoneType": null,
+          "vips": [],
+          "IPs behind interface": []
+        },
+        {
+          "interfaceId": "rtr-edge-01:edge-fw-1",
+          "hwName": "edge-fw-1",
+          "logicalName": "edge-fw-1",
+          "ip": "10.254.1.1",
+          "netmask": "255.255.255.252",
+          "zone": null,
+          "zoneType": null,
+          "vips": [],
+          "IPs behind interface": [
+            "10.20.0.0/24",
+            "10.30.0.0/16",
+            "10.31.0.0/24",
+            "10.40.0.0/16",
+            "10.50.0.0/24",
+            "10.60.0.0/24",
+            "10.254.1.8/30",
+            "10.254.1.12/30",
+            "10.254.2.0/30",
+            "10.254.2.4/30",
+            "10.254.2.8/30",
+            "10.254.2.12/30"
+          ]
+        },
+        {
+          "interfaceId": "rtr-edge-01:edge-fw-2",
+          "hwName": "edge-fw-2",
+          "logicalName": "edge-fw-2",
+          "ip": "10.254.1.5",
+          "netmask": "255.255.255.252",
+          "zone": null,
+          "zoneType": null,
+          "vips": [],
+          "IPs behind interface": [
+            "10.20.0.0/24",
+            "10.30.0.0/16",
+            "10.31.0.0/24",
+            "10.40.0.0/16",
+            "10.50.0.0/24",
+            "10.60.0.0/24",
+            "10.254.1.8/30",
+            "10.254.1.12/30",
+            "10.254.2.0/30",
+            "10.254.2.4/30",
+            "10.254.2.8/30",
+            "10.254.2.12/30"
+          ]
+        },
+        {
+          "interfaceId": "rtr-edge-01:mgmt",
+          "hwName": "mgmt",
+          "logicalName": "mgmt",
+          "ip": "10.255.0.11",
+          "netmask": "255.255.255.0",
+          "zone": null,
+          "zoneType": null,
+          "vips": [],
+          "IPs behind interface": []
+        }
+      ]
+    },
+    {
+      "deviceId": "rtr-edge-02",
+      "interfaces": [
+        {
+          "interfaceId": "rtr-edge-02:edge-fw-1",
+          "hwName": "edge-fw-1",
+          "logicalName": "edge-fw-1",
+          "ip": "10.254.1.9",
+          "netmask": "255.255.255.252",
+          "zone": null,
+          "zoneType": null,
+          "vips": [],
+          "IPs behind interface": [
+            "10.20.0.0/24",
+            "10.30.0.0/16",
+            "10.31.0.0/24",
+            "10.40.0.0/16",
+            "10.50.0.0/24",
+            "10.60.0.0/24",
+            "10.254.1.0/30",
+            "10.254.1.4/30",
+            "10.254.2.0/30",
+            "10.254.2.4/30",
+            "10.254.2.8/30",
+            "10.254.2.12/30"
+          ]
+        },
+        {
+          "interfaceId": "rtr-edge-02:edge-fw-2",
+          "hwName": "edge-fw-2",
+          "logicalName": "edge-fw-2",
+          "ip": "10.254.1.13",
+          "netmask": "255.255.255.252",
+          "zone": null,
+          "zoneType": null,
+          "vips": [],
+          "IPs behind interface": [
+            "10.20.0.0/24",
+            "10.30.0.0/16",
+            "10.31.0.0/24",
+            "10.40.0.0/16",
+            "10.50.0.0/24",
+            "10.60.0.0/24",
+            "10.254.1.0/30",
+            "10.254.1.4/30",
+            "10.254.2.0/30",
+            "10.254.2.4/30",
+            "10.254.2.8/30",
+            "10.254.2.12/30"
+          ]
+        },
+        {
+          "interfaceId": "rtr-edge-02:ge-0/0/0",
+          "hwName": "ge-0/0/0",
+          "logicalName": "ge-0/0/0",
+          "ip": "10.254.0.6",
+          "netmask": "255.255.255.252",
+          "zone": null,
+          "zoneType": null,
+          "vips": [],
+          "IPs behind interface": []
+        },
+        {
+          "interfaceId": "rtr-edge-02:mgmt",
+          "hwName": "mgmt",
+          "logicalName": "mgmt",
+          "ip": "10.255.0.12",
+          "netmask": "255.255.255.0",
+          "zone": null,
+          "zoneType": null,
+          "vips": [],
+          "IPs behind interface": []
+        }
+      ]
+    }
+  ],
+  "/api/v1/interfaces/routingInformation": [
+    {
+      "deviceId": "fw-perim-01",
+      "interfaces": [
+        {
+          "interfaceId": "fw-perim-01:mgmt",
+          "hwName": "mgmt",
+          "ip": "10.255.0.21",
+          "netmask": "255.255.255.0"
+        },
+        {
+          "interfaceId": "fw-perim-01:port1",
+          "hwName": "port1",
+          "ip": "10.254.1.2",
+          "netmask": "255.255.255.252"
+        },
+        {
+          "interfaceId": "fw-perim-01:port2",
+          "hwName": "port2",
+          "ip": "10.254.1.10",
+          "netmask": "255.255.255.252"
+        },
+        {
+          "interfaceId": "fw-perim-01:port3",
+          "hwName": "port3",
+          "ip": "10.254.2.1",
+          "netmask": "255.255.255.252"
+        },
+        {
+          "interfaceId": "fw-perim-01:port4",
+          "hwName": "port4",
+          "ip": "10.254.2.5",
+          "netmask": "255.255.255.252"
+        }
+      ],
+      "routes": [
+        {
+          "dest": "10.20.0.0",
+          "mask": "255.255.255.0",
+          "gatewayIp": "10.254.2.2",
+          "sourceInterface": "port3"
+        },
+        {
+          "dest": "10.30.0.0",
+          "mask": "255.255.0.0",
+          "gatewayIp": "10.254.2.2",
+          "sourceInterface": "port3"
+        },
+        {
+          "dest": "10.31.0.0",
+          "mask": "255.255.255.0",
+          "gatewayIp": "10.254.2.2",
+          "sourceInterface": "port3"
+        },
+        {
+          "dest": "10.40.0.0",
+          "mask": "255.255.0.0",
+          "gatewayIp": "10.254.2.2",
+          "sourceInterface": "port3"
+        },
+        {
+          "dest": "10.50.0.0",
+          "mask": "255.255.255.0",
+          "gatewayIp": "10.254.2.2",
+          "sourceInterface": "port3"
+        },
+        {
+          "dest": "10.60.0.0",
+          "mask": "255.255.255.0",
+          "gatewayIp": "10.254.2.2",
+          "sourceInterface": "port3"
+        },
+        {
+          "dest": "10.254.2.8",
+          "mask": "255.255.255.252",
+          "gatewayIp": "10.254.2.2",
+          "sourceInterface": "port3"
+        },
+        {
+          "dest": "10.254.2.12",
+          "mask": "255.255.255.252",
+          "gatewayIp": "10.254.2.2",
+          "sourceInterface": "port3"
+        },
+        {
+          "dest": "10.20.0.0",
+          "mask": "255.255.255.0",
+          "gatewayIp": "10.254.2.6",
+          "sourceInterface": "port4"
+        },
+        {
+          "dest": "10.30.0.0",
+          "mask": "255.255.0.0",
+          "gatewayIp": "10.254.2.6",
+          "sourceInterface": "port4"
+        },
+        {
+          "dest": "10.31.0.0",
+          "mask": "255.255.255.0",
+          "gatewayIp": "10.254.2.6",
+          "sourceInterface": "port4"
+        },
+        {
+          "dest": "10.40.0.0",
+          "mask": "255.255.0.0",
+          "gatewayIp": "10.254.2.6",
+          "sourceInterface": "port4"
+        },
+        {
+          "dest": "10.50.0.0",
+          "mask": "255.255.255.0",
+          "gatewayIp": "10.254.2.6",
+          "sourceInterface": "port4"
+        },
+        {
+          "dest": "10.60.0.0",
+          "mask": "255.255.255.0",
+          "gatewayIp": "10.254.2.6",
+          "sourceInterface": "port4"
+        },
+        {
+          "dest": "10.254.2.8",
+          "mask": "255.255.255.252",
+          "gatewayIp": "10.254.2.6",
+          "sourceInterface": "port4"
+        },
+        {
+          "dest": "10.254.2.12",
+          "mask": "255.255.255.252",
+          "gatewayIp": "10.254.2.6",
+          "sourceInterface": "port4"
+        }
+      ]
+    },
+    {
+      "deviceId": "fw-perim-02",
+      "interfaces": [
+        {
+          "interfaceId": "fw-perim-02:mgmt",
+          "hwName": "mgmt",
+          "ip": "10.255.0.22",
+          "netmask": "255.255.255.0"
+        },
+        {
+          "interfaceId": "fw-perim-02:port1",
+          "hwName": "port1",
+          "ip": "10.254.1.6",
+          "netmask": "255.255.255.252"
+        },
+        {
+          "interfaceId": "fw-perim-02:port2",
+          "hwName": "port2",
+          "ip": "10.254.1.14",
+          "netmask": "255.255.255.252"
+        },
+        {
+          "interfaceId": "fw-perim-02:port3",
+          "hwName": "port3",
+          "ip": "10.254.2.9",
+          "netmask": "255.255.255.252"
+        },
+        {
+          "interfaceId": "fw-perim-02:port4",
+          "hwName": "port4",
+          "ip": "10.254.2.13",
+          "netmask": "255.255.255.252"
+        }
+      ],
+      "routes": [
+        {
+          "dest": "10.20.0.0",
+          "mask": "255.255.255.0",
+          "gatewayIp": "10.254.2.10",
+          "sourceInterface": "port3"
+        },
+        {
+          "dest": "10.30.0.0",
+          "mask": "255.255.0.0",
+          "gatewayIp": "10.254.2.10",
+          "sourceInterface": "port3"
+        },
+        {
+          "dest": "10.31.0.0",
+          "mask": "255.255.255.0",
+          "gatewayIp": "10.254.2.10",
+          "sourceInterface": "port3"
+        },
+        {
+          "dest": "10.40.0.0",
+          "mask": "255.255.0.0",
+          "gatewayIp": "10.254.2.10",
+          "sourceInterface": "port3"
+        },
+        {
+          "dest": "10.50.0.0",
+          "mask": "255.255.255.0",
+          "gatewayIp": "10.254.2.10",
+          "sourceInterface": "port3"
+        },
+        {
+          "dest": "10.60.0.0",
+          "mask": "255.255.255.0",
+          "gatewayIp": "10.254.2.10",
+          "sourceInterface": "port3"
+        },
+        {
+          "dest": "10.254.2.0",
+          "mask": "255.255.255.252",
+          "gatewayIp": "10.254.2.10",
+          "sourceInterface": "port3"
+        },
+        {
+          "dest": "10.254.2.4",
+          "mask": "255.255.255.252",
+          "gatewayIp": "10.254.2.10",
+          "sourceInterface": "port3"
+        },
+        {
+          "dest": "10.20.0.0",
+          "mask": "255.255.255.0",
+          "gatewayIp": "10.254.2.14",
+          "sourceInterface": "port4"
+        },
+        {
+          "dest": "10.30.0.0",
+          "mask": "255.255.0.0",
+          "gatewayIp": "10.254.2.14",
+          "sourceInterface": "port4"
+        },
+        {
+          "dest": "10.31.0.0",
+          "mask": "255.255.255.0",
+          "gatewayIp": "10.254.2.14",
+          "sourceInterface": "port4"
+        },
+        {
+          "dest": "10.40.0.0",
+          "mask": "255.255.0.0",
+          "gatewayIp": "10.254.2.14",
+          "sourceInterface": "port4"
+        },
+        {
+          "dest": "10.50.0.0",
+          "mask": "255.255.255.0",
+          "gatewayIp": "10.254.2.14",
+          "sourceInterface": "port4"
+        },
+        {
+          "dest": "10.60.0.0",
+          "mask": "255.255.255.0",
+          "gatewayIp": "10.254.2.14",
+          "sourceInterface": "port4"
+        },
+        {
+          "dest": "10.254.2.0",
+          "mask": "255.255.255.252",
+          "gatewayIp": "10.254.2.14",
+          "sourceInterface": "port4"
+        },
+        {
+          "dest": "10.254.2.4",
+          "mask": "255.255.255.252",
+          "gatewayIp": "10.254.2.14",
+          "sourceInterface": "port4"
+        }
+      ]
+    },
+    {
+      "deviceId": "rtr-edge-01",
+      "interfaces": [
+        {
+          "interfaceId": "rtr-edge-01:Gi0/0/0",
+          "hwName": "Gi0/0/0",
+          "ip": "10.254.0.2",
+          "netmask": "255.255.255.252"
+        },
+        {
+          "interfaceId": "rtr-edge-01:Gi0/0/2",
+          "hwName": "Gi0/0/2",
+          "ip": "10.254.0.10",
+          "netmask": "255.255.255.252"
+        },
+        {
+          "interfaceId": "rtr-edge-01:edge-fw-1",
+          "hwName": "edge-fw-1",
+          "ip": "10.254.1.1",
+          "netmask": "255.255.255.252"
+        },
+        {
+          "interfaceId": "rtr-edge-01:edge-fw-2",
+          "hwName": "edge-fw-2",
+          "ip": "10.254.1.5",
+          "netmask": "255.255.255.252"
+        },
+        {
+          "interfaceId": "rtr-edge-01:mgmt",
+          "hwName": "mgmt",
+          "ip": "10.255.0.11",
+          "netmask": "255.255.255.0"
+        }
+      ],
+      "routes": [
+        {
+          "dest": "10.20.0.0",
+          "mask": "255.255.255.0",
+          "gatewayIp": "10.254.1.2",
+          "sourceInterface": "edge-fw-1"
+        },
+        {
+          "dest": "10.30.0.0",
+          "mask": "255.255.0.0",
+          "gatewayIp": "10.254.1.2",
+          "sourceInterface": "edge-fw-1"
+        },
+        {
+          "dest": "10.31.0.0",
+          "mask": "255.255.255.0",
+          "gatewayIp": "10.254.1.2",
+          "sourceInterface": "edge-fw-1"
+        },
+        {
+          "dest": "10.40.0.0",
+          "mask": "255.255.0.0",
+          "gatewayIp": "10.254.1.2",
+          "sourceInterface": "edge-fw-1"
+        },
+        {
+          "dest": "10.50.0.0",
+          "mask": "255.255.255.0",
+          "gatewayIp": "10.254.1.2",
+          "sourceInterface": "edge-fw-1"
+        },
+        {
+          "dest": "10.60.0.0",
+          "mask": "255.255.255.0",
+          "gatewayIp": "10.254.1.2",
+          "sourceInterface": "edge-fw-1"
+        },
+        {
+          "dest": "10.254.1.8",
+          "mask": "255.255.255.252",
+          "gatewayIp": "10.254.1.2",
+          "sourceInterface": "edge-fw-1"
+        },
+        {
+          "dest": "10.254.1.12",
+          "mask": "255.255.255.252",
+          "gatewayIp": "10.254.1.2",
+          "sourceInterface": "edge-fw-1"
+        },
+        {
+          "dest": "10.254.2.0",
+          "mask": "255.255.255.252",
+          "gatewayIp": "10.254.1.2",
+          "sourceInterface": "edge-fw-1"
+        },
+        {
+          "dest": "10.254.2.4",
+          "mask": "255.255.255.252",
+          "gatewayIp": "10.254.1.2",
+          "sourceInterface": "edge-fw-1"
+        },
+        {
+          "dest": "10.254.2.8",
+          "mask": "255.255.255.252",
+          "gatewayIp": "10.254.1.2",
+          "sourceInterface": "edge-fw-1"
+        },
+        {
+          "dest": "10.254.2.12",
+          "mask": "255.255.255.252",
+          "gatewayIp": "10.254.1.2",
+          "sourceInterface": "edge-fw-1"
+        },
+        {
+          "dest": "10.20.0.0",
+          "mask": "255.255.255.0",
+          "gatewayIp": "10.254.1.6",
+          "sourceInterface": "edge-fw-2"
+        },
+        {
+          "dest": "10.30.0.0",
+          "mask": "255.255.0.0",
+          "gatewayIp": "10.254.1.6",
+          "sourceInterface": "edge-fw-2"
+        },
+        {
+          "dest": "10.31.0.0",
+          "mask": "255.255.255.0",
+          "gatewayIp": "10.254.1.6",
+          "sourceInterface": "edge-fw-2"
+        },
+        {
+          "dest": "10.40.0.0",
+          "mask": "255.255.0.0",
+          "gatewayIp": "10.254.1.6",
+          "sourceInterface": "edge-fw-2"
+        },
+        {
+          "dest": "10.50.0.0",
+          "mask": "255.255.255.0",
+          "gatewayIp": "10.254.1.6",
+          "sourceInterface": "edge-fw-2"
+        },
+        {
+          "dest": "10.60.0.0",
+          "mask": "255.255.255.0",
+          "gatewayIp": "10.254.1.6",
+          "sourceInterface": "edge-fw-2"
+        },
+        {
+          "dest": "10.254.1.8",
+          "mask": "255.255.255.252",
+          "gatewayIp": "10.254.1.6",
+          "sourceInterface": "edge-fw-2"
+        },
+        {
+          "dest": "10.254.1.12",
+          "mask": "255.255.255.252",
+          "gatewayIp": "10.254.1.6",
+          "sourceInterface": "edge-fw-2"
+        },
+        {
+          "dest": "10.254.2.0",
+          "mask": "255.255.255.252",
+          "gatewayIp": "10.254.1.6",
+          "sourceInterface": "edge-fw-2"
+        },
+        {
+          "dest": "10.254.2.4",
+          "mask": "255.255.255.252",
+          "gatewayIp": "10.254.1.6",
+          "sourceInterface": "edge-fw-2"
+        },
+        {
+          "dest": "10.254.2.8",
+          "mask": "255.255.255.252",
+          "gatewayIp": "10.254.1.6",
+          "sourceInterface": "edge-fw-2"
+        },
+        {
+          "dest": "10.254.2.12",
+          "mask": "255.255.255.252",
+          "gatewayIp": "10.254.1.6",
+          "sourceInterface": "edge-fw-2"
+        }
+      ]
+    },
+    {
+      "deviceId": "rtr-edge-02",
+      "interfaces": [
+        {
+          "interfaceId": "rtr-edge-02:edge-fw-1",
+          "hwName": "edge-fw-1",
+          "ip": "10.254.1.9",
+          "netmask": "255.255.255.252"
+        },
+        {
+          "interfaceId": "rtr-edge-02:edge-fw-2",
+          "hwName": "edge-fw-2",
+          "ip": "10.254.1.13",
+          "netmask": "255.255.255.252"
+        },
+        {
+          "interfaceId": "rtr-edge-02:ge-0/0/0",
+          "hwName": "ge-0/0/0",
+          "ip": "10.254.0.6",
+          "netmask": "255.255.255.252"
+        },
+        {
+          "interfaceId": "rtr-edge-02:mgmt",
+          "hwName": "mgmt",
+          "ip": "10.255.0.12",
+          "netmask": "255.255.255.0"
+        }
+      ],
+      "routes": [
+        {
+          "dest": "10.20.0.0",
+          "mask": "255.255.255.0",
+          "gatewayIp": "10.254.1.10",
+          "sourceInterface": "edge-fw-1"
+        },
+        {
+          "dest": "10.30.0.0",
+          "mask": "255.255.0.0",
+          "gatewayIp": "10.254.1.10",
+          "sourceInterface": "edge-fw-1"
+        },
+        {
+          "dest": "10.31.0.0",
+          "mask": "255.255.255.0",
+          "gatewayIp": "10.254.1.10",
+          "sourceInterface": "edge-fw-1"
+        },
+        {
+          "dest": "10.40.0.0",
+          "mask": "255.255.0.0",
+          "gatewayIp": "10.254.1.10",
+          "sourceInterface": "edge-fw-1"
+        },
+        {
+          "dest": "10.50.0.0",
+          "mask": "255.255.255.0",
+          "gatewayIp": "10.254.1.10",
+          "sourceInterface": "edge-fw-1"
+        },
+        {
+          "dest": "10.60.0.0",
+          "mask": "255.255.255.0",
+          "gatewayIp": "10.254.1.10",
+          "sourceInterface": "edge-fw-1"
+        },
+        {
+          "dest": "10.254.1.0",
+          "mask": "255.255.255.252",
+          "gatewayIp": "10.254.1.10",
+          "sourceInterface": "edge-fw-1"
+        },
+        {
+          "dest": "10.254.1.4",
+          "mask": "255.255.255.252",
+          "gatewayIp": "10.254.1.10",
+          "sourceInterface": "edge-fw-1"
+        },
+        {
+          "dest": "10.254.2.0",
+          "mask": "255.255.255.252",
+          "gatewayIp": "10.254.1.10",
+          "sourceInterface": "edge-fw-1"
+        },
+        {
+          "dest": "10.254.2.4",
+          "mask": "255.255.255.252",
+          "gatewayIp": "10.254.1.10",
+          "sourceInterface": "edge-fw-1"
+        },
+        {
+          "dest": "10.254.2.8",
+          "mask": "255.255.255.252",
+          "gatewayIp": "10.254.1.10",
+          "sourceInterface": "edge-fw-1"
+        },
+        {
+          "dest": "10.254.2.12",
+          "mask": "255.255.255.252",
+          "gatewayIp": "10.254.1.10",
+          "sourceInterface": "edge-fw-1"
+        },
+        {
+          "dest": "10.20.0.0",
+          "mask": "255.255.255.0",
+          "gatewayIp": "10.254.1.14",
+          "sourceInterface": "edge-fw-2"
+        },
+        {
+          "dest": "10.30.0.0",
+          "mask": "255.255.0.0",
+          "gatewayIp": "10.254.1.14",
+          "sourceInterface": "edge-fw-2"
+        },
+        {
+          "dest": "10.31.0.0",
+          "mask": "255.255.255.0",
+          "gatewayIp": "10.254.1.14",
+          "sourceInterface": "edge-fw-2"
+        },
+        {
+          "dest": "10.40.0.0",
+          "mask": "255.255.0.0",
+          "gatewayIp": "10.254.1.14",
+          "sourceInterface": "edge-fw-2"
+        },
+        {
+          "dest": "10.50.0.0",
+          "mask": "255.255.255.0",
+          "gatewayIp": "10.254.1.14",
+          "sourceInterface": "edge-fw-2"
+        },
+        {
+          "dest": "10.60.0.0",
+          "mask": "255.255.255.0",
+          "gatewayIp": "10.254.1.14",
+          "sourceInterface": "edge-fw-2"
+        },
+        {
+          "dest": "10.254.1.0",
+          "mask": "255.255.255.252",
+          "gatewayIp": "10.254.1.14",
+          "sourceInterface": "edge-fw-2"
+        },
+        {
+          "dest": "10.254.1.4",
+          "mask": "255.255.255.252",
+          "gatewayIp": "10.254.1.14",
+          "sourceInterface": "edge-fw-2"
+        },
+        {
+          "dest": "10.254.2.0",
+          "mask": "255.255.255.252",
+          "gatewayIp": "10.254.1.14",
+          "sourceInterface": "edge-fw-2"
+        },
+        {
+          "dest": "10.254.2.4",
+          "mask": "255.255.255.252",
+          "gatewayIp": "10.254.1.14",
+          "sourceInterface": "edge-fw-2"
+        },
+        {
+          "dest": "10.254.2.8",
+          "mask": "255.255.255.252",
+          "gatewayIp": "10.254.1.14",
+          "sourceInterface": "edge-fw-2"
+        },
+        {
+          "dest": "10.254.2.12",
+          "mask": "255.255.255.252",
+          "gatewayIp": "10.254.1.14",
+          "sourceInterface": "edge-fw-2"
+        }
+      ]
+    }
+  ],
+  "/api/v1/deviceZones": [
+    {
+      "deviceId": "fw-perim-01",
+      "zones": []
+    },
+    {
+      "deviceId": "fw-perim-02",
+      "zones": []
+    },
+    {
+      "deviceId": "rtr-edge-01",
+      "zones": []
+    },
+    {
+      "deviceId": "rtr-edge-02",
+      "zones": []
+    }
+  ]
+}

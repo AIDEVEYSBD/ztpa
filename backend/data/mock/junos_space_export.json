@@ -1,0 +1,52 @@
+{
+  "/api/space/device-management/devices": {
+    "devices": {
+      "@size": 1,
+      "device": [
+        {
+          "name": "rtr-edge-02",
+          "platform": "MX204",
+          "osVersion": "Junos 21.4R3-S4",
+          "serialNumber": "JN12F8A2B",
+          "ipAddr": "10.255.0.12",
+          "connectionStatus": "connected",
+          "deviceFamily": "junos",
+          "device-interfaces": [
+            {
+              "name": "edge-fw-1",
+              "ipAddress": "10.254.1.9/30",
+              "adminStatus": "up",
+              "operStatus": null,
+              "speed": 1000,
+              "description": "to fw-perim-01 port2"
+            },
+            {
+              "name": "edge-fw-2",
+              "ipAddress": "10.254.1.13/30",
+              "adminStatus": "up",
+              "operStatus": null,
+              "speed": 1000,
+              "description": "to fw-perim-02 port2"
+            },
+            {
+              "name": "ge-0/0/0",
+              "ipAddress": "10.254.0.6/30",
+              "adminStatus": "up",
+              "operStatus": null,
+              "speed": 1000,
+              "description": "to mdm-bb-01 lan"
+            },
+            {
+              "name": "mgmt",
+              "ipAddress": "10.255.0.12/24",
+              "adminStatus": "up",
+              "operStatus": null,
+              "speed": null,
+              "description": "out-of-band management"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

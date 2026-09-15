@@ -1,0 +1,57 @@
+{
+  "source": "carrier portal service-order extract",
+  "format": "csv",
+  "circuits": [
+    {
+      "circuit_id": "CIRC-A",
+      "service_type": "MPLS",
+      "carrier": "Carrier-A",
+      "bandwidth_mbps": 200,
+      "wan_ip_block": "203.0.113.0/29",
+      "cpe_name": "mdm-mpls-01",
+      "cpe_model": "CPE-2200",
+      "cpe_serial": "",
+      "cpe_mgmt_ip": "10.255.0.2",
+      "cpe_wan_port": "wan",
+      "cpe_handoff_port": "lan",
+      "demarc_location": "hq",
+      "status": "up",
+      "handoff_device": "rtr-edge-01",
+      "handoff_interface": "Gi0/0/0"
+    },
+    {
+      "circuit_id": "CIRC-B",
+      "service_type": "Broadband",
+      "carrier": "Carrier-B",
+      "bandwidth_mbps": 500,
+      "wan_ip_block": "198.51.100.0/29",
+      "cpe_name": "mdm-bb-01",
+      "cpe_model": "FiberCPE-900",
+      "cpe_serial": "",
+      "cpe_mgmt_ip": "10.255.0.3",
+      "cpe_wan_port": "wan",
+      "cpe_handoff_port": "lan",
+      "demarc_location": "hq",
+      "status": "up",
+      "handoff_device": "rtr-edge-02",
+      "handoff_interface": "ge-0/0/0"
+    },
+    {
+      "circuit_id": "CIRC-C",
+      "service_type": "ISDN",
+      "carrier": "Carrier-A",
+      "bandwidth_mbps": 1,
+      "wan_ip_block": "203.0.113.8/29",
+      "cpe_name": "mdm-isdn-01",
+      "cpe_model": "BRI-128",
+      "cpe_serial": "",
+      "cpe_mgmt_ip": "10.255.0.4",
+      "cpe_wan_port": "wan",
+      "cpe_handoff_port": "lan",
+      "demarc_location": "hq",
+      "status": "standby",
+      "handoff_device": "rtr-edge-01",
+      "handoff_interface": "Gi0/0/2"
+    }
+  ]
+}

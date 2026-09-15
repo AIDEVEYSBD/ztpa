@@ -356,7 +356,31 @@ def test_the_standalone_script_still_exits_zero(verify, capsys):
 # to the INPUT: the three exports now declare the `vpcId` their cloud workloads
 # live in, and AlgoSec/Guardicore carry a new concrete host plus the two rules
 # that reach it. See "THE CROSS-TOOL PATH RE-BASELINE" in the module docstring.
-DEMO_SNAPSHOT_ID = "snap_7aa6db6c2ddb"
+# THE INFRASTRUCTURE RE-BASELINE (this change).
+#
+# snap_7aa6db6c2ddb -> snap_f95d00f824ab. The snapshot id, and NOTHING ELSE.
+#
+# Diffed in full against the previous baseline, per the procedure at the top of
+# this file. Every other assertion in this file passes UNCHANGED: 35 findings,
+# the same 3/1/5/16/10 by type, the same 4/1/10/20 by band, 4 forced critical,
+# the byte-identical per-finding table below, 26 graph nodes and 25 edges, 26
+# assets, and the five-hop cross-tool path intact.
+#
+# THE CAUSE, attributed: `run_all._fingerprint` grew a sixth blob covering the
+# infrastructure layer, and seven console exports are now present in data/mock,
+# so the hash has more content to cover. It is not that the analysis changed --
+# the seven topology normalizers emit ZERO PolicyRecords and zero
+# ObservedEntities by construction, asserted at runtime in
+# test_two_graphs_stay_separate.py and by grep in the verify pass.
+#
+# WHY THE ID SHOULD MOVE HERE rather than be excluded from the hash: the id keys
+# every snapshot-scoped table, `devices`/`topology_links`/`vlans` among them. Two
+# ingests differing only in topology sharing one id would mean the rows a reader
+# gets back depend on which run wrote last. An id that does not cover the content
+# it keys is not a content hash. An estate with NO infrastructure exports still
+# produces the old id -- the sixth blob is appended only when non-empty, and
+# `test_an_estate_with_no_topology_keeps_the_id_it_always_had` pins that.
+DEMO_SNAPSHOT_ID = "snap_f95d00f824ab"
 
 # 31 before this re-baseline. +4, every one attributed in the module docstring:
 # +1 cross_tool_path, +1 cidr_overlap (ALGO-029/ALGO-030), +1 shadowed_rule
