@@ -19,7 +19,7 @@
 -- commit, and what a source IS becomes something we record (`tier`,
 -- `registered`) rather than something we assert by omission.
 
-BEGIN;
+SET search_path TO ztpa, public;
 
 -- The vocabulary becomes OPEN. `tool` was CHECKed against the five tools that
 -- existed when the table was written, and the constraint was satisfied by
@@ -61,5 +61,3 @@ COMMENT ON COLUMN sources.registered IS
     'False for a bring-your-own SourceProfile: the tool name is the operator''s, '
     'not one this build ships a normalizer for. The UI says so rather than '
     'presenting it as a shipped integration.';
-
-COMMIT;

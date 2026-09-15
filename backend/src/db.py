@@ -309,6 +309,23 @@ ENGINE_OWNED_TABLES: tuple[str, ...] = (
     "ranked_actions",
     "resolved_objects",
     "campaign_plans",
+    # The infrastructure layer (0007). Engine-owned like the graph tables: each
+    # is a derived view of ONE ingest, rebuilt in full on every recompute, so a
+    # stale row is a wrong answer rather than a lost record. The gap/evidence
+    # register is deliberately NOT here -- it must survive a recompute, and it
+    # carries a nullable snapshot_id for that reason.
+    #
+    # Ordered BEFORE `assets`, which stays last: it is the table the others
+    # reference, so deleting it first would orphan or block every child. The
+    # test asserting `order[-1] == "assets"` exists because that ordering is
+    # easy to break by appending to the end of this tuple, which is the natural
+    # thing to do.
+    "devices",
+    "device_interfaces",
+    "topology_links",
+    "vlans",
+    "subnets",
+    "circuits",
     "assets",
 )
 
