@@ -16,7 +16,35 @@ from .netaddr import ANY_V4, is_any, parse_net
 
 Tag = str  # e.g. "pci", "customer-data", "crown-jewel", "prod", "dev", "dmz"
 
-SourceTool = Literal["algosec", "guardicore", "wiz", "sd_wan", "sd_lan"]
+# The tools this build ships a normalizer for. Hand-written rather than derived,
+# because a pydantic Literal has to exist at class-definition time and `sources`
+# imports FROM this module -- but `test_source_registry.py` asserts these members
+# are exactly `sources.TOOL_KEYS`, so the two cannot drift.
+#
+# THIS IS THE CATALOGUE, NOT THE CONSTRAINT. `PolicyRecord.source_tool` is a
+# plain `str`, deliberately, and the reason is a product feature rather than
+# laxity: an operator can bring their own source via a declarative
+# `SourceProfile` (normalizers/profile.py), and a profile IS a registration --
+# the operator has told us, in their own words, what this source is called.
+#
+# The closed Literal used to be enforced here, and the way that played out is
+# instructive. `profile.py` knew records had to satisfy it, so a record from any
+# tool outside the list was relabelled `source_tool="algosec"` to make the
+# insert succeed. Bringing your own connector therefore did not fail -- it
+# ingested cleanly, the counts looked right, and every provenance claim
+# downstream (the source badge on a finding, the "seen by" column, the rule
+# reference an operator would click to go verify something in their own console,
+# the audit trail) pointed at a different vendor's product.
+#
+# A constraint that a shipped feature has to lie to satisfy is a bug in the
+# constraint. So the vocabulary is open, the tool is carried as given, and
+# `sources.BY_KEY` decides only whether we can say anything ABOUT it -- an
+# unrecognised tool renders as a custom source with the narrowest assumed
+# scope, never as a tool it is not.
+SourceTool = Literal[
+    "algosec", "catalyst_center", "fortigate", "fortimanager", "guardicore",
+    "junos_space", "meraki", "panorama", "sd_lan", "sd_wan", "wiz",
+]
 FindingType = Literal[
     "over_permissive", "cidr_overlap", "shadowed_rule", "cross_tool_path", "transport_exposure",
 ]
@@ -38,7 +66,7 @@ class PolicyRecord(BaseModel):
     """
 
     id: str
-    source_tool: SourceTool
+    source_tool: str                                  # a TOOL_KEYS member, or a BYO profile's own name
     raw_ref: str                                      # rule id in the source tool
     source: str                                       # CIDR or identity/label
     source_kind: Literal["cidr", "identity"]

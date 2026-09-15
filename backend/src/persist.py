@@ -42,12 +42,18 @@ from .db import audit, delete_snapshot_children, upsert, upsert_many
 from .graph.build import node_db_kind
 from .ids import det_id
 from .models import ChangeDecision, ChangeRequest, RankedActions
+from .sources import device_of
 
 # Child of the API's logger (app/main.py configures "npr.api"), so a degraded
 # write comes out as one JSON line carrying the request id and the actor.
 log = logging.getLogger("npr.api.persist")
 
-_DEVICE = {"algosec": "afa-edge-fw-01", "guardicore": "guardicore-mgmt", "wiz": "wiz-cloud-connector"}
+# Which console/device a tool's records are attributed to now lives in the
+# source registry (`sources.device_of`). It was a three-entry dict here, read
+# with a bare `.get()`, so every tool outside it persisted NULL -- and
+# `resolved_objects` is UNIQUE on (snapshot_id, source_device, object_name,
+# object_kind), so two unlisted tools exporting a same-named object collided on
+# insert. `device_of` falls back to the tool key rather than to None.
 
 
 def _asset_id(sid: str, key: str) -> str:
@@ -115,7 +121,7 @@ def snapshot_row(r: EngineResult) -> dict:
 def source_rows(r: EngineResult) -> list[dict]:
     return [{
         "source_id": det_id("src", tool), "tool": tool,   # global connector, not per-snapshot
-        "device": _DEVICE.get(tool, tool), "config": {"mode": "simulated_export"},
+        "device": device_of(tool), "config": {"mode": "simulated_export"},
     } for tool in sorted({rec.source_tool for rec in r.records})]
 
 
@@ -151,7 +157,7 @@ def canonical_rule_rows(r: EngineResult) -> list[dict]:
     sid = r.snapshot_id
     return [{
         "rule_uid": _rule_uid(sid, rec.source_tool, rec.raw_ref), "snapshot_id": sid,
-        "source_tool": rec.source_tool, "source_device": _DEVICE.get(rec.source_tool),
+        "source_tool": rec.source_tool, "source_device": device_of(rec.source_tool),
         "raw_rule_id": rec.raw_ref, "policy_id": None, "rule_order": rec.order, "action": rec.action,
         "src_kind": rec.source_kind, "src_value": _value(rec.source, rec.source_kind), "src_context": None,
         "dst_kind": rec.destination_kind, "dst_value": _value(rec.destination, rec.destination_kind), "dst_context": None,
@@ -182,7 +188,7 @@ def graph_edge_rows(r: EngineResult) -> list[dict]:
         "src_node": _canon(r, rec.source), "dst_node": _canon(r, rec.destination), "action": rec.action,
         "ports": _ports(rec.protocol, rec.port, rec.port_end),
         "l7_app": rec.l7_app, "rule_uid": _rule_uid(sid, rec.source_tool, rec.raw_ref),
-        "source_tool": rec.source_tool, "enforcement_point": _DEVICE.get(rec.source_tool),
+        "source_tool": rec.source_tool, "enforcement_point": device_of(rec.source_tool),
     } for rec in r.records if rec.action == "allow"]
 
 

@@ -57,8 +57,20 @@ CREATE TABLE IF NOT EXISTS snapshots (
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS sources (
     source_id    text PRIMARY KEY,
-    tool         text NOT NULL
-                   CHECK (tool IN ('algosec', 'guardicore', 'wiz', 'sd_wan', 'sd_lan')),
+    -- OPEN vocabulary, deliberately: an operator can bring their own source via
+    -- a declarative SourceProfile, and that profile is the registration. This
+    -- used to be CHECKed against a fixed five, and the constraint was satisfied
+    -- by relabelling every other tool as 'algosec' -- so a custom connector
+    -- ingested cleanly under a different vendor's name. See 0006.
+    tool         text NOT NULL CHECK (btrim(tool) <> ''),
+    -- Which rung of the collection ladder this source sits on. An aggregator
+    -- reports what the devices it manages told it; a device read is
+    -- first-hand. The inventory says which it has, per row.
+    tier         text NOT NULL DEFAULT 'aggregator'
+                   CHECK (tier IN ('aggregator', 'management_console', 'device')),
+    -- False for a bring-your-own profile: the name is the operator's, not one
+    -- this build ships a normalizer for.
+    registered   boolean NOT NULL DEFAULT true,
     device       text,
     config       jsonb NOT NULL DEFAULT '{}'::jsonb,
     last_sync    timestamptz

@@ -42,6 +42,7 @@ from typing import Any, Optional
 from pydantic import BaseModel
 
 from ..netaddr import parse_net
+from ..sources import TOOL_KEYS
 from .common import (
     NormalizeResult, ObservedEntity, ResolvedObject, cidrs_for_token, is_cidr,
     looks_like_address_space, merge_entities, normalize_cidr, parse_service,
@@ -645,10 +646,37 @@ class SourceProfile(BaseModel):
     device: Optional[str] = None
 
 
-# The canonical `SourceTool` literal a record must carry. A profile naming a
-# tool outside it is still relabelled (see apply_profile) because widening the
-# Literal is a models.py change; the relabelling is at least recorded now.
-_KNOWN_TOOLS = ("algosec", "guardicore", "wiz", "sd_wan", "sd_lan")
+# The canonical `SourceTool` vocabulary a record must carry, read straight off
+# the source registry so this module cannot hold a stale copy of it. A profile
+# naming a tool outside it is REFUSED by `require_known_tool` -- it used to be
+# relabelled as "algosec", which turned an unlisted console into a false
+# provenance claim rather than an error.
+_KNOWN_TOOLS = TOOL_KEYS
+
+
+def require_known_tool(tool: str) -> str:
+    """The profile's tool name, carried through exactly as declared.
+
+    A profile naming a tool outside the shipped catalogue is NOT an error --
+    bringing your own source is the feature this module exists for, and the
+    profile is the operator's registration of it. What is an error is a profile
+    that names no tool at all, because every downstream provenance claim is then
+    attributed to the empty string.
+
+    This function used to be the relabel: a tool outside the catalogue was
+    rewritten to "algosec" so the record would satisfy a closed Literal. The
+    ingest succeeded and every provenance claim it produced was false. The
+    Literal is gone (see models.SourceTool); the name is now carried as given,
+    and `sources.BY_KEY` decides only whether we can say anything ABOUT the tool
+    -- never what it is called.
+    """
+    name = (tool or "").strip()
+    if not name:
+        raise NormalizeError(
+            "profile declares no `tool`: every record, object and finding this "
+            "profile produces would be attributed to the empty string"
+        )
+    return name
 
 
 @dataclass
@@ -760,7 +788,7 @@ def _resolve(token: object, objects: dict, profile: SourceProfile, tool: str
 def apply_profile(raw: dict, profile: SourceProfile) -> NormalizeResult:
     """Interpret a SourceProfile over one raw export. Deterministic, no model."""
     res = NormalizeResult()
-    tool = profile.tool
+    tool = require_known_tool(profile.tool)
     fm = profile.fields
     objects = require_mapping(raw.get(profile.objects_path) if profile.objects_path else None,
                               tool=tool, what=f"{profile.objects_path!r}")
@@ -806,11 +834,14 @@ def apply_profile(raw: dict, profile: SourceProfile) -> NormalizeResult:
         action = decode_action(rule.get(fm.action) if fm.action else None,
                                default=fm.default_action, where=f"{tool} rule {ref}: ")
         res.records.append(record_from_service(
-            # A profile naming an unknown tool is still recorded as "algosec"
-            # because `models.SourceTool` is a closed Literal; the relabelling is
-            # a known claim-overreach (audit: profile.py:90) whose fix lives in
-            # models.py, outside this module.
-            record_id=ref, source_tool=tool if tool in _KNOWN_TOOLS else "algosec",
+            # A profile naming a tool outside the registry now FAILS, loudly,
+            # at `require_known_tool` above. It used to be recorded as
+            # "algosec" -- so onboarding a console nobody had enumerated did
+            # not error, it silently attributed that console's rules to a
+            # different vendor's product, and every provenance claim
+            # downstream (the source badge, the rule reference, the "seen by"
+            # column, the audit trail) was wrong with no way to notice.
+            record_id=ref, source_tool=tool,
             raw_ref=ref, source=src.name, destination=dst.name, svc=svc, action=action,
             dest_tags=list(dst.tags), order=rule.get(fm.order) if fm.order else (i + 1) * 10,
             source_cidrs=src.cidrs, dest_cidrs=dst.cidrs,
