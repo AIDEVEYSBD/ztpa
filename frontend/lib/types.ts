@@ -556,3 +556,271 @@ export interface AzureDiscovery<T> {
    */
   incomplete_reason?: string | null;
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// THE INFRASTRUCTURE LAYER — sources, inventory, topology
+//
+// These mirror backend/src/models.py. Three things in here are load-bearing and
+// a screen that drops them is lying by omission:
+//
+//   `tier`          where a fact came from on the collection ladder. A device
+//                   read from a cross-vendor aggregator and one read off the box
+//                   are not the same quality of fact.
+//   `simulated`     whether a source is a live connector or a seeded export.
+//                   This deployment's exports are ALL seeded, and a client-
+//                   facing screen has to say so.
+//   `observedBy`    every console that saw a row, not just the winning one.
+//                   "Where did we find it" has three answers for a firewall
+//                   FortiManager, the FortiGate itself and AlgoSec all describe.
+// ───────────────────────────────────────────────────────────────────────────
+
+export type SourceTier = "aggregator" | "management_console" | "device";
+
+export type DeviceRole =
+  | "modem" | "router" | "firewall" | "l3_switch" | "l2_switch" | "hub" | "bridge"
+  | "load_balancer" | "wireless_ap" | "server" | "workstation" | "virtual_appliance"
+  | "unknown";
+
+export type TopologyLayer =
+  | "internet" | "circuit" | "modem" | "edge" | "perimeter"
+  | "core" | "access" | "segment" | "endpoint";
+
+/** How we know a link exists. There is deliberately no "inferred" member — see
+ *  the DB CHECK in db/migrations/0007. `containment` is the weakest: two
+ *  interfaces provably in one block, which is a real L3 observation and is not a
+ *  cable, so the UI must render it differently rather than blending it in. */
+export type LinkEvidence =
+  | "lldp" | "cdp" | "api_topology" | "config" | "routing" | "declared" | "containment";
+
+export interface Observation {
+  tool: string;
+  tier: SourceTier;
+  raw_ref?: string;
+  evidence?: LinkEvidence;
+}
+
+/** One field two consoles stated differently. NOT an error: it is a fact about
+ *  the estate's own record-keeping — a stale entry, or a box replaced without
+ *  the aggregator being told — and it is what a review is for. */
+export interface SourceConflict {
+  entity: string;
+  field: string;
+  claims: { tool: string; tier: SourceTier; value: unknown }[];
+}
+
+export interface SourceCard {
+  tool: string;
+  label: string;
+  vendor: string;
+  tier: SourceTier;
+  api: string;
+  auth: string;
+  /** What it yields, in inventory vocabulary. */
+  yields: string[];
+  /** What it will NOT give you. The most useful field on the card: it is what
+   *  stops an operator reading an empty access lane as an empty access layer. */
+  blind_to: string[];
+  notes?: string | null;
+  connected: boolean;
+  /** True for a seeded export rather than a live connector. Rendered, always. */
+  simulated: boolean;
+  device?: string | null;
+  last_sync?: string | null;
+  /** What this source actually put into the current snapshot. Absent when it is
+   *  not connected — never rendered as zero, which would read as "connected and
+   *  found nothing". */
+  contributed?: {
+    records: number; entities: number; devices: number; interfaces: number;
+    links: number; vlans: number; subnets: number; circuits: number;
+  } | null;
+}
+
+export interface InventoryItem {
+  key: string;
+  name: string;
+  /** The inventory vocabulary: a device role, or an entity kind (vlan, subnet,
+   *  public_ip, wan_circuit, asset). */
+  kind: string;
+  role?: DeviceRole;
+  role_source?: "declared" | "derived" | "unknown";
+  role_reason?: string;
+  vendor?: string | null;
+  model?: string | null;
+  os_version?: string | null;
+  addresses: string[];
+  vlan_id?: number | null;
+  vlan_name?: string | null;
+  subnet?: string | null;
+  zone?: string | null;
+  tags: string[];
+  layer?: TopologyLayer | null;
+  layer_source?: "declared" | "derived" | "unknown";
+  layer_reason?: string;
+  observed_by: Observation[];
+  conflicts: SourceConflict[];
+  finding_ids: string[];
+}
+
+/** Counts the header reads out. A count no source declared is `null`, NEVER 0 —
+ *  "we don't know" must not render as "we checked, and it's none". */
+export interface InventoryCounts {
+  devices: number | null;
+  interfaces: number | null;
+  vlans: number | null;
+  subnets: number | null;
+  public_ips: number | null;
+  circuits: number | null;
+  assets: number | null;
+}
+
+export interface InventoryResponse {
+  items: InventoryItem[];
+  total: number;
+  has_more: boolean;
+  counts: InventoryCounts;
+  facets: {
+    kinds: Record<string, number>;
+    sources: Record<string, number>;
+    vlans: Record<string, number>;
+    zones: Record<string, number>;
+  };
+}
+
+export interface TopoNode {
+  key: string;
+  name: string;
+  kind: string;
+  role?: DeviceRole;
+  vendor?: string | null;
+  model?: string | null;
+  addresses: string[];
+  vlan_ids: number[];
+  ha_group?: string | null;
+  ha_role?: string | null;
+  layer_reason?: string;
+  observed_by: Observation[];
+  finding_ids: string[];
+  /** Set when this device is inventoried but nothing reported a cable for it. A
+   *  box with no line to anything reads as a rendering bug; it is a coverage gap
+   *  and the UI must say which console would close it. */
+  unlinked_reason?: string | null;
+  would_be_filled_by?: string | null;
+}
+
+export interface TopoLink {
+  id: string;
+  a: string;
+  b: string;
+  a_iface?: string | null;
+  b_iface?: string | null;
+  evidence: LinkEvidence;
+  evidence_detail: string;
+  redundant_group?: string | null;
+  aggregated: boolean;
+  member_count: number;
+  observed_by: Observation[];
+}
+
+export interface TopoLane {
+  layer: TopologyLayer;
+  label: string;
+  nodes: TopoNode[];
+  /** False when nothing was observed at this layer. `reason` and
+   *  `would_be_filled_by` are then both present, and the lane renders as a NAMED
+   *  ABSENCE — never as a ghost device, and never silently omitted. */
+  observed: boolean;
+  reason?: string | null;
+  would_be_filled_by?: string | null;
+}
+
+export interface TopologyResponse {
+  lanes: TopoLane[];
+  links: TopoLink[];
+  vlans: { vlan_id: number; name?: string | null; subnets: string[]; gateways: string[] }[];
+  counts: InventoryCounts;
+  source_conflicts: SourceConflict[];
+  unlinked_devices: { device_key: string; reason: string; would_be_filled_by: string }[];
+  /** Bounds this response applied. Present from the first commit rather than
+   *  added when payloads grow: silent truncation reads as "covered everything". */
+  caps: { nodes_shown: number; nodes_total: number; capped_lanes: string[] };
+}
+
+/** What the engine could and could not compute. On every payload today and read
+ *  by nothing — a picture drawn over a partial analysis looks complete. */
+export interface AnalysisState {
+  analysis_complete?: boolean | null;
+  degraded_analyzers?: string[] | null;
+  truncations?: Record<string, unknown>[] | null;
+}
+
+export type IpMatchRelation = "exact" | "covering" | "contained";
+
+export interface IpPolicyMatch {
+  rule_ref: string;
+  source_tool: string;
+  source: string;
+  destination: string;
+  service: string;
+  action: string;
+  relation: IpMatchRelation;
+  /** How the address reached this rule: address containment, the identity
+   *  layer's alias map, an interface, or NAT. Shown per row so the set
+   *  arithmetic is visible rather than asserted. */
+  matched_via: string;
+  finding_ids: string[];
+}
+
+export interface IpLookupResponse {
+  address: string;
+  mode: string;
+  /** Grouped exactly as the drawer renders them. `covering` is the group people
+   *  forget: the rules that permit this address without naming it. */
+  matches: { exact: IpPolicyMatch[]; covering: IpPolicyMatch[]; contained: IpPolicyMatch[] };
+  assets: { asset_key: string; kind: string; tags: string[]; source_tools: string[] }[];
+  devices: TopoNode[];
+  interfaces: { interface_key: string; device_key: string; name: string; addresses: string[]; vlan_id?: number | null }[];
+  vlan?: { vlan_id: number; name?: string | null } | null;
+  subnet?: string | null;
+  finding_ids: string[];
+  /** The reachability claim, with the caveat printed NEXT TO IT rather than
+   *  buried in a doc: the engine models the union of allow edges and does not
+   *  implement deny precedence (ENGINE.md §10.1), so "not reachable" is
+   *  "no allow path found", not "provably blocked". */
+  effective: { reachable_from_internet: boolean | null; caveat: string };
+}
+
+export interface ResilienceFinding {
+  id: string;
+  kind: string;
+  title: string;
+  detail: string;
+  severity: number;
+  severity_band: Band;
+  severity_vector: Record<string, number>;
+  involved: string[];
+  remediation: string;
+}
+
+export interface BlastRadius {
+  device_key: string;
+  paths_lost: number;
+  paths_before: number;
+  fraction: number;
+  circuits_stranded: string[];
+  devices_isolated: string[];
+  devices_degraded: number;
+  components_after: number;
+}
+
+export interface ResilienceResponse {
+  /** False when there was nothing to analyse. It must be impossible to read an
+   *  empty `findings` as a clean bill of health. */
+  analysed: boolean;
+  reason?: string | null;
+  findings: ResilienceFinding[];
+  blast_radius: BlastRadius[];
+  blast_basis: string;
+  adjacency_count: number;
+  excluded_adjacencies: { reason: string; detail: string }[];
+  suppressed: { kind: string; candidate: string; detail: string }[];
+}

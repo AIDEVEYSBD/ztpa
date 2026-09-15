@@ -59,6 +59,16 @@ DNA_DEVICES = "/dna/intent/api/v1/network-device"
 DNA_INTERFACES = "/dna/intent/api/v1/interface"
 DNA_PHYSICAL_TOPOLOGY = "/dna/intent/api/v1/topology/physical-topology"
 DNA_VLAN_NAMES = "/dna/intent/api/v1/topology/vlan/vlan-names"
+# The IP pool inventory. `vlan-names` returns ids and NOTHING else -- no subnet,
+# no name -- so on its own it can say VLAN 30 exists and not that it carries
+# 10.30.0.0/16 or that anyone calls it "app-tier". Without this endpoint the
+# inventory's "which VLAN is this host in" column is empty for every row, because
+# that answer is computed by containment against a VLAN's declared subnet.
+#
+# Back-forming the subnet from the SVI mask instead is the trap: VLAN 30's
+# gateway reads 10.30.0.1/24 while the VLAN actually carries 10.30.0.0/16, so a
+# host at 10.30.7.7 would be placed OUTSIDE its own VLAN.
+DNA_GLOBAL_POOL = "/dna/intent/api/v1/global-pool"
 
 # The Meraki paths keep their `{orgId}` / `{netId}` placeholders LITERALLY. Those
 # ids belong to a real Dashboard org; substituting an invented one would produce
@@ -340,9 +350,26 @@ def catalyst_center_export(est: Estate) -> dict[str, Any]:
         sorted({v.vlan_id for v in est.vlans if keys.intersection(v.on_devices)})
     ]
 
+    # Reserved pools, in Catalyst Center's own shape. `ipPoolName` is the human
+    # name of the segment -- the thing `vlan-names` cannot give us.
+    pools = [
+        {
+            "id": f"pool-{v.vlan_id}",
+            "ipPoolName": v.name,
+            "ipPoolCidr": v.subnet,
+            "gateways": [v.gateway],
+            "vlanId": v.vlan_id,
+            "dhcpServerIps": [],
+            "dnsServerIps": [],
+        }
+        for v in sorted(est.vlans, key=lambda v: v.vlan_id)
+        if keys.intersection(v.on_devices)
+    ]
+
     return {
         DNA_DEVICES: {"response": devices},
         DNA_INTERFACES: {"response": interfaces},
+        DNA_GLOBAL_POOL: {"response": pools},
         DNA_PHYSICAL_TOPOLOGY: {"response": {"nodes": nodes, "links": links}},
         DNA_VLAN_NAMES: {"response": vlan_names},
     }

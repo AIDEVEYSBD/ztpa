@@ -356,9 +356,25 @@ def test_the_standalone_script_still_exits_zero(verify, capsys):
 # to the INPUT: the three exports now declare the `vpcId` their cloud workloads
 # live in, and AlgoSec/Guardicore carry a new concrete host plus the two rules
 # that reach it. See "THE CROSS-TOOL PATH RE-BASELINE" in the module docstring.
-# THE INFRASTRUCTURE RE-BASELINE (this change).
+# THE INFRASTRUCTURE RE-BASELINE (this change), in two steps.
 #
-# snap_7aa6db6c2ddb -> snap_f95d00f824ab. The snapshot id, and NOTHING ELSE.
+#   snap_7aa6db6c2ddb -> snap_f95d00f824ab   the six infrastructure exports
+#   snap_f95d00f824ab -> snap_830fc44e6089   Catalyst Center's IP pool endpoint
+#
+# The second step is a SECOND ingest of the same estate, not a second change to
+# the engine. `/dna/intent/api/v1/global-pool` was added to the Catalyst
+# projection because `vlan-names` returns ids and nothing else, so without it a
+# VLAN had no subnet and no name -- and "which VLAN is this host in", which the
+# inventory and the address drill-down both answer by containment, was empty for
+# every row in the estate. The pool now supplies VLAN 30 = 10.30.0.0/16 =
+# "app-tier", and 10.30.7.7 resolves into it.
+#
+# It is NOT back-formed from the SVI mask, which is the available shortcut and
+# would place app-server-07 outside its own VLAN (the SVI reads 10.30.0.1/24
+# while the VLAN carries a /16). `test_a_vlan_subnet_comes_from_the_pool_and_
+# never_from_the_gateway_mask` pins that.
+#
+# In both steps: the snapshot id, and NOTHING ELSE.
 #
 # Diffed in full against the previous baseline, per the procedure at the top of
 # this file. Every other assertion in this file passes UNCHANGED: 35 findings,
@@ -380,7 +396,7 @@ def test_the_standalone_script_still_exits_zero(verify, capsys):
 # it keys is not a content hash. An estate with NO infrastructure exports still
 # produces the old id -- the sixth blob is appended only when non-empty, and
 # `test_an_estate_with_no_topology_keeps_the_id_it_always_had` pins that.
-DEMO_SNAPSHOT_ID = "snap_f95d00f824ab"
+DEMO_SNAPSHOT_ID = "snap_830fc44e6089"
 
 # 31 before this re-baseline. +4, every one attributed in the module docstring:
 # +1 cross_tool_path, +1 cidr_overlap (ALGO-029/ALGO-030), +1 shadowed_rule

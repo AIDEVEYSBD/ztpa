@@ -28,7 +28,7 @@ import pytest
 from src import estate
 from src.connectors.cisco import (
     CATALYST_TOOL, DNA_DEVICES, DNA_INTERFACES, DNA_PHYSICAL_TOPOLOGY,
-    DNA_VLAN_NAMES, MERAKI_APPLIANCE_VLANS, MERAKI_DEVICES, MERAKI_TOOL,
+    DNA_GLOBAL_POOL, DNA_VLAN_NAMES, MERAKI_APPLIANCE_VLANS, MERAKI_DEVICES, MERAKI_TOOL,
     MERAKI_UPLINK_ADDRESSES, catalyst_center_export, meraki_export,
 )
 from src.normalizers.cisco import normalize_catalyst, normalize_meraki
@@ -440,32 +440,63 @@ def test_an_appliance_vlan_that_exists_is_carried_with_its_subnet():
     assert [(s.cidr, s.vlan_id) for s in res.subnets] == [("10.100.0.0/24", 100)]
 
 
-def test_a_catalyst_vlan_carries_no_subnet_back_formed_from_its_gateway_mask():
-    """The SVI's mask describes the GATEWAY'S INTERFACE, not the VLAN's
-    allocation, and inferring one from the other is wrong in the direction that
-    HIDES HOSTS. VLAN 30 carries 10.30.0.0/16 in this estate while its SVI reads
-    10.30.0.1/24, so a subnet taken off the mask would put app-server-07
-    (10.30.7.7) outside the VLAN it is actually on -- and "where does this
-    finding live" is the question the segment lane exists to answer."""
+def test_a_vlan_subnet_comes_from_the_pool_and_never_from_the_gateway_mask():
+    """The guarantee this test has always made, now that there is a legitimate
+    source for the answer.
+
+    The SVI's mask describes the GATEWAY'S INTERFACE, not the VLAN's allocation,
+    and inferring one from the other is wrong in the direction that HIDES HOSTS:
+    VLAN 30 carries 10.30.0.0/16 while its SVI reads 10.30.0.1/24, so a subnet
+    taken off the mask would put app-server-07 (10.30.7.7) outside the VLAN it is
+    actually on — and "where does this finding live" is the question the segment
+    lane exists to answer.
+
+    `/dna/intent/api/v1/global-pool` is Catalyst Center's own IP pool inventory
+    and is where the real answer lives. So the subnet is now populated, and the
+    assertion is that it came from THERE: it must equal the pool's cidr and must
+    NOT equal the /24 the mask would have produced.
+    """
     res = normalize_catalyst(_catalyst())
     vlan30 = next(v for v in res.vlans if v.vlan_id == 30)
 
-    assert vlan30.gateways == ["10.30.0.1"], "the gateway IS observed"
-    assert vlan30.subnets == [], "its mask is not the VLAN's allocation"
+    assert "10.30.0.1" in vlan30.gateways, "the gateway IS observed"
+    assert vlan30.subnets == ["10.30.0.0/16"], "the pool's allocation, not the SVI's mask"
+    assert "10.30.0.0/24" not in vlan30.subnets, "that is what the mask would have given"
+    # The whole point, stated as the containment the inventory actually performs.
+    assert ipaddress.ip_address("10.30.7.7") in ipaddress.ip_network(vlan30.subnets[0])
     assert ipaddress.ip_address("10.30.7.7") not in ipaddress.ip_network("10.30.0.0/24")
 
 
-def test_a_catalyst_vlan_has_no_name_because_the_endpoint_returns_none():
-    """`vlan-names` returns ids. The operator's word for VLAN 30 IS sitting in
-    the SVI's description ("SVI app-tier"), and scraping it out of a free-text
-    config field is how a normalizer starts reporting `no L3)` as the name of a
-    VLAN."""
+def test_a_vlan_with_no_pool_entry_still_carries_no_invented_subnet():
+    """Remove the pool endpoint and the VLANs come back WITHOUT subnets rather
+    than falling back to the mask. Absent is the correct answer; the fallback is
+    the bug this file has always been about."""
+    raw = _catalyst()
+    del raw[DNA_GLOBAL_POOL]
+
+    res = normalize_catalyst(raw)
+
+    assert all(v.subnets == [] for v in res.vlans)
+    assert all(v.name is None for v in res.vlans)
+    # ...and the gateways, which ARE observed, still arrive.
+    assert next(v for v in res.vlans if v.vlan_id == 30).gateways == ["10.30.0.1"]
+
+
+def test_a_vlan_name_comes_from_the_pool_and_never_from_an_svi_description():
+    """`vlan-names` returns ids. The operator's word for VLAN 30 is ALSO sitting
+    in the SVI's free-text description ("SVI app-tier"), and scraping it out of
+    there is how a normalizer starts reporting `no L3)` as the name of a VLAN.
+
+    The pool's `ipPoolName` is a structured field and is the right source."""
     raw = _catalyst()
     assert raw[DNA_VLAN_NAMES]["response"] == ["10", "20", "30", "40", "50", "60", "70"]
 
     res = normalize_catalyst(raw)
-    assert all(v.name is None for v in res.vlans)
+
     assert {v.vlan_id for v in res.vlans} == {10, 20, 30, 40, 50, 60, 70}
+    assert next(v for v in res.vlans if v.vlan_id == 30).name == "app-tier"
+    # No VLAN is named after a fragment of an interface description.
+    assert all("no L3" not in (v.name or "") for v in res.vlans)
 
 
 # ── Refusals: a guessed fact is worse than a named failure ─────────────────

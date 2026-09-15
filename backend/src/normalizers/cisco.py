@@ -32,6 +32,7 @@ import ipaddress
 from typing import Any, Optional
 
 from ..connectors.cisco import (
+    DNA_GLOBAL_POOL,
     CATALYST_TOOL, DNA_DEVICES, DNA_INTERFACES, DNA_PHYSICAL_TOPOLOGY,
     DNA_VLAN_NAMES, MERAKI_APPLIANCE_VLANS, MERAKI_DEVICES, MERAKI_TOOL,
     MERAKI_UPLINK_ADDRESSES,
@@ -471,7 +472,16 @@ def normalize_catalyst(raw: dict) -> NormalizeResult:
             provenance=_prov(CATALYST_TOOL, raw_ref),
         ))
 
-    out.vlans.extend(_catalyst_vlans(vlan_names, out.interfaces))
+    # Optional by design: an older Catalyst Center, or one whose pools an
+    # operator never reserved, simply does not carry this endpoint. Absent is a
+    # coverage gap -- the VLAN column goes empty and the inventory says so --
+    # rather than a failure. An endpoint that IS present and unreadable is still
+    # refused by `_rows`, which is the distinction that matters.
+    _pool_block = raw.get(DNA_GLOBAL_POOL)
+    _pool_rows = ([] if _pool_block is None
+                  else _rows(_dna_response(raw, DNA_GLOBAL_POOL),
+                             tool=CATALYST_TOOL, what=f"{DNA_GLOBAL_POOL} response"))
+    out.vlans.extend(_catalyst_vlans(vlan_names, out.interfaces, _pool_rows))
     # Sorted on the way out rather than relying on the export's order: the
     # snapshot fingerprint is an equality check over these rows, so a console
     # that paginated differently between two reads would otherwise look like a
@@ -482,7 +492,8 @@ def normalize_catalyst(raw: dict) -> NormalizeResult:
     return out
 
 
-def _catalyst_vlans(vlan_names: list, interfaces: list[NetInterface]) -> list[Vlan]:
+def _catalyst_vlans(vlan_names: list, interfaces: list[NetInterface],
+                    pool_rows: list) -> list[Vlan]:
     """VLANs, from `vlan-names` UNIONED with the VLANs the interfaces carry.
 
     Unioned rather than intersected. A VLAN an interface carries that
@@ -523,6 +534,23 @@ def _catalyst_vlans(vlan_names: list, interfaces: list[NetInterface]) -> list[Vl
         if iface.vlan_id is not None:
             observed.setdefault(iface.vlan_id, str(iface.vlan_id))
 
+    # The IP pool inventory, keyed by VLAN. This is where a VLAN's SUBNET and
+    # human NAME come from: `vlan-names` carries ids and nothing else, so without
+    # it every "which VLAN is this host in" answer in the product is empty.
+    #
+    # NOT back-formed from the SVI mask, which is the available shortcut and is
+    # wrong: VLAN 30's gateway reads 10.30.0.1/24 while the VLAN carries
+    # 10.30.0.0/16, so a host at 10.30.7.7 would be placed outside its own VLAN.
+    pools: dict[int, dict] = {}
+    # Optional by design: an older Catalyst Center, or one whose pools an
+    # operator never reserved, simply does not carry it. Absent is a coverage
+    # gap (the VLAN column goes empty and says so), not a failure -- unlike an
+    # endpoint that IS present and unreadable, which `_rows` still refuses.
+    for row in pool_rows:
+        vid = _vlan_of(row.get("vlanId"))
+        if vid is not None:
+            pools[vid] = row
+
     vlans: list[Vlan] = []
     for vlan_id in sorted(observed):
         on = [i for i in interfaces if i.vlan_id == vlan_id]
@@ -530,11 +558,18 @@ def _catalyst_vlans(vlan_names: list, interfaces: list[NetInterface]) -> list[Vl
             str(ipaddress.ip_interface(address).ip)
             for iface in on for address in iface.addresses
         })
+        pool = pools.get(vlan_id, {})
+        cidr = pool.get("ipPoolCidr")
         vlans.append(Vlan(
             vlan_id=vlan_id,
-            name=None,
-            subnets=[],
-            gateways=gateways,
+            # None when no pool declares one -- the id is not a name, and
+            # rendering "VLAN 30" as though someone had called it that is a small
+            # invention that reads exactly like an observation.
+            name=pool.get("ipPoolName") or None,
+            subnets=[cidr] if cidr else [],
+            # Pool gateways where declared, SVI addresses otherwise. Both are
+            # observations; the pool's is the authoritative one.
+            gateways=sorted({*(g for g in pool.get("gateways", ()) if g), *gateways}),
             device_keys=sorted({i.device_key for i in on}),
             provenance=_prov(CATALYST_TOOL, observed[vlan_id]),
         ))

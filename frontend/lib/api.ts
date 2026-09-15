@@ -2,9 +2,14 @@ import type {
   ActionItem, AdminMetrics, AiActiveConfig, AiConfigResponse, AiConfigSave, AiTestResult,
   AnalysisCompleteness, AskResult,
   AzureAiAccount, AzureDeployment, AzureDiscovery, AzureResourceGroup, AzureSubscription, CampaignPlan,
-  CampaignSubmitResult, ChangeResult, Finding, GraphData, Health, MergeSuggestion, Remediation,
-  RemediationRevision, StagedChange, ToolInfo,
+  CampaignSubmitResult, ChangeResult, Finding, GraphData, Health, IpLookupResponse, MergeSuggestion, Remediation,
+  InventoryResponse, RemediationRevision, SourceCard, StagedChange, ToolInfo,
 } from "./types";
+
+// The topology canvas's two reads. A second import statement rather than five
+// more names in the block above, so this addition cannot collide with an edit
+// to the original list.
+import type { AnalysisState, ResilienceResponse, TopologyResponse } from "./types";
 
 /**
  * A failed API call, carrying the two facts a UI needs in order to tell the
@@ -563,6 +568,91 @@ const post = (body?: unknown): RequestInit =>
 
 const qs = (snap?: string) => (snap ? `?snapshot=${encodeURIComponent(snap)}` : "");
 
+/**
+ * How `/api/inventory`'s `ip` filter is interpreted. This is SET ARITHMETIC over
+ * address blocks, not a substring match, and the four members are four different
+ * questions — which is why the mode travels on the wire beside the address
+ * instead of being a default the user cannot see:
+ *
+ *   intersects    — any overlap at all between the entity's addresses and the
+ *                   block asked about. The forgiving one, and the default.
+ *   contains      — entities whose own block CONTAINS what was typed (the
+ *                   supernet: "which subnet is this host in?").
+ *   contained_by  — entities whose addresses fall INSIDE what was typed
+ *                   ("10.30.0.0/16" -> every host in it).
+ *   exact         — the address or block exactly as written, and nothing else.
+ */
+export type IpFilterMode = "intersects" | "contains" | "contained_by" | "exact";
+
+/** The inventory screen's filter state, as query params. Every field is
+ *  server-side on purpose: the table is paged, so a filter applied in the
+ *  browser would narrow one page and report its `total` as the estate's. */
+export interface InventoryQuery {
+  snapshot?: string;
+  /** Free text over name / address / tag. */
+  q?: string;
+  /** An address or CIDR block, read under `ip_mode`. */
+  ip?: string;
+  ip_mode?: IpFilterMode;
+  /** One source tool key, as `facets.sources` spells it. */
+  source?: string;
+  /** Facet selections, passed as repeated params. The values are echoed back
+   *  from `facets` verbatim — they are the backend's spelling, not ours. */
+  kind?: string[];
+  vlan?: string[];
+  zone?: string[];
+  limit?: number;
+  offset?: number;
+}
+
+const inventoryQs = (p: InventoryQuery): string => {
+  const u = new URLSearchParams();
+  const put = (k: string, v: string | number | undefined) => {
+    if (v !== undefined && v !== "") u.append(k, String(v));
+  };
+  put("snapshot", p.snapshot);
+  put("q", p.q?.trim() || undefined);
+  // `ip` and `ip_mode` are sent as a pair or not at all: an address with no mode
+  // beside it is a containment question with an invisible answer.
+  if (p.ip?.trim()) {
+    u.append("ip", p.ip.trim());
+    u.append("ip_mode", p.ip_mode ?? "intersects");
+  }
+  put("source", p.source);
+  for (const v of p.kind ?? []) put("kind", v);
+  for (const v of p.vlan ?? []) put("vlan", v);
+  for (const v of p.zone ?? []) put("zone", v);
+  put("limit", p.limit);
+  put("offset", p.offset);
+  const s = u.toString();
+  return s ? `?${s}` : "";
+};
+
+/**
+ * `GET /api/topology` — the lanes, outside-in, and the links between them.
+ *
+ * Two fields on it are the whole reason the canvas can be trusted, and a caller
+ * that reads past either is drawing a picture that claims more than the payload
+ * does. `TopoLane.observed: false` means NOTHING was seen at that layer: the
+ * lane renders as a named absence carrying its reason and the console API that
+ * would fill it, never as a faded device. `caps` says what this response left
+ * out — it is present from the first commit rather than added when payloads
+ * grew, because silent truncation reads as "covered everything".
+ */
+export type TopologyPayload = TopologyResponse & AnalysisState & Provenance;
+
+/**
+ * `GET /api/resilience` — single points of failure, and what each one takes
+ * with it.
+ *
+ * `analysed: false` is the field that stops an empty `findings` from reading as
+ * a clean bill of health, and `blast_radius` is measured by the engine over the
+ * whole adjacency. The canvas ANIMATES the blast radius; it never recomputes
+ * one in the browser, because a number derived from the lanes that happen to be
+ * on screen would disagree with the report for a reason nobody could find.
+ */
+export type ResiliencePayload = ResilienceResponse & Provenance;
+
 export const api = {
   health: readHealth,
   recompute: () => j<{ ok: boolean; summary: Record<string, any> }>("/api/recompute", post()),
@@ -654,4 +744,64 @@ export const api = {
       )}`,
       "deployments",
     ),
+
+  // ── The infrastructure layer ─────────────────────────────────────────
+  /**
+   * Every source this deployment collects from, as cards.
+   *
+   * Read by the address drawer for one reason beyond the Connectors screen:
+   * `simulated` and `tier`. A tool badge that does not say a source is a seeded
+   * export is a badge that implies a live connector, and this build's exports
+   * are all seeded. A caller that cannot load this map must therefore render
+   * provenance as UNKNOWN rather than falling back to the flattering reading.
+   */
+  sources: (snap?: string) => j<{ sources: SourceCard[] }>(`/api/sources${qs(snap)}`),
+
+  /**
+   * Everything one address is involved in — what holds it, which rules reach it,
+   * which findings name it, and whether an allow path from the internet exists.
+   *
+   * `mode` is the inventory filter's containment vocabulary
+   * (`intersects` | `exact` | `contains` | `contained_by`) and is sent
+   * explicitly on every call: the group the drawer exists to show — rules that
+   * COVER this address without naming it — only appears under a mode that looks
+   * outward from the query, so which mode ran has to be a stated fact on both
+   * the request and the rendered answer, never a default nobody can see.
+   */
+  ipLookup: (address: string, mode: string, snap?: string) =>
+    j<IpLookupResponse>(
+      `/api/ip${joinQ(
+        `address=${encodeURIComponent(address)}`,
+        `mode=${encodeURIComponent(mode)}`,
+        snap ? `snapshot=${encodeURIComponent(snap)}` : undefined,
+      )}`,
+    ),
+
+  /**
+   * ONE PAGE of the estate inventory, plus the estate's own counts and the
+   * facet counts the filters are drawn from.
+   *
+   * THREE THINGS ON THE PAYLOAD ARE NOT INTERCHANGEABLE and a caller that
+   * collapses them is back to the empty-vs-failed lie in a new place:
+   *
+   *   `counts`  is the ESTATE readout ("I have these many subnets"), and a
+   *             member of it is `number | null` — `null` meaning no onboarded
+   *             source declares that figure. It renders as an em-dash, never 0.
+   *   `total`   is how many entities match the CURRENT filter, which is not the
+   *             number of rows in `items`: `items` is one `limit`-sized window.
+   *   `has_more`says this page is not the whole match set. A table that hides it
+   *             reads as a complete one.
+   *
+   * Filtering is entirely server-side (see `InventoryQuery`) so `total` and the
+   * rows on screen are answers to the same question.
+   */
+  inventory: (params: InventoryQuery = {}) =>
+    j<InventoryResponse>(`/api/inventory${inventoryQs(params)}`),
+
+  /** The reconstructed topology the canvas draws: lanes, links, VLANs, counts,
+   *  the unlinked devices nothing reported a cable for, and the caps. */
+  topology: (snap?: string) => j<TopologyPayload>(`/api/topology${qs(snap)}`),
+
+  /** Single points of failure, with the blast radius behind each one. */
+  resilience: (snap?: string) => j<ResiliencePayload>(`/api/resilience${qs(snap)}`),
 };

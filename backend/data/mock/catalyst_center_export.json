@@ -799,6 +799,87 @@
       }
     ]
   },
+  "/dna/intent/api/v1/global-pool": {
+    "response": [
+      {
+        "id": "pool-10",
+        "ipPoolName": "mgmt",
+        "ipPoolCidr": "10.255.0.0/24",
+        "gateways": [
+          "10.255.0.1"
+        ],
+        "vlanId": 10,
+        "dhcpServerIps": [],
+        "dnsServerIps": []
+      },
+      {
+        "id": "pool-20",
+        "ipPoolName": "dmz",
+        "ipPoolCidr": "10.20.0.0/24",
+        "gateways": [
+          "10.20.0.1"
+        ],
+        "vlanId": 20,
+        "dhcpServerIps": [],
+        "dnsServerIps": []
+      },
+      {
+        "id": "pool-30",
+        "ipPoolName": "app-tier",
+        "ipPoolCidr": "10.30.0.0/16",
+        "gateways": [
+          "10.30.0.1"
+        ],
+        "vlanId": 30,
+        "dhcpServerIps": [],
+        "dnsServerIps": []
+      },
+      {
+        "id": "pool-40",
+        "ipPoolName": "internal-app",
+        "ipPoolCidr": "10.40.0.0/16",
+        "gateways": [
+          "10.40.0.1"
+        ],
+        "vlanId": 40,
+        "dhcpServerIps": [],
+        "dnsServerIps": []
+      },
+      {
+        "id": "pool-50",
+        "ipPoolName": "db-tier",
+        "ipPoolCidr": "10.50.0.0/24",
+        "gateways": [
+          "10.50.0.1"
+        ],
+        "vlanId": 50,
+        "dhcpServerIps": [],
+        "dnsServerIps": []
+      },
+      {
+        "id": "pool-60",
+        "ipPoolName": "dev",
+        "ipPoolCidr": "10.31.0.0/24",
+        "gateways": [
+          "10.31.0.1"
+        ],
+        "vlanId": 60,
+        "dhcpServerIps": [],
+        "dnsServerIps": []
+      },
+      {
+        "id": "pool-70",
+        "ipPoolName": "users",
+        "ipPoolCidr": "10.60.0.0/24",
+        "gateways": [
+          "10.60.0.1"
+        ],
+        "vlanId": 70,
+        "dhcpServerIps": [],
+        "dnsServerIps": []
+      }
+    ]
+  },
   "/dna/intent/api/v1/topology/physical-topology": {
     "response": {
       "nodes": [
