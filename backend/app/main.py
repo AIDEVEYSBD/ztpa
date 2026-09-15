@@ -1032,7 +1032,26 @@ def _graph_payload(nodes: list[dict], edges: list[dict], cross_rows: list[dict])
     rows and the in-memory projection are shaped by the same code, not by two
     copies that can disagree about what an edge is."""
     for n in nodes:
-        n["zone"] = zone_of(n["node_id"], n.get("tags") or [])
+        # FOUR arguments, not two. `zone_of` grew `cidrs` and `kind` precisely so
+        # that a NAMED object classifies like the address space it dereferences
+        # to -- and this call site kept the old 2-argument form, so the console
+        # re-derived a different zone than the engine scored with.
+        #
+        # Measured: `ANY-EXTERNAL` (ip_set ["0.0.0.0/0"]) came back "internal"
+        # here while `graph.build` filed it "internet". The boundary multiplier
+        # the severity used was 1.5; the zone the screen printed implied 1.0. A
+        # user reading the map saw an internal-to-internal grant sitting on a
+        # finding scored as an internet ingress, with no way to tell which was
+        # right. Named objects are how real AlgoSec / Palo Alto / Check Point
+        # policies overwhelmingly express `any`, so this was the common case.
+        #
+        # `graph_nodes.kind` is the DB vocabulary (internet | subnet | asset),
+        # which is `node_db_kind`'s output, so it is mapped back onto the
+        # concrete/abstract axis `zone_of` reads. "internet" maps to abstract
+        # because it denotes address space rather than being a host.
+        db_kind = n.get("kind")
+        n["zone"] = zone_of(n["node_id"], n.get("tags") or [], n.get("ip_set") or [],
+                            "concrete" if db_kind == "asset" else "abstract")
     grouped: dict[tuple, dict] = {}
     for ed in edges:
         key = (ed["src_node"], ed["dst_node"])
