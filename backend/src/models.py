@@ -42,8 +42,8 @@ Tag = str  # e.g. "pci", "customer-data", "crown-jewel", "prod", "dev", "dmz"
 # unrecognised tool renders as a custom source with the narrowest assumed
 # scope, never as a tool it is not.
 SourceTool = Literal[
-    "algosec", "catalyst_center", "fortigate", "fortimanager", "guardicore",
-    "junos_space", "meraki", "panorama", "sd_lan", "sd_wan", "wiz",
+    "algosec", "carrier_portal", "catalyst_center", "fortigate", "fortimanager",
+    "guardicore", "junos_space", "meraki", "panorama", "sd_lan", "sd_wan", "wiz",
 ]
 FindingType = Literal[
     "over_permissive", "cidr_overlap", "shadowed_rule", "cross_tool_path", "transport_exposure",

@@ -14,7 +14,9 @@ from dataclasses import dataclass, field
 from typing import Optional, Union
 
 from ..config import APP_BY_PORT, APP_TRANSPORT, L7_APPS
-from ..models import PolicyRecord
+from ..models import (
+    Circuit, NetDevice, NetInterface, NetLink, PolicyRecord, Subnet, Vlan,
+)
 from ..netaddr import ANY_V4, is_any, parse_net
 
 # The internet node key and the /0 network are the SAME string by construction,
@@ -90,14 +92,46 @@ class ResolvedObject:
 
 @dataclass
 class NormalizeResult:
+    """Everything one export yielded, in the engine's own vocabulary.
+
+    The first three fields are POLICY: grants, the nodes they name, and the
+    object-dereferencing audit trail. The six that follow are INFRASTRUCTURE:
+    the network those grants run on.
+
+    They travel together because they come from one read of one console -- a
+    FortiManager export carries both its policy package and its managed-device
+    list -- and they are kept as separate fields, rather than folded into the
+    entity list, because they are consumed by two different graphs that must
+    never merge. `src.graph` reads `records` and `entities`. `src.topology`
+    reads the six below. A cable is not a grant, and `verify_engine` asserts
+    `cross_tool_paths` is byte-identical with and without any of them.
+
+    A normalizer populating none of the infrastructure fields is not degraded:
+    Guardicore genuinely has no view of a switch. What would be degraded is a
+    normalizer inventing one.
+    """
+
     records: list[PolicyRecord] = field(default_factory=list)
     entities: list[ObservedEntity] = field(default_factory=list)
     resolved: list[ResolvedObject] = field(default_factory=list)
+    # --- infrastructure (see models.py "THE INFRASTRUCTURE LAYER") ---
+    devices: list[NetDevice] = field(default_factory=list)
+    interfaces: list[NetInterface] = field(default_factory=list)
+    links: list[NetLink] = field(default_factory=list)
+    vlans: list[Vlan] = field(default_factory=list)
+    subnets: list[Subnet] = field(default_factory=list)
+    circuits: list[Circuit] = field(default_factory=list)
 
     def extend(self, other: "NormalizeResult") -> None:
         self.records.extend(other.records)
         self.entities.extend(other.entities)
         self.resolved.extend(other.resolved)
+        self.devices.extend(other.devices)
+        self.interfaces.extend(other.interfaces)
+        self.links.extend(other.links)
+        self.vlans.extend(other.vlans)
+        self.subnets.extend(other.subnets)
+        self.circuits.extend(other.circuits)
 
 
 # ---------------------------------------------------------------------------

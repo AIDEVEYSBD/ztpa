@@ -218,6 +218,26 @@ REGISTRY: tuple[SourceSpec, ...] = (
         aliases=("fortitelemetry", "security_fabric"),
     ),
 
+    SourceSpec(
+        key="carrier_portal", label="Carrier / ISP portal", vendor="(carrier)",
+        tier="device",
+        api="per-carrier; often no API at all (Airtel, BSNL and most regional "
+            "carriers expose a web portal only). Circuit ID, technology, "
+            "assigned public block and CPE model are usually obtainable from "
+            "the service order rather than from a machine interface.",
+        auth="portal credentials, per circuit",
+        describes_hosts=False,
+        yields=("WAN circuits", "carrier and technology", "assigned public IP blocks",
+                "the CPE / modem terminating each circuit", "circuit state"),
+        blind_to=("anything on the customer side of the demarc",),
+        device="carrier-portal",
+        notes="The only source that sees the MODEM layer at all. Nothing else in "
+              "this registry can tell you that two diverse-looking circuits are "
+              "sold by one carrier -- which is the difference between redundancy "
+              "and a correlated failure wearing its costume.",
+        aliases=("isp_portal", "demarc"),
+    ),
+
     # ── Fabric / link-describing ───────────────────────────────────────────
     SourceSpec(
         key="sd_wan", label="SD-WAN fabric", vendor="(vendor-neutral)", tier="management_console",
