@@ -25,3 +25,4 @@ backend/data/scratch/
 
 # Agent worktrees / local tooling scratch
 .claude/
+.env.before-local-demo
