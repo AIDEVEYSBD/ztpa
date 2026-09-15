@@ -41,7 +41,10 @@ function KV({ k, v, mono = true }: { k: string; v: string; mono?: boolean }) {
 
 export interface FindingSidebarProps {
   items: WalkFinding[];
-  index: number;
+  /** `null` = the canvas is open with nothing selected, which is a real state:
+   *  fullscreen is also just a bigger canvas. Nothing is dimmed until a finding
+   *  is chosen, and the counter says so rather than implying item 1 is live. */
+  index: number | null;
   onIndex: (i: number) => void;
   collapsed: boolean;
   onToggleCollapsed: () => void;
@@ -54,6 +57,10 @@ export interface FindingSidebarProps {
   blastBasis?: string;
   /** How many isolated devices the staged replay has revealed so far. */
   isolatedShown: number;
+  /** How many of the finding's devices are actually drawn on the canvas. Zero
+   *  is a real answer — a capped response, or a finding about something in no
+   *  lane — and it is said rather than left as a canvas that lights nothing. */
+  involvedOnCanvas: number;
   replayDone: boolean;
   onReplay: () => void;
   nameFor: (key: string) => string;
@@ -64,8 +71,43 @@ export interface FindingSidebarProps {
   snapshot?: string;
 }
 
+function AllFindings({ items, index, onIndex }: { items: WalkFinding[]; index: number | null; onIndex: (i: number) => void }) {
+  return (
+    <Section title={`All findings (${items.length})`}>
+      <ul className="-mx-1">
+        {items.map((f, i) => (
+          <li key={f.id}>
+            <button
+              type="button"
+              onClick={() => onIndex(i)}
+              className={cn("row flex w-full items-start gap-2 px-1 py-1.5 text-left", i === index && "bg-surfaceHover")}
+              aria-current={i === index}
+            >
+              <span className="mono w-5 shrink-0 pt-px text-[10px] tabular-nums text-text3">{i + 1}</span>
+              <span
+                aria-hidden
+                className={cn(
+                  "mt-1 h-2 w-2 shrink-0",
+                  f.band === "critical" && "bg-sev-critical",
+                  f.band === "high" && "bg-sev-high",
+                  f.band === "medium" && "bg-sev-medium",
+                  f.band === "low" && "bg-sev-low",
+                )}
+              />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[11.5px] font-bold text-text2">{f.title}</span>
+                <span className="mono block truncate text-[10px] text-text3">{f.type}</span>
+              </span>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </Section>
+  );
+}
+
 export function FindingSidebar(p: FindingSidebarProps) {
-  const item = p.items[p.index];
+  const item = p.index == null ? undefined : p.items[p.index];
 
   if (p.collapsed) {
     return (
@@ -80,7 +122,11 @@ export function FindingSidebar(p: FindingSidebarProps) {
           <PanelRightOpen size={14} />
         </button>
         <div className="mono rotate-180 text-[10px] tabular-nums text-text3" style={{ writingMode: "vertical-rl" }}>
-          {p.items.length > 0 ? `${p.index + 1} of ${p.items.length}` : "no findings"}
+          {p.items.length === 0
+            ? "no findings"
+            : p.index == null
+              ? `${p.items.length} findings`
+              : `${p.index + 1} of ${p.items.length}`}
         </div>
       </aside>
     );
@@ -91,12 +137,16 @@ export function FindingSidebar(p: FindingSidebarProps) {
       <header className="sticky top-0 z-10 flex shrink-0 items-center gap-1.5 border-b border-border bg-surface px-3 py-2">
         <span className="eyebrow">Findings</span>
         <span className="mono ml-auto text-[11px] tabular-nums text-text2">
-          {p.items.length > 0 ? `${p.index + 1} of ${p.items.length}` : "0"}
+          {p.items.length === 0
+            ? "0"
+            : p.index == null
+              ? `${p.items.length} findings`
+              : `${p.index + 1} of ${p.items.length}`}
         </span>
         <button
           type="button"
-          onClick={() => p.onIndex(p.index - 1)}
-          disabled={p.items.length === 0 || p.index <= 0}
+          onClick={() => p.onIndex((p.index ?? 0) - 1)}
+          disabled={p.items.length === 0 || p.index == null || p.index <= 0}
           className="btn-ghost !h-7 !w-7 !px-0"
           aria-label="Previous finding"
           title="Previous finding (left arrow)"
@@ -105,8 +155,8 @@ export function FindingSidebar(p: FindingSidebarProps) {
         </button>
         <button
           type="button"
-          onClick={() => p.onIndex(p.index + 1)}
-          disabled={p.items.length === 0 || p.index >= p.items.length - 1}
+          onClick={() => p.onIndex(p.index == null ? 0 : p.index + 1)}
+          disabled={p.items.length === 0 || (p.index != null && p.index >= p.items.length - 1)}
           className="btn-ghost !h-7 !w-7 !px-0"
           aria-label="Next finding"
           title="Next finding (right arrow)"
@@ -150,7 +200,15 @@ export function FindingSidebar(p: FindingSidebarProps) {
             <> {p.skippedPolicy} policy finding{p.skippedPolicy === 1 ? "" : "s"} in this snapshot name nothing here; they are on the Risk To-Do screen.</>
           ) : null}
         </div>
-      ) : item ? (
+      ) : item == null ? (
+        <>
+          <div className="px-3.5 py-3 text-[12px] leading-relaxed text-text2">
+            {p.items.length} finding{p.items.length === 1 ? "" : "s"} name a device on this canvas. Pick one — or press
+            the right arrow — and everything not involved dims while the path is traced hop by hop.
+          </div>
+          <AllFindings items={p.items} index={p.index} onIndex={p.onIndex} />
+        </>
+      ) : (
         <>
           <div className="px-3.5 py-3">
             <div className="flex flex-wrap items-center gap-1.5">
@@ -161,6 +219,13 @@ export function FindingSidebar(p: FindingSidebarProps) {
               <span className="mono text-[10.5px] text-text3">{item.type}</span>
             </div>
             <h3 className="mt-2 text-[14px] font-bold leading-snug">{item.title}</h3>
+            {p.involvedOnCanvas === 0 ? (
+              <p className="mt-1.5 border border-sev-medium-line bg-sev-medium-bg px-2 py-1.5 text-[11px] leading-snug text-text2">
+                None of the {item.involved.length} device{item.involved.length === 1 ? "" : "s"} this finding names is
+                drawn on the canvas, so nothing is highlighted for it. That is a gap in what this topology response
+                covers — check the cap notice above — not a finding without a subject.
+              </p>
+            ) : null}
           </div>
 
           <Section title="What the problem is">
@@ -275,39 +340,7 @@ export function FindingSidebar(p: FindingSidebarProps) {
             )}
           </Section>
 
-          <Section title={`All findings (${p.items.length})`}>
-            <ul className="-mx-1">
-              {p.items.map((f, i) => (
-                <li key={f.id}>
-                  <button
-                    type="button"
-                    onClick={() => p.onIndex(i)}
-                    className={cn(
-                      "row flex w-full items-start gap-2 px-1 py-1.5 text-left",
-                      i === p.index && "bg-surfaceHover",
-                    )}
-                    aria-current={i === p.index}
-                  >
-                    <span className="mono w-5 shrink-0 pt-px text-[10px] tabular-nums text-text3">{i + 1}</span>
-                    <span
-                      aria-hidden
-                      className={cn(
-                        "mt-1 h-2 w-2 shrink-0",
-                        f.band === "critical" && "bg-sev-critical",
-                        f.band === "high" && "bg-sev-high",
-                        f.band === "medium" && "bg-sev-medium",
-                        f.band === "low" && "bg-sev-low",
-                      )}
-                    />
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-[11.5px] font-bold text-text2">{f.title}</span>
-                      <span className="mono block truncate text-[10px] text-text3">{f.type}</span>
-                    </span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </Section>
+          <AllFindings items={p.items} index={p.index} onIndex={p.onIndex} />
 
           {p.skippedPolicy > 0 ? (
             <div className="flex items-start gap-1.5 px-3.5 py-3 text-[11px] leading-snug text-text3">
@@ -317,7 +350,7 @@ export function FindingSidebar(p: FindingSidebarProps) {
             </div>
           ) : null}
         </>
-      ) : null}
+      )}
     </aside>
   );
 }

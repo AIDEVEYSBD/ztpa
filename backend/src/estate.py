@@ -140,11 +140,25 @@ class Estate:
     circuits: list[CircuitSpec] = field(default_factory=list)
     links: list[LinkSpec] = field(default_factory=list)
 
+    #: Lazily-built device -> interfaces index. Not a micro-optimisation: five
+    #: connectors call `interfaces_of` once per device, so the linear scan this
+    #: replaces made projection O(devices x interfaces). Measured with
+    #: `bench_topology.py`: 1.6 ms at 13 devices and 592 ms at 1,013 -- a 78x
+    #: estate costing 370x the time, which is the signature of an accidental
+    #: quadratic and would have been 15 s at 5,000 devices.
+    _iface_index: dict[str, list[IfaceSpec]] | None = field(default=None, repr=False,
+                                                            compare=False)
+
     def devices_seen_by(self, tool: str) -> list[DeviceSpec]:
         return [d for d in self.devices if tool in d.seen_by]
 
     def interfaces_of(self, device: str) -> list[IfaceSpec]:
-        return [i for i in self.interfaces if i.device == device]
+        if self._iface_index is None:
+            index: dict[str, list[IfaceSpec]] = {}
+            for iface in self.interfaces:
+                index.setdefault(iface.device, []).append(iface)
+            self._iface_index = index
+        return self._iface_index.get(device, [])
 
 
 # ── The estate ─────────────────────────────────────────────────────────────
@@ -284,18 +298,23 @@ def _build_links() -> list[LinkSpec]:
     return links
 
 
-def _build_interfaces() -> list[IfaceSpec]:
+def _build_interfaces(links: list[LinkSpec] | None = None,
+                      vlans: list[VlanSpec] | None = None,
+                      devices: list[DeviceSpec] | None = None) -> list[IfaceSpec]:
     """Every port, SVI and WAN interface, derived from the links and VLANs.
 
     Derived rather than listed so an interface cannot exist without a cable or a
     VLAN behind it -- the same discipline the reconstruction engine applies to
     the output, applied to the fixture that feeds it.
     """
+    links = _build_links() if links is None else links
+    vlans = _VLANS if vlans is None else vlans
+    devices = _DEVICES if devices is None else devices
     ifaces: list[IfaceSpec] = []
     by_device: dict[str, set[str]] = {}
 
     # Management interface on everything.
-    for d in _DEVICES:
+    for d in devices:
         ifaces.append(IfaceSpec(d.key, "mgmt", (f"{d.mgmt_ip}/24",), vlan_id=10,
                                 description="out-of-band management", admin_up=True))
         by_device.setdefault(d.key, set()).add("mgmt")
@@ -309,7 +328,7 @@ def _build_interfaces() -> list[IfaceSpec]:
         by_device[c.device].add(c.interface)
 
     # Both ends of every cable, addressed when the link is routed.
-    for ln in _build_links():
+    for ln in links:
         a_addr = b_addr = ()
         if ln.transit:
             net = ln.transit.split("/")[0].rsplit(".", 1)
@@ -334,8 +353,8 @@ def _build_interfaces() -> list[IfaceSpec]:
     # distinction the whole "unless this switch is L3, you can't do routes" ask
     # turns on, and it is the signal the reconstruction engine reads to tell a
     # core switch from an access switch without looking at either one's name.
-    l3 = {d.key for d in _DEVICES if d.role == "l3_switch"}
-    for v in _VLANS:
+    l3 = {d.key for d in devices if d.role in ("l3_switch", "router")}
+    for v in vlans:
         for dev in v.on_devices:
             if dev in l3:
                 ifaces.append(IfaceSpec(dev, f"Vlan{v.vlan_id}", (f"{v.gateway}/24",),
@@ -348,15 +367,75 @@ def _build_interfaces() -> list[IfaceSpec]:
     return ifaces
 
 
-def build() -> Estate:
-    """The estate. Deterministic: no clock, no randomness, stable ordering."""
-    return Estate(
-        devices=list(_DEVICES),
-        interfaces=_build_interfaces(),
-        vlans=list(_VLANS),
-        circuits=list(_CIRCUITS),
-        links=_build_links(),
-    )
+def _branch(n: int) -> tuple[list[DeviceSpec], list[VlanSpec], list[LinkSpec]]:
+    """One branch site: a router, two access switches, an AP, and its own VLAN.
+
+    Shaped like the HQ rather than like filler, because the point of the scale
+    dataset is to answer "how long does this take on a real network" and a
+    thousand disconnected nodes would answer a different question. Each branch
+    dual-homes its router to BOTH core switches, so the graph stays 2-connected
+    and the resilience analyzer has to do real work rather than finding a
+    thousand trivial bridges.
+
+    Addresses come from 10.128.0.0/9, which no HQ VLAN uses, so growing the
+    estate cannot collide with the assets the policy engine already knows.
+    """
+    base = 128 + (n // 250)
+    third = n % 250
+    rtr = f"br{n:04d}-rtr-01"
+    devices = [
+        DeviceSpec(rtr, rtr, "router", "Cisco", "ISR1111", "IOS-XE 17.9.4",
+                   f"10.255.{1 + n // 250}.{third}", site=f"branch-{n:04d}",
+                   seen_by=("catalyst_center",)),
+    ]
+    links = [
+        LinkSpec(core, f"Gi1/1/{n % 48}", rtr, f"Gi0/0/{i}",
+                 redundant_group=f"uplink-{rtr}")
+        for i, core in enumerate(("csw-core-01", "csw-core-02"))
+    ]
+    for sw in (1, 2):
+        key = f"br{n:04d}-asw-{sw:02d}"
+        devices.append(DeviceSpec(
+            key, key, "l2_switch", "Cisco", "C9200-24T", "IOS-XE 17.9.4",
+            f"10.255.{1 + n // 250}.{third}", site=f"branch-{n:04d}",
+            seen_by=("catalyst_center",)))
+        links.append(LinkSpec(rtr, f"Gi0/1/{sw}", key, "Gi1/0/48"))
+    ap = f"br{n:04d}-ap-01"
+    devices.append(DeviceSpec(ap, ap, "wireless_ap", "Cisco Meraki", "MR46", "29.7.1",
+                              f"10.255.{1 + n // 250}.{third}",
+                              site=f"branch-{n:04d}", seen_by=("meraki",)))
+    links.append(LinkSpec(f"br{n:04d}-asw-01", "Gi1/0/24", ap, "wired0"))
+
+    vlan_id = 100 + (n % 3800)
+    vlans = [VlanSpec(vlan_id, f"branch-{n:04d}", f"10.{base}.{third}.0/24",
+                      f"10.{base}.{third}.1", (rtr, f"br{n:04d}-asw-01"), ("branch",))]
+    return devices, vlans, links
+
+
+def build(branches: int = 0) -> Estate:
+    """The estate. Deterministic: no clock, no randomness, stable ordering.
+
+    `branches` grows it by that many branch sites, each the same shape as the
+    HQ's access layer and each dual-homed to the core pair. Use it to measure
+    what the engine actually costs on a network of a given size -- see
+    `backend/scripts/bench_topology.py`.
+    """
+    devices = list(_DEVICES)
+    vlans = list(_VLANS)
+    links = _build_links()
+    for n in range(branches):
+        d, v, l = _branch(n)
+        devices.extend(d)
+        vlans.extend(v)
+        links.extend(l)
+    if branches:
+        # Interfaces are derived from the links and VLANs (see `_build_interfaces`),
+        # so the grown estate gets them on the same terms as the base one rather
+        # than through a second code path that could drift.
+        return Estate(devices=devices, interfaces=_build_interfaces(links, vlans, devices),
+                      vlans=vlans, circuits=list(_CIRCUITS), links=links)
+    return Estate(devices=devices, interfaces=_build_interfaces(),
+                  vlans=vlans, circuits=list(_CIRCUITS), links=links)
 
 
 #: Consoles that can see any of it, and what each one's view covers. Used by the

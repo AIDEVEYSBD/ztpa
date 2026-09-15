@@ -251,9 +251,14 @@ export function TopologyPanel({ snapshot, findings, findingsError }: TopologyPan
   }, [sel, layout]);
 
   const totalStages = anim?.total ?? 0;
+  // Keyed on the finding's ID rather than on `sel` itself: the parent re-renders
+  // with a fresh `findings` array on every console tick, which gives every item
+  // a new object identity, and an effect that depended on the object would
+  // restart the trace from hop one several times a second.
+  const selId = sel?.id;
 
   useEffect(() => {
-    if (!sel || !anim) { setStage(0); return; }
+    if (!selId || totalStages <= 0) { setStage(0); return; }
     // Reduced motion: no travelling dash and no staged fade — the same end
     // state, arrived at immediately, with the sidebar text unchanged.
     if (reduced || totalStages <= 1) { setStage(totalStages); return; }
@@ -266,7 +271,7 @@ export function TopologyPanel({ snapshot, findings, findingsError }: TopologyPan
     }, STAGE_MS);
     return () => window.clearInterval(id);
     // `replayNonce` restarts the same finding's animation on demand.
-  }, [sel, anim, totalStages, reduced, replayNonce]);
+  }, [selId, totalStages, reduced, replayNonce]);
 
   const isolatedShown = anim && anim.mode === "blast"
     ? (stage === 0 ? 0 : Math.min(anim.isolated.length, stage * anim.batch))
@@ -274,6 +279,11 @@ export function TopologyPanel({ snapshot, findings, findingsError }: TopologyPan
 
   const focus: FocusView | null = useMemo(() => {
     if (!anim) return null;
+    // A finding whose devices are all off this canvas must dim NOTHING. The
+    // alternative — an empty involved set fed to the dimmer — blanks the whole
+    // picture and reads as a rendering failure; the sidebar says so in words
+    // instead.
+    if (anim.nodes.size === 0 && !anim.failed) return null;
     if (anim.mode === "blast") {
       return {
         nodes: anim.nodes,
@@ -351,7 +361,6 @@ export function TopologyPanel({ snapshot, findings, findingsError }: TopologyPan
     window.addEventListener("keydown", onKey);
     const prev = document.body.style.overflow;
     document.body.style.overflow = "hidden";
-    fsRef.current?.focus();
     return () => {
       window.removeEventListener("keydown", onKey);
       document.body.style.overflow = prev;
@@ -359,22 +368,27 @@ export function TopologyPanel({ snapshot, findings, findingsError }: TopologyPan
   }, [fullscreen, closeFullscreen, step, walk.length]);
 
   // Selecting a finding that lives in a collapsed lane is pointless if the lane
-  // stays collapsed, so the lanes holding it are opened.
-  useEffect(() => {
-    if (!sel) return;
+  // stays collapsed, so the lanes holding it are opened. Reduced to a string so
+  // the effect fires when the ANSWER changes, not when its inputs are rebuilt.
+  const lanesToOpen = useMemo(() => {
+    if (!sel) return "";
     const needed = new Set<string>();
     for (const key of sel.involved) {
       const card = layout.cardFor.get(key);
       if (card?.startsWith("grp:")) needed.add(card.split(":")[1]);
     }
-    if (needed.size === 0) return;
+    return [...needed].sort().join(",");
+  }, [sel, layout]);
+
+  useEffect(() => {
+    if (!lanesToOpen) return;
     setExpanded((prev) => {
       const next = new Set(prev);
       let changed = false;
-      for (const layer of needed) if (!next.has(layer)) { next.add(layer); changed = true; }
+      for (const layer of lanesToOpen.split(",")) if (!next.has(layer)) { next.add(layer); changed = true; }
       return changed ? next : prev;
     });
-  }, [sel, layout]);
+  }, [lanesToOpen]);
 
   const toggleLane = useCallback((layer: string) => {
     setExpanded((prev) => {
@@ -426,7 +440,7 @@ export function TopologyPanel({ snapshot, findings, findingsError }: TopologyPan
   const sidebar = (
     <FindingSidebar
       items={walk}
-      index={selIndex ?? 0}
+      index={selIndex}
       onIndex={(i) => setSelIndex(clamp(i, 0, Math.max(0, walk.length - 1)))}
       collapsed={sidebarCollapsed}
       onToggleCollapsed={() => setSidebarCollapsed((c) => !c)}
@@ -437,6 +451,7 @@ export function TopologyPanel({ snapshot, findings, findingsError }: TopologyPan
       notAnalysedReason={res?.reason}
       blastBasis={res?.blast_basis}
       isolatedShown={isolatedShown}
+      involvedOnCanvas={anim ? anim.nodes.size : 0}
       replayDone={stage >= totalStages}
       onReplay={() => setReplayNonce((n) => n + 1)}
       nameFor={nameFor}
@@ -467,7 +482,6 @@ export function TopologyPanel({ snapshot, findings, findingsError }: TopologyPan
               type="button"
               onClick={() => (fullscreen ? closeFullscreen() : openFullscreen())}
               className="btn-ghost text-[12px]"
-              aria-keyshortcuts="Escape"
             >
               {fullscreen ? <Minimize2 size={13} /> : <Maximize2 size={13} />} Fullscreen
             </button>
@@ -544,6 +558,19 @@ export function TopologyPanel({ snapshot, findings, findingsError }: TopologyPan
               incomplete rather than few.
             </span>
           </div>
+        ) : null}
+
+        {topo?.source_conflicts && topo.source_conflicts.length > 0 ? (
+          <p
+            className="mt-2 text-[11px] text-text3"
+            title={topo.source_conflicts
+              .map((c) => `${c.entity}.${c.field}: ${c.claims.map((k) => `${k.tool}=${String(k.value)}`).join(" vs ")}`)
+              .join("\n")}
+          >
+            {topo.source_conflicts.length} field{topo.source_conflicts.length === 1 ? "" : "s"} two consoles state
+            differently. Not an error — a stale entry, or a box replaced without the aggregator being told. The
+            Inventory screen reconciles them claim by claim.
+          </p>
         ) : null}
 
         {findingsError ? (
@@ -693,6 +720,36 @@ export function TopologyPanel({ snapshot, findings, findingsError }: TopologyPan
                 ))}
               </ul>
             )}
+
+            {res && (res.suppressed.length > 0 || res.excluded_adjacencies.length > 0) ? (
+              <details className="mt-3 border-t border-hair pt-2">
+                <summary className="cursor-pointer text-[11.5px] text-text2">
+                  {res.suppressed.length} candidate finding{res.suppressed.length === 1 ? "" : "s"} suppressed
+                  {res.excluded_adjacencies.length > 0
+                    ? `, ${res.excluded_adjacencies.length} adjacenc${res.excluded_adjacencies.length === 1 ? "y" : "ies"} excluded`
+                    : ""}{" "}
+                  — every one of them with its reason
+                </summary>
+                <p className="mt-1.5 text-[11px] leading-snug text-text3">
+                  The resilience analyzer publishes what it chose not to report. An estate cabled the right way nearly
+                  everywhere would otherwise bury its four real findings in fourteen false ones, and a filter nobody can
+                  audit is indistinguishable from a bug.
+                </p>
+                <ul className="mt-1.5 space-y-1">
+                  {res.suppressed.map((x, i) => (
+                    <li key={`s${i}`} className="text-[11px] text-text2">
+                      <span className="mono text-text3">{x.kind}</span> · <span className="mono">{x.candidate}</span> —{" "}
+                      {x.detail}
+                    </li>
+                  ))}
+                  {res.excluded_adjacencies.map((x, i) => (
+                    <li key={`e${i}`} className="text-[11px] text-text2">
+                      <span className="mono text-text3">{x.reason}</span> — {x.detail}
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            ) : null}
           </section>
 
           {/* ── Legend ──────────────────────────────────────────────────────── */}
