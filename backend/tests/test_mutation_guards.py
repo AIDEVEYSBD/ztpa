@@ -212,16 +212,26 @@ def _mutant_is_wildcard_source_m59(rec: PolicyRecord) -> bool:
     return over_permissive.is_any(rec.source)      # M59: the `or any(...)` arm is gone
 
 
-def _mutant_fingerprint_m48(records, entities, resolved, manual_merges, applied_changes) -> str:
-    """`run_all._fingerprint` with the applied-changes overlay SORTED."""
-    return run_all.content_fingerprint(
+def _mutant_fingerprint_m48(records, entities, resolved, manual_merges, applied_changes,
+                            nr=None) -> str:
+    """`run_all._fingerprint` with the applied-changes overlay SORTED.
+
+    Mirrors the real function exactly apart from that one mutation -- including
+    the conditional sixth blob -- so this guard isolates M48 rather than also
+    detecting the shape change that added infrastructure to the hash.
+    """
+    blobs = [
         run_all._RS.join(sorted(run_all._record_digest(r) for r in records)),
         run_all._RS.join(sorted(run_all._entity_digest(e) for e in entities)),
         run_all._RS.join(sorted(run_all._resolved_digest(o) for o in resolved)),
         run_all._RS.join(sorted(run_all._merge_digest(m) for m in manual_merges)),
         # M48: the overlay blob is sorted, which its own docstring forbids.
         run_all._RS.join(sorted(run_all._overlay_digest(c) for c in applied_changes)),
-    )
+    ]
+    infra = sorted(run_all._infra_digest(nr)) if nr is not None else []
+    if infra:
+        blobs.append(run_all._RS.join(infra))
+    return run_all.content_fingerprint(*blobs)
 
 
 # ==========================================================================
