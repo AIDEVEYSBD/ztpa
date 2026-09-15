@@ -2,14 +2,14 @@
 
 import { useSession } from "next-auth/react";
 import {
-  Network, ListChecks, GitBranch, MessageSquare, FileText, Plug, Fingerprint,
+  Network, ListChecks, GitBranch, MessageSquare, FileText, Plug,
   LogOut, Database, History, Rocket, SlidersHorizontal, BarChart3, ScrollText, Cog,
-  Boxes, Route,
+  Boxes,
 } from "lucide-react";
 import { Brand, cn } from "./ui";
 import { ThemeToggle } from "./theme";
 
-export type ScreenId = "sources" | "inventory" | "topology" | "map" | "risks" | "change" | "staging" | "ask" | "report" | "connectors" | "assets" | "ingest" | "snapshots" | "tools" | "metrics" | "audit" | "config";
+export type ScreenId = "explorer" | "inventory" | "sources" | "risks" | "change" | "staging" | "ask" | "report" | "connectors" | "ingest" | "snapshots" | "tools" | "metrics" | "audit" | "config";
 
 type NavDef = { id: ScreenId; label: string; icon: typeof Network };
 
@@ -25,13 +25,18 @@ type NavDef = { id: ScreenId; label: string; icon: typeof Network };
 // with the first two missing, so a reviewer was shown conclusions before the
 // evidence and had no way to ask where any of it came from.
 const CONSOLE: NavDef[] = [
-  { id: "sources", label: "Sources", icon: Plug },
+  // ONE MAP, NOT TWO. "Topology" drew the physical estate and "Reachability"
+  // drew the cross-tool policy path, and they were two views of one network
+  // sitting in two nav entries — so a user had to know which one held the
+  // answer before they could look for it. They are one canvas now, with the
+  // policy path traced ACROSS the physical lanes, which only became possible
+  // once every endpoint had a lane to be drawn in.
+  { id: "explorer", label: "Explorer", icon: Network },
+  // ONE INVENTORY, NOT TWO. "Assets & Identity" rendered a second, narrower
+  // copy of this table; its only unique content was the duplicate-identity
+  // review queue, which now lives inside this screen.
   { id: "inventory", label: "Inventory", icon: Boxes },
-  { id: "topology", label: "Topology", icon: Network },
-  // The cross-tool reachability graph. KEPT, and kept adjacent: it is the one
-  // computation in this product that no single console can perform, and the
-  // revamp must not bury it under a screen whose lead content is a diagram.
-  { id: "map", label: "Reachability", icon: Route },
+  { id: "sources", label: "Sources", icon: Plug },
   { id: "risks", label: "Risk To-Do", icon: ListChecks },
   { id: "change", label: "Change Gate", icon: GitBranch },
   { id: "staging", label: "Staging Area", icon: Rocket },
@@ -40,8 +45,8 @@ const CONSOLE: NavDef[] = [
 ];
 const REFERENCE: NavDef[] = [
   { id: "connectors", label: "Connectors", icon: Plug },
-  { id: "assets", label: "Identity & merges", icon: Fingerprint },
 ];
+
 const ADMIN: NavDef[] = [
   { id: "tools", label: "Tools & Usage", icon: SlidersHorizontal },
   { id: "metrics", label: "Metrics & Cost", icon: BarChart3 },

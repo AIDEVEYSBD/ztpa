@@ -12,29 +12,39 @@
  */
 
 import { useEffect, useRef } from "react";
-import { TriangleAlert, X } from "lucide-react";
+import { GitMerge, Link2, TriangleAlert, X } from "lucide-react";
 import type { InventoryItem, SourceCard } from "@/lib/types";
 import { toolColour } from "@/lib/toolColour";
 import { NetIcon } from "@/components/net/icons";
 import { Overlay } from "@/components/ui";
 import { claimValue, DrawerSection, Field, tierMeaning, tierShort, Unreported, Value } from "./bits";
-import type { DrawerFocus } from "./InventoryTable";
+import type { DrawerFocus } from "./columns";
+import { matchKeyMeaning, type RowIdentity } from "./identity";
+import { AddressInsight } from "./AddressInsight";
 
-export function InventoryDrawer({ item, focus, cards, cardsUnknown, onClose }: {
+export function InventoryDrawer({ item, focus, cards, cardsUnknown, identity, identityUnknown, snapshot, onClose }: {
   item?: InventoryItem;
   focus: DrawerFocus;
   cards?: Record<string, SourceCard>;
   /** True when the source register could not be read — so "live vs seeded"
    *  is UNKNOWN here rather than absent. */
   cardsUnknown?: boolean;
+  /** The asset layer's view of this row, when it describes it. */
+  identity?: RowIdentity;
+  /** True when the asset read FAILED — so "was this correlated?" is unknown
+   *  here rather than no. */
+  identityUnknown?: boolean;
+  snapshot?: string;
   onClose: () => void;
 }) {
   const conflictsRef = useRef<HTMLDivElement>(null);
+  const identityRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!item) return;
     if (focus === "conflicts" && conflictsRef.current) conflictsRef.current.scrollIntoView({ block: "start" });
+    else if (focus === "identity" && identityRef.current) identityRef.current.scrollIntoView({ block: "start" });
     else if (bodyRef.current) bodyRef.current.scrollTop = 0;
   }, [item, focus]);
 
@@ -78,6 +88,10 @@ export function InventoryDrawer({ item, focus, cards, cardsUnknown, onClose }: {
                 )}
               </Field>
             </DrawerSection>
+
+            <div ref={identityRef}>
+              <IdentitySection item={item} identity={identity} unknown={!!identityUnknown} />
+            </div>
 
             <DrawerSection title="Hardware">
               <Field label="Vendor"><Value value={item.vendor} what="a vendor" /></Field>
@@ -206,6 +220,8 @@ export function InventoryDrawer({ item, focus, cards, cardsUnknown, onClose }: {
               </DrawerSection>
             </div>
 
+            <AddressInsight item={item} snapshot={snapshot} />
+
             <DrawerSection
               title={`Findings (${item.finding_ids.length})`}
               note="The findings this entity is named in, by id. Open the Risk To-Do to read them."
@@ -246,6 +262,138 @@ function RoleSource({ source, reason, noun = "role" }: { source?: "declared" | "
         {reason?.trim() || "No reason was supplied with this derivation."}
       </span>
     </span>
+  );
+}
+
+/**
+ * IDENTITY — what the asset layer decided this row IS.
+ *
+ * Three answers, three renders, and the first is the one that used to be
+ * missing: when the asset read fails, "was this correlated across tools?" is
+ * UNKNOWN. A silent absence there reads as "no", which is a claim about the
+ * estate made out of a failed fetch.
+ */
+function IdentitySection({ item, identity, unknown }: {
+  item: InventoryItem;
+  identity?: RowIdentity;
+  unknown: boolean;
+}) {
+  if (unknown) {
+    return (
+      <DrawerSection title="Identity">
+        <p className="text-[12px] leading-relaxed text-text2">
+          The asset layer could not be read, so whether this row was correlated with another console&apos;s record of the
+          same thing is <span className="font-bold text-text">unknown</span>. It is not being reported as uncorrelated —
+          the failure is stated on the inventory panel above.
+        </p>
+      </DrawerSection>
+    );
+  }
+
+  if (!identity) {
+    return (
+      <DrawerSection title="Identity">
+        <p className="text-[12px] leading-relaxed text-text2">
+          The asset layer does not describe <span className="mono">{item.key}</span>. A VLAN, a subnet or a circuit is
+          not an identity the engine correlates, so there is nothing here to merge — this is not applicable rather than
+          &ldquo;no match found&rdquo;.
+        </p>
+      </DrawerSection>
+    );
+  }
+
+  const { asset, correlations, aliases, tools, suggestions } = identity;
+
+  return (
+    <DrawerSection
+      title="Identity"
+      note="One identity per asset; an IP is an attribute of it, not its key. A correlation here means two consoles were proven to be describing the same thing."
+    >
+      <Field label="Asset key">
+        <span className="mono break-all text-[12px]">{asset?.asset_key ?? item.key}</span>
+      </Field>
+      <Field label="Also known as">
+        {aliases.length ? (
+          <span className="flex flex-wrap gap-1">
+            {aliases.map((a) => <span key={a} className="chip mono text-[10.5px]">{a}</span>)}
+          </span>
+        ) : (
+          <span className="text-text2">No other name collapsed into this identity.</span>
+        )}
+      </Field>
+      <Field label="Seen by">
+        {tools.length ? (
+          <span className="flex flex-wrap items-center gap-2">
+            {tools.map((t) => (
+              <span key={t} className="inline-flex items-center gap-1.5">
+                <span aria-hidden className="h-2 w-2 shrink-0" style={{ background: toolColour(t) }} />
+                <span className="mono text-[11.5px]">{t}</span>
+              </span>
+            ))}
+          </span>
+        ) : (
+          <Unreported what="a console behind this identity" />
+        )}
+      </Field>
+
+      <div className="mt-2">
+        <div className="mb-1 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.1em] text-text3">
+          <Link2 size={11} /> Settled correlations ({correlations.length})
+        </div>
+        {correlations.length ? (
+          <ul className="space-y-1.5">
+            {correlations.map((c, i) => (
+              <li key={`${c.match_key}-${i}`} className="border border-accent bg-accent-soft px-2.5 py-1.5">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="mono text-[11.5px] font-bold text-accent-fg" title={matchKeyMeaning(c.match_key)}>
+                    {c.match_key}
+                  </span>
+                  <span className="mono text-[10.5px] tabular-nums text-text2">
+                    {Math.round(c.confidence * 100)}% confidence
+                  </span>
+                </div>
+                <p className="mt-0.5 text-[10.5px] leading-relaxed text-text2">{matchKeyMeaning(c.match_key)}</p>
+                <div className="mono mt-1 break-all text-[10.5px] text-text3">
+                  evidence: {claimValue(c.evidence)}
+                </div>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-[12px] text-text2">
+            This row is in the asset layer and carries no cross-tool correlation: no other console&apos;s record was
+            proven to be the same thing.
+          </p>
+        )}
+      </div>
+
+      {suggestions.length ? (
+        <div className="mt-2">
+          <div className="mb-1 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.1em] text-sev-medium">
+            <GitMerge size={11} /> Unconfirmed duplicate proposals ({suggestions.length})
+          </div>
+          <ul className="space-y-1.5">
+            {suggestions.map((s) => (
+              <li key={`${s.a}~${s.b}`} className="border border-sev-medium-line bg-sev-medium-bg px-2.5 py-1.5">
+                <div className="flex flex-wrap items-center gap-1.5 text-[11.5px]">
+                  <span className="mono break-all font-bold">{s.a}</span>
+                  <span className="text-text3">~</span>
+                  <span className="mono break-all font-bold">{s.b}</span>
+                  <span className="mono ml-auto text-[10.5px] tabular-nums text-sev-medium">
+                    {Math.round(s.confidence * 100)}%
+                  </span>
+                </div>
+                <p className="mt-1 text-[10.5px] leading-relaxed text-text2">{s.reason}</p>
+              </li>
+            ))}
+          </ul>
+          <p className="mt-1 text-[10.5px] text-text3">
+            Nothing has been merged. The engine never merges on its own — confirm or ignore these in{" "}
+            <span className="font-bold text-text2">Identity &amp; merges</span>, under the table.
+          </p>
+        </div>
+      ) : null}
+    </DrawerSection>
   );
 }
 

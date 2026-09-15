@@ -10,16 +10,14 @@ import {
 import type { ActionItem, Finding, GraphData } from "@/lib/types";
 import { Sidebar, type ScreenId } from "@/components/Sidebar";
 import { Topbar } from "@/components/Topbar";
-import { NetworkMap } from "@/components/NetworkMap";
 import { RiskTodo } from "@/components/RiskTodo";
 import { ChangeGate } from "@/components/ChangeGate";
 import { Assistant } from "@/components/Assistant";
 import { ReportPanel } from "@/components/ReportPanel";
 import { Connectors } from "@/components/Connectors";
-import { AssetsPanel } from "@/components/AssetsPanel";
 import { SourcesPanel } from "@/components/SourcesPanel";
 import { InventoryPanel } from "@/components/InventoryPanel";
-import { TopologyPanel } from "@/components/TopologyPanel";
+import { ExplorerPanel } from "@/components/ExplorerPanel";
 import { IngestInspector } from "@/components/IngestInspector";
 import { Staging } from "@/components/Staging";
 import { SnapshotsAdmin } from "@/components/admin/SnapshotsAdmin";
@@ -33,15 +31,13 @@ import { PanelHealthProvider, useScreenFailures } from "@/components/PanelHealth
 const META: Record<ScreenId, { title: string; sub: string }> = {
   sources: { title: "Sources", sub: "What we read, from which rung of the ladder \u2014 and what each console cannot tell us" },
   inventory: { title: "Inventory", sub: "Every device, VLAN, subnet, circuit and asset, and where each one was found" },
-  topology: { title: "Topology", sub: "The network as the onboarded consoles describe it, layer by layer" },
-  map: { title: "Reachability", sub: "Unified cross-tool reachability across AlgoSec, Guardicore and Wiz" },
+  explorer: { title: "Explorer", sub: "The estate layer by layer, the policy paths across it, and every finding on the map" },
   risks: { title: "Risk To-Do", sub: "Prioritized actions — iterate a fix, then send it to the Change Gate" },
   change: { title: "Change Gate", sub: "Simulated delta, then auto-approve or escalate — then send to staging" },
   staging: { title: "Staging Area", sub: "Approved changes, ready to push to the source system" },
   ask: { title: "Ask the Network", sub: "Plain-English questions, grounded in engine facts" },
   report: { title: "Posture Report", sub: "Executive and compliance summary" },
   connectors: { title: "Connectors", sub: "Bring your own source via a validated profile" },
-  assets: { title: "Assets & Identity", sub: "One identity per asset, IP is an attribute" },
   ingest: { title: "Ingested data", sub: "What the connectors produced for this snapshot (admin)" },
   snapshots: { title: "Snapshots", sub: "Point-in-time runs, with delete (admin)" },
   tools: { title: "Tools & Usage", sub: "Available tools, per-role access, and usage metrics (admin)" },
@@ -71,9 +67,14 @@ function settle<T>(p: Promise<T>, set: (r: Resource<T>) => void, alive: () => bo
 }
 
 export default function Dashboard() {
-  // Opens on Sources: the review starts at "what are we reading", not at a
-  // conclusion drawn from it.
-  const [screen, setScreen] = useState<ScreenId>("sources");
+  // OPENS ON THE EXPLORER.
+  //
+  // It opened on Sources, on the reasoning that a review starts at "what are we
+  // reading". That is true of a review and false of a product: nobody opens a
+  // tool to read its bibliography. You open it to see your network, and the
+  // first screen should be the one that shows it — with everything else one
+  // click away from the thing you are looking at.
+  const [screen, setScreen] = useState<ScreenId>("explorer");
   const [health, setHealth] = useState<Resource<HealthReport>>(LOADING);
   // Each feed keeps the WHOLE payload rather than the array inside it, because
   // the backend attaches `served_from`/`degraded_reason` to the envelope: with
@@ -223,14 +224,9 @@ export default function Dashboard() {
                 transition={{ duration: 0.15, ease: "easeOut" }}>
                 {screen === "sources" && <SourcesPanel snapshot={viewSnap} />}
                 {screen === "inventory" && <InventoryPanel snapshot={viewSnap} />}
-                {screen === "topology" && (
-                  <TopologyPanel snapshot={viewSnap} findings={findingList}
+                {screen === "explorer" && (
+                  <ExplorerPanel snapshot={viewSnap} findings={findingList}
                     findingsError={findings.error} />
-                )}
-                {screen === "map" && (
-                  <NetworkMap graph={graph.data} findings={findingList} counts={counts.data?.counts ?? {}}
-                    loading={graph.status === "loading"} graphError={graph.error}
-                    findingsError={findings.error ?? counts.error} onRetry={retry} />
                 )}
                 {screen === "risks" && (
                   <RiskTodo actions={actionList} findings={findingList} readOnly={historical}
@@ -243,9 +239,12 @@ export default function Dashboard() {
                 {screen === "ask" && <Assistant />}
                 {screen === "report" && <ReportPanel />}
                 {screen === "connectors" && <Connectors />}
-                {screen === "assets" && <AssetsPanel snapshot={viewSnap} />}
+                {/* "Identity & merges" was absorbed into Inventory. Kept as a
+                    redirect so an old nav entry or a bookmark lands on the
+                    merged screen rather than on a blank panel; remove with the
+                    nav entry itself. */}
                 {screen === "ingest" && <IngestInspector snapshot={viewSnap} />}
-                {screen === "snapshots" && <SnapshotsAdmin onView={(id) => { setViewSnap(id); setScreen("map"); }} />}
+                {screen === "snapshots" && <SnapshotsAdmin onView={(id) => { setViewSnap(id); setScreen("explorer"); }} />}
                 {screen === "tools" && <ToolsAdmin />}
                 {screen === "metrics" && <MetricsAdmin />}
                 {screen === "audit" && <AuditAdmin />}

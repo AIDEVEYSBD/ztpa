@@ -106,7 +106,7 @@ export function InventoryFilters(p: InventoryFiltersProps) {
         <span className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.12em] text-text3">
           <Filter size={11} /> Filters
         </span>
-        <SearchBox value={p.q} onChange={p.onQ} placeholder="name, address or tag…" className="sm:ml-auto sm:w-56" />
+        <SearchBox value={p.q} onChange={p.onQ} placeholder="name, address or tag…" className="min-w-0 sm:ml-auto sm:w-56" />
         <SourceSelect value={p.source} onChange={p.onSource} facets={p.facets} cards={p.cards} disabled={p.disabled} />
       </div>
 
@@ -240,7 +240,7 @@ function SourceSelect({ value, onChange, facets, cards, disabled }: {
       value={value}
       disabled={disabled || !facets}
       onChange={(e) => onChange(e.target.value)}
-      className="field !h-8 w-auto max-w-[220px] text-[12px]"
+      className="field !h-8 w-auto min-w-0 max-w-full text-[12px] sm:max-w-[220px]"
       title="Only entities this console observed. A row three consoles describe stays visible under any one of them."
     >
       <option value="">{facets ? "source: any" : "source: unknown"}</option>
@@ -302,7 +302,7 @@ function FacetRow({ group, label, counts, selected, onToggle, withIcon }: {
                     ? `Selected, but no longer in the live facets for this result set - the other filters have narrowed past it. Click to switch it off.`
                     : `${n} ${n === 1 ? "entity" : "entities"} match ${label.toLowerCase()} "${key}"`}
                   className={cn(
-                    "inline-flex h-[22px] max-w-[190px] items-center gap-1.5 border px-2 text-[11px] font-bold leading-none transition-colors",
+                    "inline-flex h-[22px] max-w-full items-center gap-1.5 border px-2 text-[11px] font-bold leading-none transition-colors sm:max-w-[190px]",
                     on
                       ? "border-accent bg-accent-soft text-accent-fg"
                       : "border-border bg-sunk text-text2 hover:border-accent hover:text-accent-fg",

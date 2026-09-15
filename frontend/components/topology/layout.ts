@@ -29,9 +29,15 @@ export const LANE_ORDER: readonly TopologyLayer[] = [
  * `maxRowW` is the load-bearing one: it is what keeps a wide lane from turning
  * the whole canvas into a 3000px strip that fits on a projector only at a zoom
  * where the hostnames are unreadable. A lane wider than this WRAPS — it never
- * shrinks its cards and never drops a node. Chosen so the whole canvas comes to
- * 1020px: a 1024x768 projector shows it at full zoom, which is the width this
- * screen is actually demonstrated at.
+ * shrinks its cards and never drops a node.
+ *
+ * It is a CEILING, not a target. The Explorer passes the width actually
+ * available (`viewW - labelW - padRight`, floored at `minContentW`), so a
+ * 1024x768 projector still gets a ~860px content column at full zoom — the
+ * width this screen is demonstrated at — while a 2560 display gets a wider,
+ * shorter picture instead of a 1020px ribbon marooned in the middle of it. The
+ * ceiling exists because past about 1400px a lane stops being scannable left to
+ * right: the eye loses the row before it reaches the end of it.
  */
 export const GEOM = {
   labelW: 138,
@@ -42,7 +48,7 @@ export const GEOM = {
   haPad: 7,
   rowGapY: 16,
   lanePadY: 20,
-  maxRowW: 880,
+  maxRowW: 1400,
   minContentW: 560,
   padTop: 10,
   padBottom: 16,

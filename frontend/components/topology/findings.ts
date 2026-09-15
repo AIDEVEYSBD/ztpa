@@ -29,9 +29,22 @@ export interface WalkFinding {
   /** The engine's own type string (`shared_circuit_handoff`, `over_permissive`). */
   type: string;
   title: string;
-  /** What the problem is, in the engine's words. Empty when nothing was written
-   *  — the sidebar says so rather than inventing a sentence. */
-  detail: string;
+  /**
+   * THE ENGINE'S OWN EXPLANATION — deterministic, always present, written from
+   * the finding's own signals by the same code that computed them. No model and
+   * no network is involved, which is exactly why it can be relied on.
+   *
+   * It is a SEPARATE FIELD from `modelDetail` and the two are never merged. The
+   * console used to render one empty panel for both and print "No explanation
+   * has been written for this finding yet" whenever the model prose was null,
+   * which was false: the engine can always say what a finding means, because it
+   * computed it. What it cannot do without a model is write prose.
+   */
+  engineDetail: string;
+  /** MODEL PROSE. Empty until somebody asks the advisory layer for it. It is an
+   *  UPGRADE to `engineDetail`, never a replacement — both stay on screen,
+   *  separately attributed, so a reader always knows which one they are reading. */
+  modelDetail: string;
   severity: number;
   band: Band;
   forcedCritical: boolean;
@@ -73,6 +86,12 @@ export interface WalkFinding {
 const TITLE_CASE = (s: string) =>
   s.replace(/[_:]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 
+/** The engine's own title for a finding, when its signals carry one. */
+function signalTitle(signals: Record<string, unknown> | undefined): string | null {
+  const t = signals?.title;
+  return typeof t === "string" && t.trim() ? t.trim() : null;
+}
+
 /**
  * Resilience findings -> walkthrough items.
  *
@@ -104,7 +123,10 @@ export function fromResilience(findings: ResilienceFindingRow[], blast: BlastRad
       kind: "resilience" as const,
       type: f.kind,
       title: f.title,
-      detail: f.detail,
+      // The resilience analyzer writes its own sentence and always has. It is
+      // engine text by the same definition: computed, not written by a model.
+      engineDetail: f.detail,
+      modelDetail: "",
       severity: f.severity,
       band: f.severity_band,
       forcedCritical: false,
@@ -159,8 +181,13 @@ export function fromPolicy(findings: Finding[], nodes: TopoNode[]): { items: Wal
       id: f.finding_id,
       kind: "policy",
       type: f.type,
-      title: TITLE_CASE(f.type),
-      detail: f.explanation ?? "",
+      // The engine puts a written title on most findings' signals
+      // (`RDP open from the internet to db-prod-01`). It is the engine's own
+      // sentence and it is used when present; TITLE_CASE of the type string
+      // ("Over Permissive") is the fallback, not the first choice.
+      title: signalTitle(f.signals) ?? TITLE_CASE(f.type),
+      engineDetail: f.engine_explanation ?? "",
+      modelDetail: f.explanation ?? "",
       severity: f.severity,
       band: f.severity_band,
       forcedCritical: f.forced_critical,

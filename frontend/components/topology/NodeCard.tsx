@@ -6,9 +6,14 @@
  *
  * Compact by design — glyph, name, model, source count — because the thing this
  * screen has to communicate is the SHAPE of the estate, and a card carrying six
- * lines of detail turns nine lanes into a wall of text. Everything trimmed off
- * the face of the card is on its tooltip, which is the one place a dense
- * instrument is allowed to put detail.
+ * lines of detail turns nine lanes into a wall of text.
+ *
+ * WHAT CHANGED. The card used to be an inert `<div>` with a tooltip, which is
+ * why the owner said "i cant use it or click on something to see details about
+ * it": everything a card knew was on a hover the mouse had to hold still for,
+ * and nothing at all was on a click. It is now an activatable control — click
+ * or Enter opens the detail drawer, a group card opens its lane instead —
+ * keeping the tooltip as the quick read rather than as the only read.
  */
 
 import { ChevronsUpDown, Unlink } from "lucide-react";
@@ -32,7 +37,20 @@ export interface NodeCardProps {
    */
   simulatedTools: ReadonlySet<string> | null;
   unlinkedReason?: string | null;
+  /** Open this card's lane (group cards only). */
   onExpand?: () => void;
+  /** Open the detail drawer for this device. */
+  onSelect?: () => void;
+  /** This card is the drawer's current subject. */
+  selected?: boolean;
+  /** This card matches the current search. */
+  matched?: boolean;
+  /** …and it is the match the canvas has scrolled to. */
+  activeMatch?: boolean;
+  /** Position in the cross-tool chain, when the reachability overlay is on.
+   *  0 is the entry point; the last index is the terminal. */
+  pathIndex?: number;
+  pathTerminal?: boolean;
   reduced: boolean;
 }
 
@@ -53,21 +71,33 @@ function Micro({ children, tone = "neutral", title }: { children: React.ReactNod
   );
 }
 
-export function NodeCard({ placed, state, bands, simulatedTools, unlinkedReason, onExpand, reduced }: NodeCardProps) {
+export function NodeCard({
+  placed, state, bands, simulatedTools, unlinkedReason, onExpand, onSelect,
+  selected, matched, activeMatch, pathIndex, pathTerminal, reduced,
+}: NodeCardProps) {
   const box = { left: placed.x, top: placed.y, width: placed.w, height: placed.h } as const;
   const band = bands[0];
   const wash = band ? bandStyle(band) : undefined;
+  const onPath = pathIndex != null;
 
   const shell = cn(
-    "absolute z-10 flex flex-col justify-between overflow-hidden border p-1.5",
+    "absolute z-10 flex flex-col justify-between overflow-hidden border p-1.5 text-left",
     !reduced && "transition-[opacity,border-color,box-shadow] duration-300",
-    state === "dim" && "opacity-[0.18]",
-    state === "isolated" && "opacity-[0.22]",
+    // A dimmed card is still a card: it stays above the threshold where it can
+    // be read and pointed at, because "everything else is unclickable" was the
+    // exact complaint that started this rework.
+    state === "dim" && "opacity-[0.26]",
+    state === "isolated" && "opacity-[0.28]",
     state === "focus" && "border-accent shadow-[0_0_0_2px_var(--accent-glow)]",
     state === "failed" && "border-sev-critical bg-sev-critical-bg",
     (state === "normal" || state === "dim") && "border-border",
     state === "isolated" && "border-sev-critical-line",
+    onPath && "border-accent shadow-[0_0_0_2px_var(--accent-glow)]",
+    matched && !selected && "border-info shadow-[0_0_0_2px_var(--info-bg)]",
+    activeMatch && "border-info shadow-[0_0_0_3px_var(--info-line)]",
+    selected && "border-accent shadow-[0_0_0_3px_var(--accent-glow)]",
     !band && (state === "failed" ? "" : "bg-surface"),
+    (onSelect || onExpand) && "cursor-pointer hover:border-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent",
   );
 
   if (placed.kind === "group") {
@@ -76,6 +106,13 @@ export function NodeCard({ placed, state, bands, simulatedTools, unlinkedReason,
     return (
       <div
         style={box}
+        role="button"
+        tabIndex={0}
+        aria-label={`${members.length} ${role} devices, collapsed. Activate to expand the ${placed.layer} lane.`}
+        onClick={onExpand}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onExpand?.(); }
+        }}
         className={cn(shell, "border-dotted")}
         title={`${members.length} devices in the ${placed.layer} lane with role ${role}:\n${members.map((m) => m.name || m.key).join("\n")}`}
       >
@@ -86,13 +123,9 @@ export function NodeCard({ placed, state, bands, simulatedTools, unlinkedReason,
           </span>
         </div>
         <div className="truncate text-[10px] text-text3">collapsed — nothing dropped</div>
-        <button
-          type="button"
-          onClick={onExpand}
-          className="inline-flex h-[15px] w-full items-center justify-center gap-1 border border-border bg-sunk text-[9px] font-bold text-text2 hover:border-accent hover:text-accent-fg"
-        >
+        <span className="inline-flex h-[15px] w-full items-center justify-center gap-1 border border-border bg-sunk text-[9px] font-bold text-text2">
           <ChevronsUpDown size={9} /> Expand
-        </button>
+        </span>
       </div>
     );
   }
@@ -116,12 +149,25 @@ export function NodeCard({ placed, state, bands, simulatedTools, unlinkedReason,
     n.layer_reason ? `lane: ${n.layer_reason}` : null,
     tools.length ? `observed by: ${tools.map((o) => `${o.tool} (${o.tier})`).join(", ")}` : "observed by: nothing recorded",
     unlinkedReason ? `unlinked: ${unlinkedReason}` : null,
+    onSelect ? "— click for every address, interface, source and policy that touches it" : null,
   ]
     .filter(Boolean)
     .join("\n");
 
   return (
-    <div style={{ ...box, ...wash }} className={cn(shell, unlinkedReason && "border-dashed")} title={tip}>
+    <div
+      style={{ ...box, ...wash }}
+      role="button"
+      tabIndex={0}
+      aria-pressed={selected}
+      aria-label={`${n.name || n.key}${n.role ? `, ${n.role}` : ""}. Open details.`}
+      onClick={onSelect}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect?.(); }
+      }}
+      className={cn(shell, unlinkedReason && "border-dashed")}
+      title={tip}
+    >
       <div className="flex items-center gap-1.5">
         <NetIcon
           kind={n.role ?? n.kind}
@@ -129,7 +175,21 @@ export function NodeCard({ placed, state, bands, simulatedTools, unlinkedReason,
           className={cn("shrink-0", state === "failed" ? "text-sev-critical" : "text-text2")}
         />
         <span className="mono min-w-0 flex-1 truncate text-[11.5px] font-bold">{n.name || n.key}</span>
-        {n.ha_role ? <Micro title={`HA ${n.ha_group}`}>{n.ha_role}</Micro> : null}
+        {/* The hop number, when the reachability chain runs through this card.
+            A number, not just a glow: which hop it is, is the fact. */}
+        {onPath ? (
+          <span
+            className={cn(
+              "mono inline-flex h-[14px] min-w-[14px] shrink-0 items-center justify-center px-0.5 text-[9px] font-bold leading-none",
+              pathTerminal ? "bg-sev-critical text-surface" : "bg-accent text-accent-ink",
+            )}
+            title={pathTerminal ? "The chain ends here." : `Step ${pathIndex + 1} of the cross-tool chain.`}
+          >
+            {pathIndex + 1}
+          </span>
+        ) : n.ha_role ? (
+          <Micro title={`HA ${n.ha_group}`}>{n.ha_role}</Micro>
+        ) : null}
       </div>
 
       <div className="mono truncate text-[10px] text-text3">

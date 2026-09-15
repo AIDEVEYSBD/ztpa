@@ -189,7 +189,19 @@ function BandChip({ band, label, n, active, onClick }: { band?: Band; label: str
   );
 }
 
-type Expl = { explanation: string; by: string; pending?: boolean; error?: ApiError; provider?: string };
+/** The advisory layer's answer about one finding.
+ *
+ *  `explanation` is nullable because it is MODEL PROSE and null until a model
+ *  has written one. The engine's own deterministic explanation is not in here —
+ *  it arrives on the finding itself as `engine_explanation`, is always present,
+ *  and is what this card shows while (or instead of) the model's.
+ *
+ *  `unavailable_reason` is a FINISHED answer: a model was asked and produced
+ *  nothing. Polling past it is a loop with no exit. */
+type Expl = {
+  explanation: string | null; by: string | null; pending?: boolean;
+  error?: ApiError; provider?: string; unavailable_reason?: string;
+};
 
 // Truthfully name the provider doing the work — the engine routes to a local
 // Ollama model when one is up, else a hosted one (OpenAI/Anthropic).
@@ -223,7 +235,9 @@ function FindingRow({ f, readOnly, onNavigate }: { f: Finding; readOnly?: boolea
       const r = await api.explain(f.finding_id);
       setExplain(r);
       setExLoading(false);
-      if (r.pending && attempt < 14) {
+      // `unavailable_reason` ends the wait: the model ran and produced nothing,
+      // so there is no later state to poll towards.
+      if (r.pending && !r.unavailable_reason && attempt < 14) {
         // Adaptive backoff: poll fast at first so a hosted-model explanation
         // (~1-2s) swaps in almost immediately, then ease off for a slow/cold
         // local model. ~0.8s, 1.2s, 1.9s, … capped at 6s.
@@ -234,7 +248,7 @@ function FindingRow({ f, readOnly, onNavigate }: { f: Finding; readOnly?: boolea
       // Name the failure: a 403 on the explain endpoint is a capability the
       // role does not have, not "the model is warming up".
       setExLoading(false);
-      setExplain({ explanation: "", by: "error", error: asApiError(e) });
+      setExplain({ explanation: null, by: "error", error: asApiError(e) });
     }
   };
 
@@ -242,7 +256,11 @@ function FindingRow({ f, readOnly, onNavigate }: { f: Finding; readOnly?: boolea
     const next = !open;
     setOpen(next);
     if (next && !explain && !exLoading) {
-      if (readOnly) { setExplain({ explanation: f.explanation || "No cached explanation for this snapshot.", by: "cached" }); return; }
+      // A historical snapshot is read-only, so no model call is made. The
+      // cached model prose is shown if one was written at the time; the engine's
+      // own explanation is on the finding regardless and is rendered below it,
+      // so this branch never leaves the card empty.
+      if (readOnly) { setExplain({ explanation: f.explanation ?? null, by: "cached" }); return; }
       setExLoading(true);
       fetchExplain(0);
     }
@@ -294,16 +312,46 @@ function FindingRow({ f, readOnly, onNavigate }: { f: Finding; readOnly?: boolea
               <div className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-muted">
                 <Sparkles size={12} className="text-text2" /> Why this matters
               </div>
-              {exLoading && !explain ? <SkeletonText lines={3} /> :
-                explain?.error ? <InlineError resource="the explanation" error={explain.error} onRetry={retryExplain} /> :
-                explain ? <Prose>{explain.explanation}</Prose> : null}
-              {explain?.pending && (
+              {/* THE ENGINE'S ANSWER, ALWAYS. It is deterministic, it is on the
+                  finding already, and it needs no model and no network. This
+                  card used to render only the advisory response, so a finding
+                  nobody had asked a model about showed nothing -- while the
+                  engine had computed exactly what was wrong and could say so. */}
+              {f.engine_explanation ? (
+                <>
+                  <Prose>{f.engine_explanation}</Prose>
+                  <div className="mt-1 text-[10px] text-muted">via the engine</div>
+                </>
+              ) : exLoading && !explain ? <SkeletonText lines={3} /> : null}
+
+              {/* ...and the model's, BELOW it and separately attributed, when a
+                  model has actually written one. Never merged with the above:
+                  they have different authors and different warranties. */}
+              {explain?.error ? (
+                <div className="mt-2">
+                  <InlineError resource="the advisory explanation" error={explain.error} onRetry={retryExplain} />
+                </div>
+              ) : explain?.explanation ? (
+                <div className="mt-2.5 border-t border-hair pt-2">
+                  <Prose>{explain.explanation}</Prose>
+                  <div className="mt-1 text-[10px] text-muted">via {explain.by}</div>
+                </div>
+              ) : null}
+
+              {explain?.unavailable_reason && !explain.explanation ? (
+                // A model ran and produced nothing. Stated once, plainly, and
+                // not as an error: the engine's answer above is complete.
+                <div className="mt-2 text-[11px] leading-relaxed text-text3">
+                  {explain.unavailable_reason}
+                </div>
+              ) : null}
+
+              {explain?.pending && !explain.unavailable_reason && (
                 <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-text3">
                   <span className="h-3 w-3 animate-spin rounded-full border-2 border-accent border-t-transparent" />
-                  Refining with {providerLabel(explain.provider)}…
+                  Adding {providerLabel(explain.provider)}’s wording… the explanation above is already complete.
                 </div>
               )}
-              {explain && !explain.error && !explain.pending && <div className="mt-1 text-[10px] text-muted">via {explain.by}</div>}
             </div>
 
             {!rem ? (readOnly ? null : (

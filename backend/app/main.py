@@ -1312,6 +1312,14 @@ def finding_detail(fid: str):
 
 _EXPLAIN_TIMEOUT = 180.0
 _explaining: set[str] = set()   # findings whose LLM explanation is being computed in the background
+# Findings whose model call was TRIED and did not produce prose, with the reason.
+#
+# Without this the "pending" state has no exit. `_bg_explain` only caches a real
+# model answer, so on a deployment with no reachable provider nothing is ever
+# written, every POST answers `pending: true`, and the console tells the user to
+# "try again in a moment" forever. A retry loop with no terminal state is the
+# same defect as a silent failure wearing a spinner.
+_explain_failed: dict[str, str] = {}
 
 
 def _spawn(name: str, fn, *args) -> None:
@@ -1337,10 +1345,29 @@ def _bg_explain(fid: str, f) -> None:
     try:
         result = explain_mod.explain(f, timeout=_EXPLAIN_TIMEOUT)
         if result.get("by") != "engine_fallback" and result.get("explanation", "").strip():
+            _explain_failed.pop(fid, None)
             with get_conn() as conn, conn.cursor() as cur:
                 cache_explanation(cur, fid, result["explanation"], result.get("by"))
                 audit(cur, "explain_finding", subject=fid, snapshot_id=sid(),
                       detail={"by": result["by"]}, actor_kind="agent")
+        else:
+            # The model was asked and produced nothing usable. `explain()` falls
+            # back to the deterministic text in that case, which the console
+            # ALREADY has as `engine_explanation` -- so there is nothing to cache
+            # and the only useful output is the reason, recorded here so the next
+            # POST can end the wait instead of extending it.
+            _explain_failed[fid] = (
+                f"the advisory provider ({settings.active_provider()}) was asked and did "
+                f"not return prose. The engine's own explanation is on the finding and is "
+                f"the deterministic answer; nothing further is available from a model in "
+                f"this deployment.")
+            log.warning("advisory explanation unavailable", extra={
+                "event": "explain_unavailable", "finding_id": fid,
+                "provider": settings.active_provider()})
+    except Exception as exc:
+        _explain_failed[fid] = f"the advisory call raised: {exc}"
+        log.error("advisory explanation raised", exc_info=True, extra={
+            "event": "explain_failed", "finding_id": fid})
     finally:
         _explaining.discard(fid)
 
@@ -1359,17 +1386,37 @@ def explain_finding(fid: str):
         src = row.get("explanation_by")
         by = f"{src} (cached)" if src else "cache"
         return {"explanation": row["explanation"], "by": by, "cached": True, "pending": False}
-    # Not cached: return the deterministic explanation immediately and compute the
-    # richer LLM one on a real daemon thread (de-duped per finding). FastAPI
-    # BackgroundTasks run as part of the response lifecycle and kept the request
-    # open until the LLM finished — a true thread returns the fallback instantly.
+    # Not cached: kick the model off on a real daemon thread (de-duped per
+    # finding) and return NULL. FastAPI BackgroundTasks run as part of the
+    # response lifecycle and kept the request open until the LLM finished; a
+    # true thread returns immediately.
+    # A model call that already ran and produced nothing is a TERMINAL answer,
+    # not a reason to wait again.
+    if fid in _explain_failed and fid not in _explaining:
+        return {"explanation": None, "by": None, "cached": False, "pending": False,
+                "provider": settings.active_provider(),
+                "unavailable_reason": _explain_failed[fid]}
     if fid not in _explaining:
         _explaining.add(fid)
         _spawn(f"explain-{fid}", _bg_explain, fid, f)
-    # tell the UI which provider will produce the richer explanation, so it can
-    # label the "refining…" state truthfully (local model vs a hosted one).
-    return {"explanation": explain_mod._fallback(f), "by": "engine_fallback",
-            "cached": False, "pending": True, "provider": settings.active_provider()}
+    # `explanation: None`, NOT the deterministic fallback.
+    #
+    # This used to return `explain_mod._fallback(f)` here, which was right when
+    # it was the only explanation the console could get. It is wrong now: every
+    # finding already carries `engine_explanation` -- that same deterministic
+    # text -- so echoing it back under a header that says a language model wrote
+    # it made the advisory block repeat the engine block word for word while
+    # claiming a different author. The UI has the engine's answer; what it is
+    # asking for here is the MODEL's, and until the model produces one the
+    # honest value is nothing.
+    #
+    # `by` names what would write it rather than what did, so a "refining with
+    # the local model…" state can be labelled truthfully.
+    return {"explanation": None, "by": None, "cached": False, "pending": True,
+            "provider": settings.active_provider(),
+            "note": ("the model has not written one yet; the finding's own "
+                     "`engine_explanation` is the deterministic answer and is "
+                     "already on the finding")}
 
 
 @app.post("/api/findings/{fid}/remediate")

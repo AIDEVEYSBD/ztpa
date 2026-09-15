@@ -710,7 +710,24 @@ export const api = {
   graph: (snap?: string) => j<GraphData & Provenance>(`/api/graph${qs(snap)}`),
   findings: (snap?: string) => j<FindingsPage>(`/api/findings${qs(snap)}`),
   actions: (snap?: string) => j<{ actions: ActionItem[]; ranked_by: string } & Provenance>(`/api/actions${qs(snap)}`),
-  explain: (id: string) => j<{ explanation: string; by: string; cached?: boolean; pending?: boolean }>(`/api/findings/${id}/explain`, post()),
+  /** Ask the advisory layer for MODEL PROSE about a finding.
+   *
+   *  `explanation` is null until a model has actually written one. It is
+   *  deliberately NOT the engine's deterministic text: every finding already
+   *  carries `engine_explanation`, and echoing that back here under a header
+   *  saying a language model wrote it made the two blocks identical while
+   *  claiming different authors.
+   *
+   *  Three terminal-ish states, and they are different sentences:
+   *    explanation set          a model wrote it (`by` names which)
+   *    pending: true            a model is being asked; ask again shortly
+   *    unavailable_reason set   a model WAS asked and produced nothing. This is
+   *                             an answer, not a reason to keep retrying. */
+  explain: (id: string) => j<{
+    explanation: string | null; by: string | null;
+    cached?: boolean; pending?: boolean; provider?: string;
+    unavailable_reason?: string; note?: string;
+  }>(`/api/findings/${id}/explain`, post()),
   remediate: (id: string) => j<Remediation>(`/api/findings/${id}/remediate`, post()),
   remediateRefine: (id: string, comment: string, prior_change?: Record<string, any>) =>
     j<Remediation>(`/api/findings/${id}/remediate/refine`, post({ comment, prior_change })),
@@ -850,3 +867,19 @@ export const api = {
   /** Single points of failure, with the blast radius behind each one. */
   resilience: (snap?: string) => j<ResiliencePayload>(`/api/resilience${qs(snap)}`),
 };
+
+/**
+ * `GET /api/graph` — the policy graph, and the cross-tool paths through it.
+ *
+ * Named here because the Explorer needs it as a TYPE, not only as a return
+ * value: the cross-tool chain is now drawn as an overlay on the topology canvas
+ * (components/topology/paths.ts), so the payload is threaded through several
+ * components rather than consumed where it is fetched.
+ *
+ * `cross_tool_paths` stays `Record<string, any>[]` — that is genuinely what the
+ * endpoint serves, and pretending otherwise with a hand-written interface would
+ * let a field disappear from the API without a single call site noticing.
+ * `normalisePaths` reads it defensively instead, and a hop with no service
+ * renders as a hop with no service rather than as "any".
+ */
+export type GraphPayload = GraphData & Provenance;
