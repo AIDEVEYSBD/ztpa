@@ -13,6 +13,41 @@ export interface Finding {
   explanation?: string | null;
 }
 
+/** One spot where path enumeration hit its scan cap, as `_record_truncations`
+ *  reports it: the function that cut, the pair it was walking, and the cap. */
+export interface Truncation {
+  fn: string;
+  src: string;
+  dst: string;
+  cap: number;
+}
+
+/**
+ * How complete the analysis behind a payload's numbers was.
+ *
+ * The backend attaches this (`_analysis_block` in backend/app/main.py) to every
+ * read that makes a claim about the estate as a whole — /api/findings,
+ * /api/snapshot, /api/report — and the frontend types declared none of it, so a
+ * run with a dead analyzer or a truncated path scan rendered byte-identically
+ * to a complete one. A count is only worth as much as the analysis behind it.
+ *
+ * THREE-VALUED, AND `null` IS NOT `[]`. `null` means "this process cannot say"
+ * — the in-memory result describes the ACTIVE snapshot only, so a read of a
+ * historical one gets null rather than a positive claim that a run nobody
+ * analyzed here was clean. A screen must render null as unknown, never as none.
+ */
+export interface AnalysisCompleteness {
+  /** Did every analyzer finish? `null` = not knowable for this snapshot. */
+  analysis_complete: boolean | null;
+  /** Analyzers that failed, sorted. Non-empty = findings are MISSING. */
+  degraded_analyzers: string[] | null;
+  /** Path scans that hit their cap, sorted. Non-empty = paths are missing. */
+  truncations: Truncation[] | null;
+  /** Present only when a later rebuild was REFUSED: this payload is complete
+   *  and also not the newest analysis, and both halves have to be said. */
+  last_build_rejected?: string;
+}
+
 export interface ActionItem {
   action_id: string;
   title: string;

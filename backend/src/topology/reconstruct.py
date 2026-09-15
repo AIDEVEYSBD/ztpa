@@ -56,6 +56,10 @@ from ..models import (
     Subnet, Topology, TopologyLayer, Vlan,
 )
 from ..netaddr import is_public, parse_net
+from .merge import (
+    merge_circuits, merge_devices, merge_interfaces, merge_links, merge_subnets,
+    merge_vlans,
+)
 
 # ── Lane assignment ────────────────────────────────────────────────────────
 #
@@ -235,17 +239,37 @@ def _lane_for(dev: NetDevice, ifaces: list[NetInterface],
 
 def _containment_links(interfaces: list[NetInterface],
                        known: set[tuple[str, str]]) -> list[NetLink]:
-    """Adjacency derived from two interfaces sharing one address block.
+    """Adjacency derived from EXACTLY TWO interfaces sharing one address block.
 
     This is the fallback for an estate whose consoles report no neighbour
-    protocol -- which is most estates, since LLDP/CDP data needs device-tier
-    access. It is a REAL observation (both sides' addresses were read off their
-    own interfaces and they provably sit in one block), which is why it is
-    allowed at all; and it is the weakest evidence class we store, which is why
-    it is labelled rather than blended in with a cable.
+    protocol -- which is most estates, since LLDP/CDP needs device-tier access.
+    It is a REAL observation (both sides' addresses were read off their own
+    interfaces and provably sit in one block), which is why it is allowed at
+    all; and it is the weakest evidence class we store, which is why it is
+    labelled rather than blended in with a cable.
 
-    Refused when the shared block is broader than a /8, and when the two
-    interfaces belong to the same device.
+    WHY "EXACTLY TWO" AND NOT "TWO OR MORE".
+    Sharing a subnet is not adjacency once more than two things are in it. Every
+    device on this estate holds a management address in 10.255.0.0/24, and
+    pairwise-linking everything that shares a block turned that one out-of-band
+    /24 into a near-complete mesh: 34 fabricated links on a 13-device network,
+    where the estate has 18 real ones.
+
+    That is not merely untidy. A mesh has no articulation points and no bridges,
+    so the resilience analyzer -- whose entire job is finding the single modem,
+    the single edge router and the single-homed access switch -- would have
+    reported a flawless network. The most important findings in the product
+    would have been silently deleted by a drawing heuristic.
+
+    Two interfaces in a block is a point-to-point adjacency. Three or more is a
+    SEGMENT, and segment membership is already modelled by the VLAN and subnet
+    layers, where it belongs. So a shared /24 with twelve devices on it produces
+    no links at all here, and the twelve devices are related through the segment
+    instead -- which is what is actually true.
+
+    Also refused when the block is broader than a /8 (a default route would make
+    every device adjacent to every other) and when both interfaces belong to one
+    device.
     """
     by_block: dict[str, list[NetInterface]] = {}
     for iface in interfaces:
@@ -254,10 +278,14 @@ def _containment_links(interfaces: list[NetInterface],
 
     out: list[NetLink] = []
     for block in sorted(by_block):
-        members = by_block[block]
         # Order-independent: sorted so the emitted link set cannot depend on
         # which normalizer ran first, which the snapshot fingerprint depends on.
-        members = sorted(members, key=lambda i: i.interface_key)
+        members = sorted(by_block[block], key=lambda i: i.interface_key)
+        # Distinct DEVICES, not interfaces: a router with two legs in one block
+        # is one device, and counting its interfaces would push a genuine
+        # point-to-point block over the threshold and silently drop the link.
+        if len({i.device_key for i in members}) != 2:
+            continue                                  # a segment, not a cable
         for i, a in enumerate(members):
             for b in members[i + 1:]:
                 if a.device_key == b.device_key:
@@ -326,12 +354,24 @@ def reconstruct(devices: Iterable[NetDevice], interfaces: Iterable[NetInterface]
     is sorted by a stable key, so two runs over the same observations produce
     byte-identical output and the snapshot fingerprint is meaningful.
     """
-    devs = sorted(devices, key=lambda d: d.device_key)
-    ifaces = sorted(interfaces, key=lambda i: i.interface_key)
-    observed_links = sorted(links, key=lambda l: l.link_key)
-    vls = sorted(vlans, key=lambda v: v.vlan_id)
-    subs = sorted(subnets, key=lambda s: s.cidr)
-    circs = sorted(circuits, key=lambda c: c.circuit_id)
+    # 0. FOLD THE CONSOLES TOGETHER FIRST. Every step below -- role derivation,
+    #    containment, the BFS, lane assignment -- reasons over a graph whose
+    #    nodes are devices. If one firewall arrives three times because three
+    #    consoles described it, every one of those steps is computing over a
+    #    network that does not exist: three boxes where there is one, an
+    #    articulation-point analysis over split nodes, and an inventory count a
+    #    reviewer reads out loud that is wrong by a third.
+    #
+    #    Measured on the demo estate before this existed: 19 devices for a
+    #    13-device network, and 19 of 101 interface rows duplicated.
+    devs, dev_conflicts = merge_devices(devices)
+    ifaces, if_conflicts = merge_interfaces(interfaces)
+    observed_links = merge_links(links)
+    vls = merge_vlans(vlans)
+    subs = merge_subnets(subnets)
+    circs = merge_circuits(circuits)
+    conflicts = sorted(dev_conflicts + if_conflicts,
+                       key=lambda c: (c["entity"], c["field"]))
 
     ifaces_by_dev: dict[str, list[NetInterface]] = {}
     for iface in ifaces:
@@ -384,8 +424,28 @@ def reconstruct(devices: Iterable[NetDevice], interfaces: Iterable[NetInterface]
         if lane not in populated and lane in LANE_SOURCE_HINT
     ]
 
+    # 5. Devices nobody reported a cable for. A box with no line to anything
+    #    reads as a rendering bug; it is almost always a coverage gap, and the
+    #    difference matters to whoever is looking at it.
+    linked = {d for ln in all_links for d in (ln.a_device, ln.b_device)}
+    unlinked = [
+        {
+            "device_key": d.device_key,
+            "role": d.role,
+            "observed_by": [o["tool"] for o in d.observed_by] or [d.provenance.source_tool],
+            "reason": (
+                "inventoried, but no onboarded source reported an adjacency for it: "
+                "its own console reports no neighbour table, and the console that "
+                "manages the device on the other end of the cable does not enumerate it"
+            ),
+            "would_be_filled_by": LANE_SOURCE_HINT.get(d.layer or "access", ""),
+        }
+        for d in devs if d.device_key not in linked
+    ]
+
     return Topology(
         devices=devs, interfaces=ifaces, links=all_links,
         vlans=vls, subnets=subs, circuits=circs,
-        unobserved_layers=unobserved,
+        unobserved_layers=unobserved, source_conflicts=conflicts,
+        unlinked_devices=unlinked,
     )

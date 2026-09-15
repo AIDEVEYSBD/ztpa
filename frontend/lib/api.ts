@@ -1,5 +1,6 @@
 import type {
-  ActionItem, AdminMetrics, AiActiveConfig, AiConfigResponse, AiConfigSave, AiTestResult, AskResult,
+  ActionItem, AdminMetrics, AiActiveConfig, AiConfigResponse, AiConfigSave, AiTestResult,
+  AnalysisCompleteness, AskResult,
   AzureAiAccount, AzureDeployment, AzureDiscovery, AzureResourceGroup, AzureSubscription, CampaignPlan,
   CampaignSubmitResult, ChangeResult, Finding, GraphData, Health, MergeSuggestion, Remediation,
   RemediationRevision, StagedChange, ToolInfo,
@@ -306,7 +307,32 @@ export type SnapshotSummary = {
   counts: Record<string, number>;
   viewing: string;
   active: string;
-} & Provenance;
+} & AnalysisCompleteness & Provenance;
+
+/**
+ * ONE PAGE of /api/findings — never the estate.
+ *
+ * `findings` was typed as the whole set, so every band counter on the console is
+ * computed over at most `limit` rows and reports a number smaller than the truth
+ * with nothing on screen saying so. The endpoint has always sent the fields that
+ * make that visible; the types dropped them on the floor.
+ *
+ * `total` is the count for the WHOLE snapshot and `has_more` says this page is
+ * not all of it — `has_more` comes from an overshoot row the server actually
+ * fetched, so it is exact even when `total` was counted by a separate statement.
+ * `next_cursor` is non-null exactly when `has_more` is true and must be passed
+ * back verbatim; it is a keyset token, not an offset.
+ */
+export type FindingsPage = {
+  findings: Finding[];
+  /** Findings in the snapshot, not on this page. */
+  total: number;
+  /** The page size the server applied (it clamps what was asked for). */
+  limit: number;
+  /** Opaque continuation token, or null when this page is the last one. */
+  next_cursor: string | null;
+  has_more: boolean;
+} & AnalysisCompleteness & Provenance;
 
 export type SnapshotList = { snapshots: any[]; active: string } & Provenance;
 
@@ -547,7 +573,7 @@ export const api = {
   ingest: (snap?: string) => j<{ active_scenario: string; sources: any[]; resolved_objects: any[]; canonical_rules: any[] }>(`/api/ingest${qs(snap)}`),
   snapshot: (snap?: string) => j<SnapshotSummary>(`/api/snapshot${qs(snap)}`),
   graph: (snap?: string) => j<GraphData & Provenance>(`/api/graph${qs(snap)}`),
-  findings: (snap?: string) => j<{ findings: Finding[] } & Provenance>(`/api/findings${qs(snap)}`),
+  findings: (snap?: string) => j<FindingsPage>(`/api/findings${qs(snap)}`),
   actions: (snap?: string) => j<{ actions: ActionItem[]; ranked_by: string } & Provenance>(`/api/actions${qs(snap)}`),
   explain: (id: string) => j<{ explanation: string; by: string; cached?: boolean; pending?: boolean }>(`/api/findings/${id}/explain`, post()),
   remediate: (id: string) => j<Remediation>(`/api/findings/${id}/remediate`, post()),

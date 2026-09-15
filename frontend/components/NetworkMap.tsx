@@ -9,17 +9,15 @@ import type { Band, Finding, GraphData } from "@/lib/types";
 import { Stat, ToolBadge, Skeleton, cn } from "./ui";
 import { ErrorState } from "./ui/Feedback";
 import { RuleRef } from "./RuleRef";
+import { toolColour } from "@/lib/toolColour";
 
 const SENSITIVE = ["pci", "customer-data", "crown-jewel", "phi"];
 const NODE_CAP = 90; // above this, the full view caps + tells you (no silent truncation)
 
 // Source tool is encoded as edge COLOUR (+ a legend) instead of repeated text
-// labels, which overlap badly. Mid-tones chosen to read on both themes.
-const TOOL_EDGE: Record<string, string> = {
-  algosec: "#3b82f6", guardicore: "#8b5cf6", wiz: "#06b6d4", sd_wan: "#10b981", sd_lan: "#14b8a6",
-};
-const FALLBACK_EDGE = "var(--sev-low)";
-function toolColor(tool: string) { return TOOL_EDGE[tool] ?? FALLBACK_EDGE; }
+// labels, which overlap badly. The palette used to be declared HERE and again in
+// ui/Badges.tsx and Landing.tsx, so the same tool could render blue on the edge
+// and violet on the badge beside it; lib/toolColour.ts is now the only copy.
 
 function isSensitive(tags: string[]) { return tags.some((t) => SENSITIVE.includes(t)); }
 function tierOf(n: GraphData["nodes"][number]): number {
@@ -33,6 +31,14 @@ function tierOf(n: GraphData["nodes"][number]): number {
 }
 
 function ZTNode({ data }: { data: any }) {
+  // A MULTI-HOMED ASSET USED TO SHOW ONE ADDRESS AND NO SIGN OF THE OTHERS:
+  // `sub` rendered ip_set[0], so a firewall terminating four interfaces read as
+  // a single-homed host. On a security console the hidden interface is the one
+  // that matters, so the count is on the face of the node and the whole list is
+  // on its tooltip — never a silent slice.
+  const addrs: string[] = data.addrs ?? [];
+  const head = addrs.slice(0, 2);
+  const hidden = addrs.length - head.length;
   return (
     <div style={{ opacity: data.dimmed ? 0.32 : 1 }}
       className={cn("border bg-surface px-2.5 py-2 min-w-[148px] transition-opacity",
@@ -43,7 +49,14 @@ function ZTNode({ data }: { data: any }) {
         {data.internet ? <Globe size={13} className="text-text2" /> : data.sensitive ? <Database size={13} className="text-sev-critical" /> : <Server size={13} className="text-text3" />}
         <span className="mono text-[12px] font-bold">{data.label}</span>
       </div>
-      <div className="mono mt-1 text-[10px] text-text3 truncate">{data.sub}</div>
+      <div className="mono mt-1 flex items-center gap-1 text-[10px] text-text3"
+        title={addrs.length ? addrs.join(", ") : undefined}>
+        <span className="min-w-0 truncate">{head.join(" · ") || data.fallback}</span>
+        {hidden > 0 && (
+          <span className="shrink-0 border border-borderStrong px-1 font-bold text-text2">+{hidden}</span>
+        )}
+        {data.zone && <span className="shrink-0">· {data.zone}</span>}
+      </div>
       {data.tool && (
         <div className="mt-1.5 inline-flex items-center gap-1 border border-border bg-sunk px-1 py-px text-[9px] text-text2">
           <span className="h-1 w-1 bg-accent" />{data.tool}
@@ -78,6 +91,11 @@ export function NetworkMap({ graph, findings = [], counts = {}, loading = false,
     return { pathSet: new Set(p), pathPairs: new Set(p.slice(0, -1).map((s, i) => `${s}->${p[i + 1]}`)) };
   }, [paths, selIdx]);
   const allPathNodes = useMemo(() => new Set<string>(paths.flatMap((p) => (p.path as string[]) ?? [])), [paths]);
+  // `traced` used to be applied on its own, so a snapshot with NO cross-tool
+  // path dimmed every node to 0.32 and every edge to 0.18 in order to highlight
+  // nothing — a clean estate rendered as an unexplained grey smear and read as a
+  // broken screen. Tracing is only ever on when there is a path to trace.
+  const tracing = traced && paths.length > 0;
 
   const { nodes, edges, shown, total } = useMemo(() => {
     if (!graph) return { nodes: [] as Node[], edges: [] as Edge[], shown: 0, total: 0 };
@@ -118,29 +136,35 @@ export function NetworkMap({ graph, findings = [], counts = {}, loading = false,
         nodes.push({
           id, type: "zt", position: { x: tier * 240, y: i * 78 - h / 2 + 260 },
           data: {
-            label: n.label, sub: `${n.ip_set[0] ?? n.tags[0] ?? ""}${n.zone ? ` · ${n.zone}` : ""}`,
+            label: n.label, addrs: n.ip_set, zone: n.zone,
+            // Only stands in when the node has NO address at all; it must never
+            // sit alongside one, or a tag reads as a second interface.
+            fallback: n.ip_set.length ? "" : (n.tags[0] ?? ""),
             sensitive: isSensitive(n.tags), internet: id === "0.0.0.0/0",
-            onPath: traced && pathSet.has(id), dimmed: traced && !pathSet.has(id),
+            onPath: tracing && pathSet.has(id), dimmed: tracing && !pathSet.has(id),
           },
         });
       });
     });
     const edges: Edge[] = graph.edges.filter((e) => keep.has(e.src) && keep.has(e.dst)).map((e) => {
-      const hot = traced && pathPairs.has(`${e.src}->${e.dst}`);
+      const hot = tracing && pathPairs.has(`${e.src}->${e.dst}`);
       return {
         id: `${e.src}->${e.dst}`, source: e.src, target: e.dst, type: "smoothstep", animated: hot,
         data: { tools: e.tools.join(", "), services: e.services.join(", ") },
         style: hot
           ? { stroke: "var(--accent)", strokeWidth: 2.6, filter: "drop-shadow(0 0 5px var(--accent))" }
-          : { stroke: toolColor(e.tools[0]), strokeWidth: 1.6, opacity: traced ? 0.18 : 0.85 },
+          : { stroke: toolColour(e.tools[0]), strokeWidth: 1.6, opacity: tracing ? 0.18 : 0.85 },
       };
     });
     return { nodes, edges, shown: keep.size, total };
-  }, [graph, mode, traced, pathSet, pathPairs, allPathNodes]);
+  }, [graph, mode, tracing, pathSet, pathPairs, allPathNodes]);
 
   const hero = paths[selIdx];
   // Don't render data (or a definitive "nothing here") until the API has answered.
   const ready = !!graph && !loading;
+  // Gated on `ready` on purpose: before the fetch answers, `paths` is also empty,
+  // and "no path to trace" is a claim about the estate that nothing has checked.
+  const nothingToTrace = ready && paths.length === 0;
   // legend reflects the tools actually present in this snapshot's edges
   const legendTools = useMemo(() => {
     const s = new Set<string>();
@@ -180,8 +204,10 @@ export function NetworkMap({ graph, findings = [], counts = {}, loading = false,
                 <button onClick={() => setMode("focus")} className={cn("px-2.5 py-1 transition-colors", mode === "focus" ? "bg-accent-soft font-bold text-accent-fg" : "text-text2 hover:bg-surfaceHover")}>Focus</button>
                 <button onClick={() => setMode("full")} className={cn("border-l border-border px-2.5 py-1 transition-colors", mode === "full" ? "bg-accent-soft font-bold text-accent-fg" : "text-text2 hover:bg-surfaceHover")}>All</button>
               </div>
-              <button onClick={() => setTraced((t) => !t)} className={cn(traced ? "btn-primary" : "btn-ghost", "!h-[30px]")}>
-                <Route size={13} /> {traced ? "Tracing path" : "Trace path"}
+              <button onClick={() => setTraced((t) => !t)} disabled={nothingToTrace}
+                title={nothingToTrace ? "This snapshot has no cross-tool path, so there is nothing to trace." : undefined}
+                className={cn(tracing ? "btn-primary" : "btn-ghost", "!h-[30px]")}>
+                <Route size={13} /> {nothingToTrace ? "No path to trace" : traced ? "Tracing path" : "Trace path"}
               </button>
             </div>
           </div>
@@ -226,7 +252,7 @@ export function NetworkMap({ graph, findings = [], counts = {}, loading = false,
           <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-hair px-3.5 py-2.5 text-[11.5px] text-text2">
             <span className="text-text3">edge colour = source tool:</span>
             {legendTools.map((t) => (
-              <span key={t} className="flex items-center gap-1.5"><span className="h-[3px] w-4" style={{ background: toolColor(t) }} />{t}</span>
+              <span key={t} className="flex items-center gap-1.5"><span className="h-[3px] w-4" style={{ background: toolColour(t) }} />{t}</span>
             ))}
             <span className="flex items-center gap-1.5"><span className="h-[3px] w-4 bg-accent" />cross-tool path</span>
             <span className="flex items-center gap-1.5"><span className="h-2 w-2 border-[1.5px] border-sev-critical" />PCI / regulated</span>

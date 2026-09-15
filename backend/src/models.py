@@ -400,6 +400,17 @@ class NetDevice(BaseModel):
     layer_source: Literal["declared", "derived", "unknown"] = "unknown"
     layer_reason: str = ""
     tags: list[Tag] = Field(default_factory=list)
+    # Every console that saw this, once the views are merged. `provenance` above
+    # is the winning one; this is the whole list, because "where did we find it"
+    # has three answers for a firewall that FortiManager, the FortiGate itself
+    # and AlgoSec all describe. Entries are {tool, tier, raw_ref}, sorted.
+    observed_by: list[dict] = Field(default_factory=list)
+    # Fields two sources STATED differently, each naming both values and both
+    # tools. Recorded rather than resolved away: two consoles disagreeing about a
+    # device is a fact about the estate's record-keeping -- a stale entry, or a
+    # box replaced without the aggregator being told -- and the operator is the
+    # one who can act on it.
+    conflicts: list[dict] = Field(default_factory=list)
     provenance: Provenance
 
 
@@ -431,6 +442,17 @@ class NetInterface(BaseModel):
     # neighbour protocol was actually read.
     neighbor_device: Optional[str] = None
     neighbor_interface: Optional[str] = None
+    # Every console that saw this, once the views are merged. `provenance` above
+    # is the winning one; this is the whole list, because "where did we find it"
+    # has three answers for a firewall that FortiManager, the FortiGate itself
+    # and AlgoSec all describe. Entries are {tool, tier, raw_ref}, sorted.
+    observed_by: list[dict] = Field(default_factory=list)
+    # Fields two sources STATED differently, each naming both values and both
+    # tools. Recorded rather than resolved away: two consoles disagreeing about a
+    # device is a fact about the estate's record-keeping -- a stale entry, or a
+    # box replaced without the aggregator being told -- and the operator is the
+    # one who can act on it.
+    conflicts: list[dict] = Field(default_factory=list)
     provenance: Provenance
 
 
@@ -451,6 +473,17 @@ class NetLink(BaseModel):
     redundant_group: Optional[str] = None
     aggregated: bool = False                          # a LAG / port-channel
     member_count: int = 1
+    # Every console that saw this, once the views are merged. `provenance` above
+    # is the winning one; this is the whole list, because "where did we find it"
+    # has three answers for a firewall that FortiManager, the FortiGate itself
+    # and AlgoSec all describe. Entries are {tool, tier, raw_ref}, sorted.
+    observed_by: list[dict] = Field(default_factory=list)
+    # Fields two sources STATED differently, each naming both values and both
+    # tools. Recorded rather than resolved away: two consoles disagreeing about a
+    # device is a fact about the estate's record-keeping -- a stale entry, or a
+    # box replaced without the aggregator being told -- and the operator is the
+    # one who can act on it.
+    conflicts: list[dict] = Field(default_factory=list)
     provenance: Provenance
 
 
@@ -520,3 +553,18 @@ class Topology(BaseModel):
     # device, and never silently omitted, because a lane that simply is not
     # drawn reads as a lane that does not exist.
     unobserved_layers: list[dict] = Field(default_factory=list)
+    # Fields two consoles STATED differently while describing one entity. Not an
+    # error and not resolved away: it is a fact about the estate's own
+    # record-keeping -- a stale entry in one console, or a box replaced without
+    # the aggregator being told -- and it is exactly the kind of thing a review
+    # is for. The merge picks a winner by tier so the picture can be drawn; this
+    # is the audit trail of what it had to pick between.
+    source_conflicts: list[dict] = Field(default_factory=list)
+    # Devices we inventoried but whose CABLE nobody reported. Named explicitly,
+    # because a box sitting on the canvas with no line to anything reads as a
+    # rendering bug, and it is not one -- it is the most common real coverage
+    # gap there is. `ap-wifi-01` on the demo estate is the worked example: Meraki
+    # manages it and reports no adjacency, and the Catalyst switch it is plugged
+    # into is a different vendor's console that (correctly) does not borrow the
+    # answer. Each entry carries the concrete API that would close it.
+    unlinked_devices: list[dict] = Field(default_factory=list)
