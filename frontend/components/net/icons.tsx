@@ -93,11 +93,16 @@ function HArrow({ from, to, y }: { from: number; to: number; y: number }) {
  * is the ONLY mark an L2 switch gets — see `L2SwitchIcon`.
  */
 function CrossedArrows({ y }: { y: number }) {
-  const tail = y + 4.5;
+  const tail = y + 6;
+  // Transition over 4 units (x 10 -> 14), not 8. The two paths used to run
+  // nearly parallel for most of their length and cross in a 2px smudge at the
+  // sizes this is actually rendered at -- so the ONE mark that distinguishes a
+  // switch from everything else in the set was invisible exactly where it
+  // mattered. Steeper diagonals and a deeper drop give the crossing amplitude.
   return (
     <>
-      <path d={`M2.5 ${tail}H8L16 ${y}H21.5M19.5 ${y - 1.5}L21.5 ${y}L19.5 ${y + 1.5}`} />
-      <path d={`M21.5 ${tail}H16L8 ${y}H2.5M4.5 ${y - 1.5}L2.5 ${y}L4.5 ${y + 1.5}`} />
+      <path d={`M2.5 ${tail}H10L14 ${y}H21.5M19.5 ${y - 1.5}L21.5 ${y}L19.5 ${y + 1.5}`} />
+      <path d={`M21.5 ${tail}H14L10 ${y}H2.5M4.5 ${y - 1.5}L2.5 ${y}L4.5 ${y + 1.5}`} />
     </>
   );
 }
@@ -141,9 +146,9 @@ export function RouterIcon(p: NetIconProps) {
 export function L3SwitchIcon(p: NetIconProps) {
   return (
     <Glyph {...p}>
-      <HArrow from={11} to={2.5} y={4.5} />
-      <HArrow from={13} to={21.5} y={4.5} />
-      <CrossedArrows y={10} />
+      <HArrow from={11} to={2.5} y={3.5} />
+      <HArrow from={13} to={21.5} y={3.5} />
+      <CrossedArrows y={9} />
       <Slab />
     </Glyph>
   );
@@ -153,7 +158,7 @@ export function L3SwitchIcon(p: NetIconProps) {
 export function L2SwitchIcon(p: NetIconProps) {
   return (
     <Glyph {...p}>
-      <CrossedArrows y={7} />
+      <CrossedArrows y={6} />
       <Slab />
     </Glyph>
   );
@@ -184,9 +189,18 @@ export function HubIcon(p: NetIconProps) {
 export function BridgeIcon(p: NetIconProps) {
   return (
     <Glyph {...p}>
-      <HArrow from={2.5} to={21.5} y={7.5} />
-      <HArrow from={21.5} to={2.5} y={12} />
-      <Slab />
+      <HArrow from={2.5} to={21.5} y={5} />
+      <HArrow from={21.5} to={2.5} y={9} />
+      {/* A SPAN, not the shared slab. The bridge used to be "the L2 switch with
+          the crossing removed" -- an absence, carried at 1.5px, sitting next to
+          the two glyphs whose distinction matters most in this product. An
+          absence is the weakest cue available and it was spending its budget in
+          the worst place. Cisco's strongest signal for a bridge is that it is
+          the only CURVED object in the library, so the body becomes the deck and
+          its piers, and l2/l3 get the whole slab silhouette to themselves. */}
+      <path d="M2.5 14.5C7 12.6 17 12.6 21.5 14.5" />
+      <path d="M6 13.7V20.5M12 12.9V20.5M18 13.7V20.5" />
+      <path d="M2.5 20.5H21.5" />
     </Glyph>
   );
 }

@@ -1503,7 +1503,7 @@ export function ExplorerPanel({ snapshot, findings, findingsError, initialOverla
                         >
                           <NetIcon
                             kind={n?.role ?? n?.kind ?? "unknown"}
-                            size={15}
+                            size={18}
                             className="mt-0.5 shrink-0 text-text3"
                           />
                           <span className="min-w-0">

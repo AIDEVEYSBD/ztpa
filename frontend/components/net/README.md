@@ -14,9 +14,37 @@ the entire acceptance criterion.
 
 The brief says "use standard network icons". The standard icons that phrase
 refers to are Cisco's — the puck-shaped router, the crossed-arrow switch, the
-brick-wall firewall. **We do not ship Cisco's icon files.** Those files are
-Cisco's artwork, their licence does not permit redistribution inside a
-commercial product, and this is a commercial product.
+brick-wall firewall. **We do not ship Cisco's icon files**, for four reasons,
+any one of which is on its own sufficient. They are quoted because the previous
+version of this paragraph got the reason wrong, and a wrong reason is worse than
+none: it is the sentence somebody repeats in a customer conversation.
+
+1. **"You may use them freely, but you may not alter them."** Cisco distributes
+   EPS, JPG, VSS, PPT and PDF — *no SVG*. Converting the format is an
+   alteration. So is recolouring to `currentColor` so a glyph survives the theme
+   toggle, and so is simplifying geometry to hold together at 18px. Every step
+   required to put them in this app is the one step forbidden.
+2. **"Do not use Cisco icons as graphical design elements in your materials.
+   These icons should be used only in network design diagrams."** (*Cisco Policy
+   on Copyrighted Materials*.) Device glyphs in cards, table rows, legends and
+   filters are UI chrome.
+3. **"Do not distribute Cisco work by sale, rental, or other disposition."**
+   Serving the artwork to a paying customer's browser is distribution by sale.
+4. **Trade dress**, which the copyright permission does not touch at all.
+   Cisco's trademark policy forbids using their marks "in a manner that suggests
+   affiliation or association" or imitating "the look, design, or overall
+   commercial impression". This product reviews *multi-vendor* estates — drawing
+   a Fortinet or Palo Alto box in Cisco's house artwork, inside software sold
+   for money, invites exactly that inference.
+
+Two corrections to claims that circulate widely and are **wrong**, so nobody
+re-derives them: the "does not generally license these materials for ...
+commercial purposes" sentence people quote sits in the **White Papers** section
+of Cisco's copyright page, not the icons section — commercial use is not itself
+the blocker. And **draw.io being Apache-2.0 does not make its Cisco stencils
+free**: the application carries that licence, `stencils/cisco/*.xml` does not,
+and those files ship with no notice to warn you. That is the most likely way
+this goes wrong.
 
 What we do ship is our own artwork drawn on the **visual conventions** those
 stencils established. A convention — four arrows on a puck means "this box picks

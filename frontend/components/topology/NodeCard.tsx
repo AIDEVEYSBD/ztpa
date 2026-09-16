@@ -117,7 +117,7 @@ export function NodeCard({
         title={`${members.length} devices in the ${placed.layer} lane with role ${role}:\n${members.map((m) => m.name || m.key).join("\n")}`}
       >
         <div className="flex items-center gap-1.5">
-          <NetIcon kind={role} size={15} className="shrink-0 text-text2" />
+          <NetIcon kind={role} size={18} className="shrink-0 text-text2" />
           <span className="mono truncate text-[11.5px] font-bold">
             {members.length} × {role}
           </span>
@@ -171,7 +171,7 @@ export function NodeCard({
       <div className="flex items-center gap-1.5">
         <NetIcon
           kind={n.role ?? n.kind}
-          size={15}
+          size={18}
           className={cn("shrink-0", state === "failed" ? "text-sev-critical" : "text-text2")}
         />
         <span className="mono min-w-0 flex-1 truncate text-[11.5px] font-bold">{n.name || n.key}</span>

@@ -248,7 +248,7 @@ function Row({
             className="mt-[3px]"
           />
           <span className="mt-[1px] shrink-0 text-text2">
-            <NetIcon kind={item.kind} size={14} />
+            <NetIcon kind={item.kind} size={16} />
           </span>
           <span className="min-w-0 flex-1">{first ? first.cell(item, ctx) : item.name}</span>
         </span>
@@ -335,7 +335,7 @@ function CardList({
                 className="mt-[3px]"
               />
               <span className="mt-[1px] shrink-0 text-text2">
-                <NetIcon kind={item.kind} size={15} />
+                <NetIcon kind={item.kind} size={18} />
               </span>
               <span className="min-w-0 flex-1 text-[13px]">{first ? first.cell(item, ctx) : item.name}</span>
               <button

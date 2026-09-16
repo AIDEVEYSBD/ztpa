@@ -135,7 +135,7 @@ export function AddressIdentity({
             {data.assets.map((a) => (
               <div key={a.asset_key} className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-2">
                 <span className="inline-flex min-w-0 items-center gap-2">
-                  <NetIcon kind={a.kind} size={15} className="shrink-0 text-text3" />
+                  <NetIcon kind={a.kind} size={18} className="shrink-0 text-text3" />
                   <span className="mono break-all text-[12px] font-bold">{a.asset_key}</span>
                 </span>
                 <MonoChip>{a.kind}</MonoChip>
@@ -163,7 +163,7 @@ export function AddressIdentity({
               <div key={d.key} className="space-y-1.5 px-3 py-2">
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
                   <span className="inline-flex min-w-0 items-center gap-2">
-                    <NetIcon kind={d.role ?? d.kind} size={15} className="shrink-0 text-text3" />
+                    <NetIcon kind={d.role ?? d.kind} size={18} className="shrink-0 text-text3" />
                     <span className="mono break-all text-[12px] font-bold">{d.name}</span>
                   </span>
                   <MonoChip>{d.role ?? d.kind}</MonoChip>
