@@ -114,10 +114,58 @@ def _validate(ctx, finding: Finding, change: dict) -> dict:
         after = reanalyze(_apply(ctx.records, change), ctx.assets, ctx.alias_map)
         before_crit = {_sig(x) for x in before if x.severity_band == "critical"}
         after_crit = {_sig(x) for x in after if x.severity_band == "critical"}
+        # THE EVIDENCE, not just the verdict.
+        #
+        # This returned four numbers and a boolean, and the console reduced all
+        # of it to a greyed-out button. A reviewer being asked to approve a
+        # change to a production firewall needs to see what was actually
+        # checked: which findings went away, which stayed, what appeared, and
+        # against what. The proof already existed; nothing rendered it.
+        #
+        # This is stronger than an emulator for the question being asked. GNS3
+        # boots device images and tells you a config forwards packets. It cannot
+        # tell you whether removing one AlgoSec rule closes a chain that runs
+        # through Wiz and Guardicore, because no single device sees that chain.
+        # Re-running every analyzer over the full record set does, exactly, and
+        # in milliseconds.
+        before_by = {_sig(x): x for x in before}
+        after_by = {_sig(x): x for x in after}
+        cleared = [before_by[k] for k in before_by.keys() - after_by.keys()]
+        introduced = [after_by[k] for k in after_by.keys() - before_by.keys()]
+
+        def bands(fs) -> dict:
+            out = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+            for f in fs:
+                out[f.severity_band] = out.get(f.severity_band, 0) + 1
+            return out
+
+        def brief(fs) -> list[dict]:
+            return sorted(
+                ({"type": f.type, "title": f.title, "band": f.severity_band,
+                  "severity": f.severity, "refs": sorted(f.raw_refs),
+                  "tools": sorted(f.source_tools)} for f in fs),
+                key=lambda d: (-d["severity"], d["type"], d["title"]),
+            )
+
         return {
-            "resolves": target not in {_sig(x) for x in after},
+            "resolves": target not in after_by,
             "introduces_new_criticals": sorted(f"{t}:{sorted(inv)}" for (t, inv) in (after_crit - before_crit)),
             "findings_before": len(before), "findings_after": len(after),
+            # --- the record a reviewer reads -------------------------------
+            "evidence": {
+                # What proved it. Named, because "simulated" without a method is
+                # a word, not a warrant.
+                "method": "re-analysis",
+                "method_detail": (
+                    "every analyzer re-run over the full record set with the change applied, "
+                    "then the two finding sets compared. Deterministic and exact: no sampling, "
+                    "no emulation, no model."),
+                "bands_before": bands(before),
+                "bands_after": bands(after),
+                "cleared": brief(cleared),
+                "introduced": brief(introduced),
+                "analyzers": sorted({f.type for f in before} | {f.type for f in after}),
+            },
         }
     except Exception as e:  # noqa: BLE001
         return {"resolves": False, "error": str(e)}
