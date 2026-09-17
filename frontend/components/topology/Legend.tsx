@@ -153,7 +153,7 @@ export function Legend({ redundancy, vlanBands, hasContainment, hasAggregated, h
           </div>
         )}
         <div className="mt-1.5 text-[11px] leading-snug text-text3">
-          Colour is never the only carrier: every banded card prints its VLAN and name as text.
+          Every banded card also prints its VLAN and name.
           {hatched.length > 0
             ? ` The palette holds ${VLAN_PALETTE.length}; ${hatched.length} further VLAN${hatched.length === 1 ? " is" : "s are"} hatched and identified by label alone, because nine indistinguishable colours are not a palette.`
             : ""}

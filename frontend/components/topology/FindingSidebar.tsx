@@ -305,8 +305,7 @@ export function FindingSidebar(p: FindingSidebarProps) {
         <div className="p-3">
           <ErrorState resource="the resilience analysis" error={p.error} onRetry={p.onRetry} />
           <p className="mt-2 text-[11px] leading-snug text-text3">
-            Anything listed below is a policy finding only. The single-point-of-failure analysis is missing from this
-            walkthrough because the read failed, which is not the same as it having found nothing.
+            Policy findings only — the resilience read failed, so its findings are missing rather than absent.
           </p>
         </div>
       ) : p.loading ? (
@@ -361,8 +360,7 @@ export function FindingSidebar(p: FindingSidebarProps) {
             {p.involvedOnCanvas === 0 ? (
               <p className="mt-1.5 border border-sev-medium-line bg-sev-medium-bg px-2 py-1.5 text-[11px] leading-snug text-text2">
                 None of the {item.involved.length} device{item.involved.length === 1 ? "" : "s"} this finding names is
-                drawn on the canvas, so nothing is highlighted for it. That is a gap in what this topology response
-                covers — check the cap notice above — not a finding without a subject.
+                on the canvas, so nothing is highlighted.
               </p>
             ) : null}
           </div>

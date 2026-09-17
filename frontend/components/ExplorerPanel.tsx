@@ -1288,12 +1288,7 @@ export function ExplorerPanel({ snapshot, findings, findingsError, initialOverla
             <div className="min-w-0 flex-1">
               <Eyebrow>Explorer</Eyebrow>
               <p className="mt-1.5 max-w-3xl text-[12px] leading-relaxed text-text2">
-                One network, one canvas. The estate is drawn outside-in — internet to endpoint, one band per layer —
-                from what the onboarded consoles reported; the cross-tool policy chain is traced across those same lanes
-                rather than on a second picture of its own. A lane nobody observed is named rather than drawn, a device
-                nobody reported a cable for is listed on its own rail, and a link that rests on address containment is
-                dashed rather than blended in with the cables. Click any card for everything one node is, down to the
-                rules that reach it.
+                Internet to endpoint, one band per layer. Click any card for detail.
               </p>
             </div>
             <div className="flex shrink-0 flex-wrap items-center gap-1.5">
@@ -1479,10 +1474,6 @@ export function ExplorerPanel({ snapshot, findings, findingsError, initialOverla
                   <span className="text-[12px] font-bold text-sev-high">
                     {unlinkedRows.length} inventoried device
                     {unlinkedRows.length === 1 ? "" : "s"} with no cable reported
-                  </span>
-                  <span className="text-[11.5px] text-text2">
-                    These are on the canvas with a dashed border and no line. That is a gap in what the consoles report,
-                    not a gap in the estate.
                   </span>
                 </div>
                 <ul className="mt-2 grid gap-1.5 sm:grid-cols-2 xl:grid-cols-3">

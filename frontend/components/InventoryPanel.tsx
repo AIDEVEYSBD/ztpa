@@ -340,11 +340,8 @@ export function InventoryPanel({ snapshot }: { snapshot?: string }) {
       >
         <div className="min-w-0 space-y-3 p-3 sm:p-4">
           <p className="text-[12px] leading-relaxed text-text2">
-            Every entity the onboarded sources reported, what kind it is, and where we found it. The
-            <span className="font-bold text-text"> Source(s)</span> column lists every console that saw a row &mdash; not the
-            one that won &mdash; each with the tier its claim came from, and
-            <span className="font-bold text-text"> Identity</span> says whether the engine proved a row was the same thing
-            another console called something else.
+            Every device, VLAN, subnet, circuit and asset the onboarded consoles reported.
+            <span className="font-bold text-text"> Source(s)</span> lists every console that saw a row, with its tier.
           </p>
 
           {cardsErr ? (

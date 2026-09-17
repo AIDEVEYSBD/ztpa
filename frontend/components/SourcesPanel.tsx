@@ -202,11 +202,8 @@ export function SourcesPanel({ snapshot }: { snapshot?: string }) {
         </div>
 
         <p className="mt-2 max-w-3xl text-[12px] leading-relaxed text-text2">
-          What we are reading, which rung of the collection ladder it came from, what it put into this
-          snapshot — and what it cannot tell us.{" "}
-          <b className="text-text">A catalogue entry is not an integration.</b>{" "}
-          Catalogue sources are ones this product knows how to read: the API family, the auth model and the
-          yields are described, nothing is connected, and nothing has been collected from them.
+          What we read, what it contributed, and what it cannot tell us.{" "}
+          <b className="text-text">A catalogue entry is not an integration</b> — nothing is connected to it.
         </p>
 
         <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-hair pt-3">
@@ -243,9 +240,8 @@ export function SourcesPanel({ snapshot }: { snapshot?: string }) {
           <div>
             <Eyebrow><Plug size={13} /> Connected sources</Eyebrow>
             <p className="mt-1.5 max-w-3xl text-[12px] leading-relaxed text-text2">
-              Read top-down. An aggregator covers everything that was added to it; where one does not reach,
-              a vendor&apos;s management console does; where that does not reach either, the device itself is
-              read in its own scope. A rung with nothing on it is a coverage gap, and it is named as one.
+              Aggregator first, then the vendor&apos;s console, then the device itself. An empty rung is a
+              coverage gap.
             </p>
           </div>
 
@@ -349,8 +345,7 @@ function Header() {
     <div className="panel p-4">
       <Eyebrow><Radio size={13} /> Sources — inventory of intelligence</Eyebrow>
       <p className="mt-2 max-w-3xl text-[12px] leading-relaxed text-text2">
-        What we are reading, which rung of the collection ladder it came from, what it put into this snapshot —
-        and what it cannot tell us.
+        What we read, what it contributed, and what it cannot tell us.
       </p>
     </div>
   );
