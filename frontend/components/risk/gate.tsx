@@ -28,7 +28,7 @@ export const CRITERIA_LABELS: Record<string, string> = {
  *  request is judged by. Labelling a remediation with the add-allow list showed
  *  two permanently-failing criteria that were never evaluated. */
 export const REMEDIATION_CRITERIA_LABELS: Record<string, string> = {
-  resolves: "Re-simulates as resolving the finding",
+  resolves: "Re-analysis shows the finding resolved",
   no_new_criticals: "Introduces no new critical finding",
 };
 
@@ -236,7 +236,7 @@ export function GateRuling({ kind, criteria, deltaSummary, triggeringReason, rat
       </div>
       <div>
         <div className="mb-1.5 text-[9.5px] font-bold uppercase tracking-[0.14em] text-text3">
-          {isRemediation ? "Re-simulation" : "Computed delta"}
+          {isRemediation ? "Re-analysis" : "Computed delta"}
         </div>
         {isRemediation ? <RemediationValidation dd={deltaSummary} /> : <ComputedDelta delta={deltaSummary} />}
       </div>

@@ -67,6 +67,7 @@ import {
 } from "@/lib/api";
 import type { BlastRadius, Finding, SourceCard, TopoNode } from "@/lib/types";
 import { cn } from "@/lib/cn";
+import { useReducedMotion } from "@/lib/useReducedMotion";
 import { Chip, Eyebrow, SeverityPill, StatPill } from "./ui";
 import { ErrorState, InlineError } from "./ui/Feedback";
 import { NetIcon } from "./net/icons";
@@ -117,19 +118,6 @@ const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v
 const FIT_MIN = 0.72;
 
 export type ExplorerOverlay = "off" | "reachability" | "findings";
-
-function useReducedMotion(): boolean {
-  const [reduced, setReduced] = useState(false);
-  useEffect(() => {
-    if (typeof window === "undefined" || !window.matchMedia) return;
-    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
-    const sync = () => setReduced(mq.matches);
-    sync();
-    mq.addEventListener("change", sync);
-    return () => mq.removeEventListener("change", sync);
-  }, []);
-  return reduced;
-}
 
 /** True once the viewport is at least `px` wide. False during SSR and on the
  *  first client paint, which is the safe direction: the sheet layout works at

@@ -10,7 +10,7 @@
  *
  *   1  what is wrong            the analyzer's own title + the engine's explanation
  *   2  the actual rules         action, endpoints as assets, service, direction
- *   3  the proposed fix         drafted, re-simulated, refined — and what it cuts
+ *   3  the proposed fix         drafted, re-analysed, walked hop by hop — and what it cuts
  *   4  the gate's ruling        criteria, delta, verdict — decided here
  *   5  implementation           queued, applied, and the way back out
  *
@@ -26,6 +26,7 @@ import {
 import { api, asApiError, type ApiError } from "@/lib/api";
 import type { Finding, ActionItem, PushPlan, Remediation, RemediationAttempt } from "@/lib/types";
 import { cn } from "@/lib/cn";
+import { useReducedMotion } from "@/lib/useReducedMotion";
 import { Prose } from "@/components/Markdown";
 import { SeverityPill, Spinner, ToolBadge, SkeletonText } from "@/components/ui";
 import { InlineError } from "@/components/ui/Feedback";
@@ -90,6 +91,143 @@ type Expl = { explanation: string | null; by: string | null; pending?: boolean; 
  * clears, every finding it introduces, and which analyzers were re-run. Numbers
  * a reader can check, not an assurance.
  */
+/**
+ * The packet walk: the proposed fix, replayed hop by hop.
+ *
+ * The band counts above say a fix works. This says WHERE, and -- the half a
+ * demo is tempted to drop -- where it does not. Cutting the chain's terminal
+ * grant closes the chain and leaves the database reachable by RDP, and an
+ * approver who is shown only the closed hop will believe the opposite.
+ *
+ * Hops reveal one at a time. The animation is not decoration: a reader following
+ * a four-hop chain across three consoles needs to arrive at the blocked hop,
+ * not find it. Anyone who does not want it can skip to the end, and
+ * `prefers-reduced-motion` starts there.
+ */
+function PacketWalkView({ w }: { w: PacketWalk }) {
+  const total = w.before.length;
+  const reduced = useReducedMotion();
+  const [stage, setStage] = useState(reduced ? total : 0);
+
+  useEffect(() => { setStage(reduced ? total : 0); }, [w, reduced, total]);
+  useEffect(() => {
+    if (stage >= total) return;
+    const t = setTimeout(() => setStage((n) => n + 1), stage === 0 ? 350 : 620);
+    return () => clearTimeout(t);
+  }, [stage, total]);
+
+  if (!w.flow || total === 0) return null;
+  const done = stage >= total;
+
+  return (
+    <div className="border border-border bg-sunk">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 border-b border-hair px-2.5 py-1.5">
+        <span className="text-[10px] font-bold uppercase tracking-[0.08em] text-text2">
+          Packet walk
+        </span>
+        <button type="button" onClick={() => setStage(done ? 0 : total)}
+          className="text-[10.5px] font-bold text-text3 hover:text-accent-fg">
+          {done ? "replay" : "skip"}
+        </button>
+      </div>
+
+      <div className="border-b border-hair px-2.5 py-1.5 text-[11px] text-text2">
+        <span className="mono font-bold">{w.flow.src_display}</span>
+        <span className="mx-1.5 text-text3">&rarr;</span>
+        <span className="mono font-bold">{w.flow.dst_display}</span>
+        <span className="ml-2 text-text3">{w.flow.service}</span>
+      </div>
+
+      <ol className="divide-y divide-hair">
+        {w.before.map((h) => {
+          const shown = h.n <= stage;
+          const blocked = w.blocked_at === h.n;
+          return (
+            <li key={h.n}
+              className={cn(
+                "flex flex-wrap items-baseline gap-x-2 gap-y-1 px-2.5 py-1.5 text-[11px] transition-opacity duration-300",
+                shown ? "opacity-100" : "opacity-0",
+              )}
+            >
+              <span className={cn("mono w-4 shrink-0 text-[10px] font-bold",
+                blocked ? "text-sev-critical" : "text-text3")}>{h.n}</span>
+              <span className="mono font-bold">{h.src_display}</span>
+              <span className={blocked ? "text-sev-critical" : "text-text3"}>
+                {blocked ? "\u2571\u2571" : "\u2192"}
+              </span>
+              <span className="mono font-bold">{h.dst_display}</span>
+              <span className="text-text3">{h.service}</span>
+              <span className="ml-auto flex items-center gap-1.5">
+                <span className="mono text-[10.5px] text-text2">{h.ref}</span>
+                <span className="text-[10px] uppercase tracking-[0.05em] text-text3">{toolLabel(h.tool)}</span>
+                {blocked ? (
+                  <span className="border border-sev-critical-line bg-sev-critical-bg px-1 text-[10px] font-bold uppercase text-sev-critical">
+                    blocked
+                  </span>
+                ) : (
+                  <span className="text-[10px] uppercase tracking-[0.05em] text-ok">pass</span>
+                )}
+              </span>
+              {/* The covering-twin warning, in place. Cutting a rule that is not
+                  the only grant for its step closes nothing. */}
+              {h.also_granted_by.length > 0 && (
+                <span className="w-full pl-6 text-[10.5px] text-sev-high">
+                  also granted by {h.also_granted_by.join(", ")} &mdash; removing {h.ref} alone would not close this step
+                </span>
+              )}
+            </li>
+          );
+        })}
+      </ol>
+
+      {done && (
+        w.blocked_at == null ? (
+          <div className="border-t border-hair px-2.5 py-1.5 text-[10.5px] text-text3">
+            This change closes no step on this flow.
+          </div>
+        ) : w.still_reachable ? (
+          // THE LOAD-BEARING STATE. Not a warning decoration: the approver is
+          // about to be told the finding resolves, and it does -- while the
+          // destination stays reachable from the same origin by another route.
+          <div className="border-t border-sev-high-line bg-sev-high-bg px-2.5 py-2">
+            <div className="text-[10.5px] font-bold uppercase tracking-[0.06em] text-sev-high">
+              Still reachable by another route
+            </div>
+            <div className="mt-1 text-[11px] leading-snug text-text2">
+              This chain is cut at hop {w.blocked_at}. {w.flow.dst_display} is still reachable
+              from {w.flow.src_display}:
+            </div>
+            <ul className="mt-1.5 space-y-1">
+              {w.survivors.map((s) => (
+                <li key={s.display_path.join(">")} className="text-[11px]">
+                  <span className="mono text-text2">{s.display_path.join("  \u2192  ")}</span>
+                  <span className="ml-2 text-[10.5px] text-text3">
+                    {s.hops.map((h) => h.ref).join(", ")}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : (
+          <div className="border-t border-hair bg-ok-bg px-2.5 py-1.5 text-[11px] text-ok">
+            Cut at hop {w.blocked_at}. No other route reaches {w.flow.dst_display} from {w.flow.src_display}.
+          </div>
+        )
+      )}
+
+      {w.truncated && (
+        <div className="border-t border-hair px-2.5 py-1.5 text-[10.5px] text-sev-high">
+          Path search hit its cap, so &ldquo;no other route&rdquo; here means none among those scanned.
+        </div>
+      )}
+
+      <div className="border-t border-hair px-2.5 py-1.5 text-[10.5px] leading-snug text-text3">
+        {w.method_detail}
+      </div>
+    </div>
+  );
+}
+
 function VerificationEvidence({ v }: { v: Remediation["validation"] }) {
   const e = (v as { evidence?: EvidenceRecord }).evidence;
   if (!e) return null;
@@ -188,6 +326,25 @@ interface EvidenceFinding {
   type: string; title: string; band: string; severity: number;
   refs: string[]; tools: string[];
 }
+interface WalkHop {
+  n: number;
+  src_display: string; dst_display: string;
+  service: string; ref: string; tool: string;
+  also_granted_by: string[];
+  verdict: string;
+}
+interface WalkRoute { display_path: string[]; hops: WalkHop[] }
+interface PacketWalk {
+  method: string;
+  method_detail: string;
+  flow: { src_display: string; dst_display: string; service: string } | null;
+  before: WalkHop[];
+  /** 1-based hop the change closed, or null when it touches nothing on this chain. */
+  blocked_at: number | null;
+  still_reachable: boolean;
+  survivors: WalkRoute[];
+  truncated: boolean;
+}
 interface EvidenceRecord {
   method: string;
   method_detail: string;
@@ -196,6 +353,12 @@ interface EvidenceRecord {
   cleared: EvidenceFinding[];
   introduced: EvidenceFinding[];
   analyzers: string[];
+  walk?: PacketWalk | null;
+}
+
+/** The walk off a validation payload, or null. Keeps the cast in one place. */
+function walkOf(v: Remediation["validation"]): PacketWalk | null {
+  return (v as { evidence?: EvidenceRecord })?.evidence?.walk ?? null;
 }
 
 export function FindingPanel({
@@ -577,7 +740,7 @@ function TheFix({ f, snapshot, readOnly, canApprove, ruling, onGovernanceChanged
         ) : (
           <div className="space-y-1.5">
             <button onClick={draft} disabled={loading} className="btn-ghost !h-[26px] !px-2 text-[11px]">
-              {loading ? <Spinner label="Drafting + re-simulating…" /> : <><Wrench size={12} /> Draft &amp; validate a fix</>}
+              {loading ? <Spinner label="Drafting, re-analysing, walking the flow…" /> : <><Wrench size={12} /> Draft &amp; validate a fix</>}
             </button>
             {err && <InlineError resource="a drafted fix" error={err} onRetry={draft} />}
           </div>
@@ -587,7 +750,7 @@ function TheFix({ f, snapshot, readOnly, canApprove, ruling, onGovernanceChanged
           <div className="flex flex-wrap items-center gap-2">
             <span className={cn("inline-flex h-[20px] items-center gap-1.5 border px-1.5 text-[10px] font-bold uppercase tracking-[0.08em]",
               rem.validation.resolves ? "border-ok-line bg-ok-bg text-ok" : "border-sev-high-line bg-sev-high-bg text-sev-high")}>
-              {rem.validation.resolves ? <><Check size={11} /> re-simulated: resolves</> : <><X size={11} /> does not resolve</>}
+              {rem.validation.resolves ? <><Check size={11} /> re-analysed: resolves</> : <><X size={11} /> does not resolve</>}
             </span>
             {rem.validation.engine_corrected_ai && (
               <span className="text-[10px] text-text3">engine corrected the AI&apos;s first proposal, then proved this one</span>
@@ -596,6 +759,7 @@ function TheFix({ f, snapshot, readOnly, canApprove, ruling, onGovernanceChanged
           <Prose className="!text-[12.5px]">{rem.fix_text}</Prose>
           <ProposedLine proposed={rem.change} kind="remediation" snapshot={snapshot} />
           <VerificationEvidence v={rem.validation} />
+          {walkOf(rem.validation) && <PacketWalkView w={walkOf(rem.validation)!} />}
           <RemediationTrace trace={rem.trace} attempts={rem.attempts} />
 
           <Disconnects change={rem.change} snapshot={snapshot} />

@@ -18,11 +18,18 @@ finding (or honestly reports it cannot)."""
 from __future__ import annotations
 
 import json
+import logging
 
 from ..analyzers.run_all import reanalyze
 from ..change.apply import apply_remediation as _apply
+from ..graph.build import build_graph
+from ..graph.reachability import find_paths
 from ..models import Finding
 from .client import complete, parse_json
+from .walk import walk
+
+# Child of the API logger; see advisory/client.py for the convention.
+log = logging.getLogger("npr.api.remediation")
 
 # How many propose->simulate->observe->revise rounds the agent gets before it
 # degrades to the deterministic fallback. Each round is one model call + one
@@ -107,6 +114,46 @@ def _coerce_change(data, f: Finding) -> dict | None:
     return ch
 
 
+def _walk_for(ctx, finding: Finding, change: dict) -> dict | None:
+    """The hop-by-hop before/after for this finding's flow, or None.
+
+    Two kinds of finding name a flow this can replay:
+
+      * a `cross_tool_path`, which carries the chain in `signals["path"]`; and
+      * any finding whose `involved` is exactly an origin and a destination that
+        are both nodes in the graph -- a single over-permissive grant is a
+        one-hop flow, and replaying it is how the reader sees that removing it
+        leaves the destination reachable by the FOUR-hop chain instead.
+
+    Anything else returns None and the console renders no walk. A walk invented
+    for a finding that names no flow would be the failure mode this whole screen
+    exists to avoid: a picture asserting a path nobody observed.
+    """
+    path = list(finding.signals.get("path") or [])
+    if not path:
+        inv = list(finding.involved or [])
+        if len(inv) != 2 or any(n not in ctx.graph for n in inv):
+            return None
+        found = find_paths(ctx.graph, inv[0], inv[1], cutoff=8)
+        if not found:
+            return None
+        first = found[0]
+        path = first["path"] if isinstance(first, dict) else list(first)
+    if len(path) < 2 or any(n not in ctx.graph for n in path):
+        return None
+    try:
+        g_after = build_graph(_apply(ctx.records, change), ctx.assets, ctx.alias_map)
+        return walk(ctx.graph, g_after, path)
+    except Exception:  # noqa: BLE001
+        # A walk is evidence ON TOP of the band comparison, never a gate on it.
+        # If it cannot be produced the validation still stands; the console
+        # simply shows no walk rather than a broken one.
+        log.warning("packet walk could not be produced for this finding",
+                    exc_info=True, extra={"event": "packet_walk_failed",
+                                          "finding": finding.id})
+        return None
+
+
 def _validate(ctx, finding: Finding, change: dict) -> dict:
     target = _sig(finding)
     before = ctx.findings
@@ -165,6 +212,14 @@ def _validate(ctx, finding: Finding, change: dict) -> dict:
                 "cleared": brief(cleared),
                 "introduced": brief(introduced),
                 "analyzers": sorted({f.type for f in before} | {f.type for f in after}),
+                # THE PACKET WALK. Band counts say a fix works; this says WHERE
+                # it works and, just as importantly, where it does not. The
+                # graph is rebuilt rather than plumbed out of `reanalyze`
+                # because the build is single-digit milliseconds and a second
+                # return value on a function four callers share is a worse
+                # trade. `None` when the finding names no walkable flow -- see
+                # `_walk_for`, which refuses to invent one.
+                "walk": _walk_for(ctx, finding, change),
             },
         }
     except Exception as e:  # noqa: BLE001
