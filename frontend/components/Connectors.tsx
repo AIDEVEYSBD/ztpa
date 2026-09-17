@@ -6,18 +6,70 @@ import { api, asApiError, type ApiError } from "@/lib/api";
 import { cn, Spinner, Chip, Eyebrow, EmptyState } from "./ui";
 import { ErrorState } from "./ui/Feedback";
 import { Prose } from "./Markdown";
+import { AgentTerminal } from "@/components/agent/AgentTerminal";
 
-const SAMPLE = JSON.stringify({
-  vendor: "Viptela",
-  policies: [
-    { policy_id: "SDW-1", src: "branch-ny", dst: "datacenter-seg", proto: "tcp", port: 443, act: "allow" },
-    { policy_id: "SDW-2", src: "branch-sf", dst: "datacenter-seg", proto: "tcp", port: 8443, act: "allow" },
-  ],
-}, null, 2);
+/**
+ * Samples that actually run.
+ *
+ * Three, not one, and each is a DIFFERENT mapping problem: a flat policy list
+ * with short keys, a nested rule set with an object catalogue to dereference,
+ * and a CSV-ish export whose action lives in a column called `permit`. A single
+ * sample lets a reader watch the agent succeed once; three let them watch it
+ * work, because the profile it proposes has to change.
+ */
+const SAMPLES: { key: string; label: string; hint: string; note: string; body: unknown }[] = [
+  {
+    key: "sdwan",
+    label: "SD-WAN (flat list, short keys)",
+    hint: "sd_wan",
+    note: "Keys are abbreviated (src/dst/proto/act) and there is no object catalogue.",
+    body: {
+      vendor: "Viptela",
+      policies: [
+        { policy_id: "SDW-1", src: "branch-ny", dst: "datacenter-seg", proto: "tcp", port: 443, act: "allow" },
+        { policy_id: "SDW-2", src: "branch-sf", dst: "datacenter-seg", proto: "tcp", port: 8443, act: "allow" },
+        { policy_id: "SDW-3", src: "branch-ny", dst: "guest-wifi", proto: "udp", port: 53, act: "deny" },
+      ],
+    },
+  },
+  {
+    key: "panorama",
+    label: "Firewall with an object catalogue",
+    hint: "pan_os",
+    note: "Rules reference NAMED objects; the profile has to declare where the catalogue lives so the names dereference to addresses.",
+    body: {
+      vendor: "Acme-FW",
+      address_objects: {
+        "web-dmz": { kind: "subnet", cidr: "10.20.0.0/24", labels: ["dmz"] },
+        "card-db": { kind: "host", cidr: "10.50.0.10/32", labels: ["pci", "customer-data"] },
+      },
+      security_rules: [
+        { uuid: "R-100", from: "any", to: "card-db", app: "mssql", service: "tcp/1433", decision: "allow", position: 100 },
+        { uuid: "R-101", from: "web-dmz", to: "card-db", app: "ssh", service: "tcp/22", decision: "allow", position: 101 },
+      ],
+    },
+  },
+  {
+    key: "legacy",
+    label: "Legacy export (boolean action)",
+    hint: "legacy_acl",
+    note: "The action is a BOOLEAN in a column called `permit`, which is the mapping a hand-written connector usually gets wrong.",
+    body: {
+      device: "core-acl-01",
+      acl: [
+        { seq: 10, source: "10.0.0.0/8", destination: "10.50.0.10", protocol: "tcp", dport: 3389, permit: true },
+        { seq: 20, source: "0.0.0.0/0", destination: "10.50.0.10", protocol: "tcp", dport: 3389, permit: false },
+      ],
+    },
+  },
+];
+
+const SAMPLE = JSON.stringify(SAMPLES[0].body, null, 2);
 
 export function Connectors() {
   const [text, setText] = useState(SAMPLE);
-  const [hint, setHint] = useState("sd_wan");
+  const [hint, setHint] = useState(SAMPLES[0].hint);
+  const [picked, setPicked] = useState(SAMPLES[0].key);
   const [res, setRes] = useState<any>();
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<ApiError>();
@@ -45,9 +97,30 @@ export function Connectors() {
           the engine validates it by actually normalizing your sample. A human approves before it&apos;s registered -
           the model authors validated config, never opaque runtime code.
         </p>
+        <div className="mb-2 flex flex-wrap gap-1">
+          {SAMPLES.map((sm) => (
+            <button key={sm.key} type="button"
+              onClick={() => {
+                setPicked(sm.key);
+                setHint(sm.hint);
+                setText(JSON.stringify(sm.body, null, 2));
+                setRes(undefined); setErr(undefined); setInputErr(undefined);
+              }}
+              className={cn("border px-2 py-1 text-[11px] font-bold",
+                picked === sm.key ? "border-accent bg-accent-soft text-accent-fg"
+                                  : "border-border bg-sunk text-text2 hover:border-borderStrong")}>
+              {sm.label}
+            </button>
+          ))}
+        </div>
+        <p className="mb-2 text-[11px] leading-snug text-text3">
+          {SAMPLES.find((sm) => sm.key === picked)?.note
+            ?? "Edited sample. The agent reads whatever is in the box."}
+        </p>
         <input value={hint} onChange={(e) => setHint(e.target.value)} placeholder="tool id (e.g. sd_wan)"
           className="field mb-2 w-full" />
-        <textarea value={text} onChange={(e) => setText(e.target.value)} rows={12}
+        <textarea value={text}
+          onChange={(e) => { setText(e.target.value); setPicked("custom"); }} rows={12}
           className="field h-auto w-full p-3 font-mono text-xs leading-relaxed" />
         <button onClick={propose} disabled={loading} className="btn-primary mt-2 w-full">
           {loading ? <Spinner label="Authoring + validating…" /> : <><Wand2 size={15} /> Propose connector</>}
@@ -59,6 +132,17 @@ export function Connectors() {
       </div>
 
       <div className="space-y-3">
+        {/* Rendered for BOTH outcomes and before either, because the trace is
+            most useful when the answer is bad: it says whether a model
+            answered, what it was asked, and which round the engine rejected. */}
+        {res?.agent_trace ? (
+          <AgentTerminal
+            steps={res.agent_trace}
+            usedAModel={res.used_a_model}
+            what="Authoring a connector: propose a profile, normalize your sample with it, revise"
+            defaultOpen
+          />
+        ) : null}
         {!res ? (
           <div className="panel grid h-full min-h-[200px] place-items-center">
             <EmptyState icon={Sparkles} title="Proposed profile appears here" sub="Author a connector to validate it against your sample." />

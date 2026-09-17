@@ -184,6 +184,32 @@ export interface RemediationAttempt {
   note?: string;
 }
 
+/**
+ * One step of the advisory layer's work, as the API reports it.
+ *
+ * `model_call` carries BOTH sides of the exchange so a reader can see what was
+ * sent and what came back. A step with `ok: false` is a real step -- a failed
+ * call followed by a deterministic fallback is the most useful thing this
+ * record shows, and it is what was invisible while the deployment ran against
+ * a placeholder API key.
+ */
+export interface AgentStep {
+  kind: "model_call" | "tool" | "deduction" | "fallback" | "note";
+  label: string;
+  detail?: string | null;
+  ok?: boolean;
+  ms?: number | null;
+  provider?: string | null;
+  model?: string | null;
+  system?: string | null;
+  user?: string | null;
+  response?: string | null;
+  error?: string | null;
+  prompt_tokens?: number | null;
+  completion_tokens?: number | null;
+  truncated?: boolean;
+}
+
 export interface Remediation {
   finding_id: string;
   fix_text: string;
@@ -192,6 +218,12 @@ export interface Remediation {
   by: string;
   attempts?: number;
   trace?: RemediationAttempt[];
+  /** The step-by-step record: model calls with both sides of each exchange,
+   *  tool runs, and any fallback taken. Rendered by `AgentTerminal`. */
+  agent_trace?: AgentStep[];
+  /** Whether a model call actually succeeded. Deliberately separate from `by`,
+   *  which can still mention an llm on a path that fell back. */
+  used_a_model?: boolean;
   thread_id?: string;
   seq?: number;
   revision_id?: string;

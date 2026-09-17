@@ -20,6 +20,7 @@ import json
 from ..normalizers.common import NormalizeResult
 from ..normalizers.profile import SourceProfile, apply_profile
 from .client import complete, parse_json
+from . import trace as _trace
 
 # Propose -> normalize the sample -> observe failures -> revise. Bounded so a cold
 # model degrades to "needs review" with the best partial profile instead of hanging.
@@ -90,6 +91,14 @@ def propose_profile(sample: dict, tool_hint: str = "", max_attempts: int | None 
     the attempt budget is spent. Returns the best profile plus the full attempt
     trace; `ok=True` with `validation.valid=True` means the engine certified it."""
     max_attempts = MAX_ATTEMPTS if max_attempts is None else max_attempts
+    with _trace.capture() as tr:
+        out = _propose(sample, tool_hint, max_attempts, tr)
+    # Attached at the single exit rather than at the five returns below, which
+    # is the only reason this is split in two.
+    return {**out, "agent_trace": tr.as_list(), "used_a_model": tr.used_a_model}
+
+
+def _propose(sample: dict, tool_hint: str, max_attempts: int, tr) -> dict:
     trace: list[dict] = []
     best: dict | None = None          # best partial: a parseable profile that made the most records
     prior, feedback, by = None, None, "engine_fallback"
@@ -98,19 +107,38 @@ def propose_profile(sample: dict, tool_hint: str = "", max_attempts: int | None 
         r = complete(system=_PROMPT, user=_build_user(sample, tool_hint, prior, feedback),
                      role="judge", capability="authoring", temperature=0.0, expect_json=True)
         by = f"{r.provider}:{r.model}"
+        if not r.ok:
+            tr.note("fallback", "the model call did not answer", r.error, ok=False)
         data = parse_json(r.text, None) if r.ok else None
         if not isinstance(data, dict):
+            tr.note("deduction", "no profile object in the response",
+                    "nothing to validate, so the loop stops here", ok=False)
             trace.append({"attempt": i + 1, "profile": None, "error": "model did not return a profile object"})
             break
         try:
             profile = SourceProfile(**data)
         except Exception as e:  # noqa: BLE001 -- schema-invalid: feed the error back and retry
+            tr.note("deduction", "the proposed profile failed schema validation",
+                    f"{e}"[:240] + " — the error is fed back and the model tries again", ok=False)
             trace.append({"attempt": i + 1, "profile": data, "error": f"schema-invalid: {e}"})
             prior, feedback = data, f"The profile failed schema validation: {e}. Return all required keys."
             continue
 
-        validation = validate_profile(profile, sample)
+        tr.note("deduction",
+                f"proposed a profile for {profile.tool!r}",
+                f"rules at {profile.rules_path!r}"
+                + (f", objects at {profile.objects_path!r}" if profile.objects_path else "")
+                + f" — {len(profile.fields.model_dump(exclude_none=True))} field mappings")
+        with tr.step("tool", "normalize your sample with the proposed profile",
+                     "the engine runs the profile against the bytes you pasted; the row "
+                     "count and any error come back from a real normalization, not a model"):
+            validation = validate_profile(profile, sample)
         pd = profile.model_dump()
+        tr.note("deduction",
+                "valid" if validation["valid"] else "not yet valid",
+                f"{validation.get('records', 0)} record(s) normalized"
+                + ("" if validation["valid"] else " — the gap is fed back for the next round"),
+                ok=bool(validation["valid"]))
         trace.append({"attempt": i + 1, "profile": pd, "validation": validation})
         if validation["valid"]:
             return {"ok": True, "profile": pd, "validation": validation, "attempts": len(trace),

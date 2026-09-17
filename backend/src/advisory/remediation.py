@@ -26,6 +26,7 @@ from ..graph.build import build_graph
 from ..graph.reachability import find_paths
 from ..models import Finding
 from .client import complete, parse_json
+from . import trace as _trace
 from .walk import walk
 
 # Child of the API logger; see advisory/client.py for the convention.
@@ -260,11 +261,21 @@ def _build_user(finding: Finding, prior_change: dict | None, feedback: str | Non
 
 
 def _result(finding: Finding, fix_text, change: dict, validation: dict, by: str,
-            trace: list[dict]) -> dict:
+            trace: list[dict], agent_trace: list[dict] | None = None,
+            used_a_model: bool = False) -> dict:
     return {"finding_id": finding.id,
             "fix_text": str(fix_text or _fallback_text(finding, change))[:500],
             "change": change, "validation": validation, "by": by,
-            "attempts": sum(1 for t in trace if t.get("change")), "trace": trace}
+            "attempts": sum(1 for t in trace if t.get("change")), "trace": trace,
+            # The step-by-step record: every model call with what was sent and
+            # what came back, every tool run, every fallback taken. `by` above
+            # says who authored the answer; this says how it was arrived at.
+            "agent_trace": agent_trace or [],
+            # NOT derived from `by` in the console. A model call that failed
+            # still leaves `by` mentioning llm on some paths, and a badge
+            # claiming model-authored output for a deterministic answer is the
+            # one thing this record exists to prevent.
+            "used_a_model": used_a_model}
 
 
 def draft(finding: Finding, ctx, comment: str | None = None, prior: dict | None = None,
@@ -276,6 +287,15 @@ def draft(finding: Finding, ctx, comment: str | None = None, prior: dict | None 
     first round from a reviewer's feedback (Risk-To-Do thread); subsequent rounds are
     seeded from the engine's own verdict."""
     max_attempts = MAX_ATTEMPTS if max_attempts is None else max_attempts
+    with _trace.capture() as tr:
+        return _draft(finding, ctx, comment, prior, max_attempts, tr)
+
+
+def _draft(finding: Finding, ctx, comment: str | None, prior: dict | None,
+           max_attempts: int, tr) -> dict:
+    """The loop itself. Split out only so `draft` can own the capture scope --
+    every `return` below needs the trace attached, and wrapping the body is how
+    that happens once rather than at six exit points."""
     trace: list[dict] = []
     best: tuple[dict, object, dict] | None = None  # an AI fix that at least resolves
     tried_llm = False
@@ -285,6 +305,10 @@ def draft(finding: Finding, ctx, comment: str | None = None, prior: dict | None 
         r = complete(system=_PROMPT, user=_build_user(finding, prior_change, feedback),
                      role="judge", capability="remediate", temperature=0.2,
                      expect_json=True, timeout=120.0, subject=finding.id)
+        if not r.ok:
+            tr.note("fallback", "model call did not answer",
+                    "this round will be abandoned and the deterministic fix used",
+                    ok=False)
         data = parse_json(r.text, None) if r.ok else None
         change = _coerce_change(data, finding)
         text = data.get("fix_text") if isinstance(data, dict) else None
@@ -295,21 +319,32 @@ def draft(finding: Finding, ctx, comment: str | None = None, prior: dict | None 
             break
 
         tried_llm = True
-        validation = _validate(ctx, finding, change)
+        tr.note("deduction",
+                f"proposed: {change.get('op', '?')} {change.get('target_ref', '?')}",
+                (str(reasoning)[:300] if reasoning else None))
+        with tr.step("tool", "re-analyse the estate with the change applied",
+                     "every analyzer re-run over the full record set, then the two "
+                     "finding sets compared"):
+            validation = _validate(ctx, finding, change)
         trace.append({"attempt": i + 1, "by": "llm", "change": change,
                       "fix_text": (str(text)[:500] if text else None),
                       "reasoning": (str(reasoning)[:300] if reasoning else None),
                       "validation": validation})
         if _is_clean(validation):
-            return _result(finding, text, change, validation, "llm", trace)
+            return _result(finding, text, change, validation, "llm", trace,
+                           tr.as_list(), tr.used_a_model)
         if validation.get("resolves") and best is None:
             best = (change, text, validation)  # keep the first resolving fix as a floor
         prior_change, feedback = change, _verdict_feedback(validation)
 
     # The loop never certified a clean fix. Fall back to the deterministic surgical
     # fix (guaranteed for every finding type) and re-validate it.
+    tr.note("fallback", "the attempt budget is spent",
+            "falling back to the engine's deterministic surgical fix, which exists "
+            "for every finding type")
     fallback = _fallback_change(finding, ctx.records)
-    fb_validation = _validate(ctx, finding, fallback)
+    with tr.step("tool", "re-analyse the estate with the fallback applied"):
+        fb_validation = _validate(ctx, finding, fallback)
     trace.append({"attempt": len(trace) + 1, "by": "engine_fallback",
                   "change": fallback, "validation": fb_validation})
 
@@ -318,6 +353,8 @@ def draft(finding: Finding, ctx, comment: str | None = None, prior: dict | None 
     if _is_clean(fb_validation) or best is None:
         by = "llm+engine_fallback" if tried_llm else "engine_fallback"
         v = {**fb_validation, "engine_corrected_ai": True} if tried_llm else fb_validation
-        return _result(finding, _fallback_text(finding, fallback), fallback, v, by, trace)
+        return _result(finding, _fallback_text(finding, fallback), fallback, v, by, trace,
+                       tr.as_list(), tr.used_a_model)
     change, text, validation = best
-    return _result(finding, text, change, validation, "llm", trace)
+    return _result(finding, text, change, validation, "llm", trace,
+                           tr.as_list(), tr.used_a_model)

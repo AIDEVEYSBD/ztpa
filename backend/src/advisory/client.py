@@ -81,6 +81,7 @@ import httpx
 
 from .. import settings
 from ..metrics import record_metric
+from .trace import record_model_call
 
 # A child of the API's logger, so a degraded model call comes out as one JSON
 # line with the request id already attached (app/main.py configures "npr.api").
@@ -682,10 +683,22 @@ def complete(*, system: str, user: str, role: str = "judge", temperature: float 
                         extra={"event": "llm_call_unusable", "capability": cap,
                                "provider": res.provider, "model": res.model,
                                "finish_reason": res.finish_reason, "error": res.error})
+    ms = round((time.perf_counter() - t0) * 1000)
     record_metric(kind="llm", capability=cap, provider=res.provider, model=res.model,
-                  latency_ms=round((time.perf_counter() - t0) * 1000),
+                  latency_ms=ms,
                   prompt_tokens=res.prompt_tokens, completion_tokens=res.completion_tokens,
                   ok=res.ok, error=res.error, subject=subject)
+    # The same choke point the metric uses, for the same reason: every call goes
+    # through here, so instrumenting it once covers every capability. A no-op
+    # unless a caller opened a `trace.capture()` block, so the engine's own
+    # paths are untouched. Records FAILED calls too -- a 401 followed by a
+    # deterministic fallback is the single most useful thing a reader can see,
+    # and it is what was invisible while this product ran for days against a
+    # placeholder API key.
+    record_model_call(provider=res.provider, model=res.model, system=system, user=user,
+                      response=res.text, ok=res.ok, error=res.error, ms=ms,
+                      prompt_tokens=res.prompt_tokens,
+                      completion_tokens=res.completion_tokens, capability=cap)
     return res
 
 

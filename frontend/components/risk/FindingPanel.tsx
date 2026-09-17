@@ -27,6 +27,7 @@ import { api, asApiError, type ApiError } from "@/lib/api";
 import type { Finding, ActionItem, PushPlan, Remediation, RemediationAttempt } from "@/lib/types";
 import { cn } from "@/lib/cn";
 import { useReducedMotion } from "@/lib/useReducedMotion";
+import { AgentTerminal } from "@/components/agent/AgentTerminal";
 import { Prose } from "@/components/Markdown";
 import { SeverityPill, Spinner, ToolBadge, SkeletonText } from "@/components/ui";
 import { InlineError } from "@/components/ui/Feedback";
@@ -761,6 +762,8 @@ function TheFix({ f, snapshot, readOnly, canApprove, ruling, onGovernanceChanged
           <VerificationEvidence v={rem.validation} />
           {walkOf(rem.validation) && <PacketWalkView w={walkOf(rem.validation)!} />}
           <RemediationTrace trace={rem.trace} attempts={rem.attempts} />
+          <AgentTerminal steps={rem.agent_trace} usedAModel={rem.used_a_model}
+            what="Drafting a fix: propose, re-analyse, revise" />
 
           <Disconnects change={rem.change} snapshot={snapshot} />
 

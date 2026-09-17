@@ -496,6 +496,12 @@ def engine() -> EngineResult:
             log.error("snapshot could not be persisted; serving it live-only", exc_info=True,
                       extra={"event": "persist_snapshot_failed", "snapshot_id": _ENGINE.snapshot_id,
                              "error": str(exc)})
+        # AFTER the snapshot is in the system of record, because the preload
+        # writes prose against these finding ids and a row must exist to update.
+        # Deliberately not inside the try above: a persist failure is not a
+        # reason to skip it, and the preload's own writes are independently
+        # guarded (`_bg_explain` catches everything).
+        _preload_explanations(_ENGINE)
     return _ENGINE
 
 
@@ -1452,6 +1458,67 @@ def _bg_explain(fid: str, f) -> None:
             "event": "explain_failed", "finding_id": fid})
     finally:
         _explaining.discard(fid)
+
+
+#: How many findings the preload pass writes prose for, worst first. Bounded
+#: because a local model answers in seconds, not milliseconds: the whole set
+#: would occupy the box for minutes and the demo only ever opens the top of the
+#: list. The rest still explain on demand, exactly as before.
+_PRELOAD_TOP_N = int(os.getenv("NPR_PRELOAD_EXPLANATIONS", "12"))
+
+
+def _preload_explanations(result) -> None:
+    """Write model prose for the worst findings BEFORE anyone opens one.
+
+    The advisory layer was always on-demand: click a finding, wait for a model.
+    Against a local model that is a nine-second stall on the first screen of a
+    demo, which is the one place a stall is unaffordable. This walks the worst
+    findings once per snapshot, in one thread, and caches each answer.
+
+    SERIAL BY DESIGN. A local Ollama serves one completion at a time; twelve
+    threads would not make it faster, they would make every one of them slow and
+    starve the request path they share the box with.
+
+    SKIPPED ENTIRELY when no provider is reachable. Firing twelve calls that
+    will each 401 costs a round trip apiece and writes nothing -- and it is
+    exactly what this deployment did for weeks without saying so.
+    """
+    if _PRELOAD_TOP_N <= 0:
+        return
+    # AVAILABILITY, not configuration -- the same distinction `provider_status`
+    # draws. `active_provider()` always names something (it degrades to "ollama"
+    # so callers reach their fallback), so asking IT whether a model exists
+    # answers yes on a box with none.
+    status = provider_status()
+    reachable = (status.get("ollama_reachable") or status.get("azure_available")
+                 or status.get("openai_available") or status.get("anthropic_available"))
+    if not reachable:
+        log.info("explanation preload skipped: no advisory provider is reachable",
+                 extra={"event": "explain_preload_skipped",
+                        "active_provider": status.get("active_provider")})
+        return
+    worst = sorted(result.findings, key=lambda f: -f.severity)[:_PRELOAD_TOP_N]
+    todo = [f for f in worst if f.id not in _explaining]
+    if not todo:
+        return
+    log.info("preloading explanations for the worst findings",
+             extra={"event": "explain_preload_start", "count": len(todo),
+                    "provider": settings.active_provider()})
+
+    def run() -> None:
+        done = 0
+        for f in todo:
+            # Re-checked per finding: a reader may have opened one meanwhile,
+            # and the on-demand path would then be computing the same prose.
+            if f.id in _explaining:
+                continue
+            _explaining.add(f.id)
+            _bg_explain(f.id, f)          # clears _explaining in its own finally
+            done += 1
+        log.info("explanation preload finished",
+                 extra={"event": "explain_preload_done", "explained": done})
+
+    _spawn("explain-preload", run)
 
 
 @app.post("/api/findings/{fid}/explain")

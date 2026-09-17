@@ -11,6 +11,7 @@ from pathlib import Path
 
 from ..models import Finding
 from .client import complete
+from . import trace as _trace
 
 _PROMPT = (Path(__file__).parent / "prompts" / "explain.txt").read_text()
 
@@ -98,7 +99,22 @@ def engine_explanation(f: Finding) -> str:
 
 
 def explain(f: Finding, timeout: float | None = None) -> dict:
-    r = complete(system=_PROMPT, user=json.dumps(_facts(f), indent=2), role="prose", temperature=0.4, timeout=timeout)
+    """Model prose for one finding, with the trace of how it was obtained.
+
+    The trace is attached whether or not a model answered. A reader looking at
+    an explanation deserves to know it came from the deterministic writer, and
+    `by` alone has been showing `engine_fallback` for weeks without anyone
+    noticing that every call was 401ing.
+    """
+    with _trace.capture() as tr:
+        r = complete(system=_PROMPT, user=json.dumps(_facts(f), indent=2),
+                     role="prose", temperature=0.4, timeout=timeout,
+                     capability="explain", subject=f.id)
+        if not r.ok:
+            tr.note("fallback", "writing the explanation deterministically instead",
+                    "the engine can always state what a finding means -- it computed it",
+                    ok=False)
+    common = {"agent_trace": tr.as_list(), "used_a_model": tr.used_a_model}
     if r.ok and r.text.strip():
-        return {"explanation": r.text.strip(), "by": f"{r.provider}:{r.model}"}
-    return {"explanation": _fallback(f), "by": "engine_fallback"}
+        return {"explanation": r.text.strip(), "by": f"{r.provider}:{r.model}", **common}
+    return {"explanation": _fallback(f), "by": "engine_fallback", **common}
