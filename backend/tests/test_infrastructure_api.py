@@ -102,7 +102,11 @@ def test_the_demo_estate_fills_every_lane():
     assert lanes["core"] == 2
     assert lanes["access"] == 4          # 3 switches + the AP
     assert lanes["circuit"] == 3
-    assert lanes["segment"] == 7
+    # 8 since the estate gained VLAN 45 (data-svc, 10.45.0.0/24) to house
+    # data-node-01 -- the pivot on the demo's second cross-tool path. A path
+    # through a host that belongs to no segment would be a topology the estate
+    # cannot actually cable.
+    assert lanes["segment"] == 8
 
 
 def test_links_declare_their_evidence_and_none_of_it_is_inferred():
@@ -163,8 +167,8 @@ def test_the_header_counts_cover_the_asks_vocabulary():
     counts = _get("/api/inventory")["counts"]
     assert set(counts) == {"devices", "interfaces", "vlans", "subnets",
                            "public_ips", "circuits", "assets"}
-    assert counts["vlans"] == 7
-    assert counts["subnets"] == 7
+    assert counts["vlans"] == 8          # 7 + VLAN 45 (data-svc), see above
+    assert counts["subnets"] == 8
     assert counts["circuits"] == 3
     assert counts["devices"] == 13
 

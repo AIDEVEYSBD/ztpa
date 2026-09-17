@@ -162,7 +162,12 @@ def test_populating_the_topology_changes_no_finding():
         )
 
     assert by_content(with_infra) == by_content(without)
-    assert len(with_infra.findings) == len(without.findings) == 35
+    # 38 since the demo gained its second cross-tool path and ALGO-062 (see
+    # `test_demo_golden`). The number is pinned here as a tripwire, not as a
+    # claim: the assertion that matters is the equality on either side of it.
+    # A literal that silently tracked the fixture would let "the topology
+    # changes no finding" pass while BOTH sides moved together.
+    assert len(with_infra.findings) == len(without.findings) == 38
     assert len(with_infra.graph.nodes) == len(without.graph.nodes)
     assert len(with_infra.graph.edges) == len(without.graph.edges)
 

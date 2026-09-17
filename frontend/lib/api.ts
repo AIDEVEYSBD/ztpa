@@ -908,3 +908,123 @@ export const api = {
  * renders as a hop with no service rather than as "any".
  */
 export type GraphPayload = GraphData & Provenance;
+
+// ───────────────────────────────────────────────────────────────────────────
+// Risk To-Do — the rule behind a reference, and un-applying an applied change.
+//
+// Appended as its own block rather than folded into `api` above: these two
+// reads are what turned the Risk To-Do screen from a list of bare tokens
+// ("WIZ-001 GC-002 ALGO-029") into a screen that can show the grant itself, and
+// they are the only calls on it that the rest of the console does not make.
+// ───────────────────────────────────────────────────────────────────────────
+
+/** Which way a grant points, relative to the estate's trust boundary. Computed
+ *  by the engine from the same `is_public` classifier the severity scorer uses,
+ *  so a named object that resolves to 0.0.0.0/0 reads here exactly as the
+ *  literal CIDR does. */
+export type RuleFlow = "inbound" | "outbound" | "internal" | "transit";
+
+/** The asset behind one side of a rule. `null` on a `RuleEndpoint` means no
+ *  asset in this snapshot resolves that token — which is a fact about our
+ *  correlation, not a licence to render the token as if it were an asset. */
+export interface RuleAsset {
+  key: string;
+  display: string;
+  kind: string;
+  tags: string[];
+  addresses: string[];
+  /** The consoles that saw this asset. Named on screen, because "who would
+   *  notice if this access disappeared" is the reviewer's next question. */
+  seen_by: string[];
+}
+
+export interface RuleEndpoint {
+  /** The token exactly as the rule spells it. */
+  token: string;
+  /** The canonical key an alias resolved to, or null when the token IS canonical. */
+  resolved_to: string | null;
+  kind: string;
+  cidrs: string[];
+  public: boolean;
+  asset: RuleAsset | null;
+}
+
+export interface RuleDirection {
+  flow: RuleFlow;
+  detail: string;
+  /** True when a reverse grant of the same service exists. Rendered as its own
+   *  visual state, never as a fifth flow colour: removing one direction and
+   *  leaving the other is the mistake `reverse_ref` exists to prevent. */
+  bidirectional: boolean;
+  reverse_ref: string | null;
+}
+
+export interface RuleContext {
+  raw_ref: string;
+  tool: string;
+  action: string;
+  service: string;
+  protocol: string;
+  l7_app?: string | null;
+  source: RuleEndpoint;
+  destination: RuleEndpoint;
+  direction: RuleDirection;
+}
+
+export interface RulePort { proto: string; port_start: number; port_end: number }
+
+export interface RuleRow {
+  source_tool: string;
+  source_device?: string | null;
+  raw_rule_id: string;
+  rule_order?: number | null;
+  action: string;
+  src_kind?: string;
+  src_value?: Record<string, any> | null;
+  dst_kind?: string;
+  dst_value?: Record<string, any> | null;
+  protocol?: string;
+  ports?: RulePort[];
+  tags?: string[];
+}
+
+/**
+ * `GET /api/rule/{ref}` — the canonical rows AND the reviewer's context.
+ *
+ * `context` is three-valued and the three are different sentences:
+ *   RuleContext[]  the engine resolved this reference;
+ *   null           the reference is not in this snapshot;
+ *   undefined      this build of the API does not compute context at all.
+ * A screen that collapses the last two prints "not in this snapshot" out of a
+ * response that never looked.
+ */
+export interface RuleDetail extends Partial<Provenance> {
+  ref: string;
+  rules: RuleRow[];
+  context?: RuleContext[] | null;
+}
+
+/**
+ * `POST /api/staging/{id}/rollback` — take a PUSHED change back out of the
+ * applied overlay.
+ *
+ * `recompute_required` is not decoration. The engine reads the applied overlay
+ * at build time, so the running result still holds the change until it is
+ * rebuilt; a UI that reports "rolled back" without it claims the estate has
+ * already moved when it has not.
+ */
+export interface RollbackResult {
+  ok: boolean;
+  staged_id: string;
+  status: string;
+  recompute_required: boolean;
+  detail: string;
+}
+
+export const riskApi = {
+  rule: (ref: string, snap?: string) => j<RuleDetail>(`/api/rule/${encodeURIComponent(ref)}${qs(snap)}`),
+  /** Approver-only. 409 when the change is not 'pushed' — there is nothing in
+   *  the overlay to withdraw, and that refusal is rendered rather than retried. */
+  rollback: (stagedId: string, reason?: string) =>
+    j<RollbackResult>(`/api/staging/${encodeURIComponent(stagedId)}/rollback`, post(reason ? { reason } : {})),
+};

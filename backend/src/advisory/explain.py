@@ -31,10 +31,18 @@ def _fallback(f: Finding) -> str:
         access = "any protocol/port" if s.get("protocol") == "any" else (s.get("port_name") or s.get("service"))
         src = "the internet (0.0.0.0/0)" if s.get("source") == "0.0.0.0/0" else s.get("source")
         tags = ", ".join(s.get("dest_tags") or []) or "internal"
+        # A LABEL, not a subordinate clause. `_reasons` returns bare predicate
+        # phrases in the operator's words ("exposed directly to the internet"),
+        # and the old frame read "over-permissive because allows every protocol
+        # and port; exposed directly to the internet" -- ungrammatical from the
+        # second phrase on. Rewording the phrases to fit the clause would have
+        # put the explainer in the business of editing analyzer output, so the
+        # frame moved instead.
         why = "; ".join(s.get("reasons", [])) or "the grant is broader than necessary"
         return (f"Rule {ref} allows {access} from {src} to {s.get('dest_display')} ({tags}). "
-                f"This is over-permissive because {why}. Suggested fix: scope the source to only the "
-                f"hosts that genuinely need {access}, and remove any internet exposure.")
+                f"Over-permissive: {why}. "
+                f"Suggested fix: scope the source to only the hosts that genuinely need "
+                f"{access}, and remove any internet exposure.")
     if f.type == "cross_tool_path":
         path = s.get("display_path", [])
         return (f"A reachability chain crosses {len(s.get('tools', []))} tools "

@@ -9,7 +9,7 @@ Planted problems (BUILD_SPEC section 5):
   2. RDP internet -> regulated (AlgoSec) 0.0.0.0/0 -> db-prod-01  tcp/3389    -> over_permissive, FORCED critical
   3. overlapping CIDRs (AlgoSec)         10.20.5.0/24 & 10.0.0.0/8 -> app-segment -> cidr_overlap (low)
   4. shadowed rule (AlgoSec)             broad allow then narrow deny -> app-server-07 -> shadowed_rule (low)
-  5. cross-tool path (Wiz+GC+AlgoSec)    internet -> lb-public-01 -> app-server-07 -> internal-app-01 -> db-prod-01
+  5. cross-tool path A (Wiz+GC+AlgoSec)  internet -> lb-public-01 -> app-server-07 -> internal-app-01 -> db-prod-01
                                           -> cross_tool_path, reaches_sensitive, FORCED critical
      Every pivot on it is a CONCRETE host and every hop is a real grant from a
      different tool's export:
@@ -22,7 +22,46 @@ Planted problems (BUILD_SPEC section 5):
      shared declared `vpcId`, and the pivot is the host `internal-app-01` rather
      than the /16 `internal-app`. Neither is a relaxation: `_valid_traversal`
      still refuses the range, and the merge still requires matching tenancy.
+  6. cross-tool path B (Wiz+GC+AlgoSec)  internet -> lb-public-02 -> app-server-08 -> data-node-01 -> db-prod-02
+                                          -> cross_tool_path, reaches_sensitive, FORCED critical
+         0.0.0.0/0     --wiz WIZ-010--------> lb-public-02   (internet ingress)
+         lb-public-02  --wiz WIZ-011--------> app-server-08  (cloud lateral)
+         app-server-08 --guardicore GC-030--> data-node-01   (east-west)
+         data-node-01  --algosec ALGO-031---> db-prod-02     (data host to PCI db)
+     A SECOND regulated database reached by a DISJOINT hop set, so cutting path A
+     leaves path B standing -- which is the honest shape of a remediation queue
+     and the reason the flagship carries both rather than hiding the second one
+     behind a "Multiple paths" menu entry. (That entry was deleted: it reported
+     ONE path, because its pivot `data-segment` was a /16 and `_valid_traversal`
+     correctly refused it. See `src/scenarios.py`.)
 Plus benign noise so ranking/grouping has something to cut through.
+
+WHY GC-001 IS ON 9443 AND ALGO-030 SOURCES FROM app-segment
+------------------------------------------------------------
+These two look arbitrary and they are the entire anti-cheat. The engine does not
+model CIDR-membership expansion (docs/ENGINE.md 10.2), so a finding that cites a
+narrow rule can be made to DISAPPEAR by deleting that rule while a broader rule
+keeps the exact same access alive. Both hops of path A used to be built that way:
+
+  * GC-001 granted `app-server-07 -> internal-app` (the /16) on 8443, which is
+    the same service GC-002 grants to `internal-app-01` (a /32 inside it). Remove
+    GC-002 and the finding resolves; the flow does not. GC-001 is now on 9443
+    (ruleset `app-admin`), so GC-002 is the ONLY grant for that flow and cutting
+    it is a real cut.
+  * ALGO-030 granted `internal-app` (10.40.0.0/16) -> db-prod-01 on tcp/5432,
+    which covers ALGO-029 (10.40.0.5 -> db-prod-01, tcp/5432). Same trap on hop
+    4. It now sources from `app-segment` (10.30.0.0/16), which does NOT contain
+    10.40.0.5 -- so ALGO-029 stands alone, and the over_permissive finding
+    ALGO-030 still produces ("PostgreSQL open from app-segment to db-prod-01",
+    70/high) is the more realistic sin anyway: an entire app tier reaching the
+    PCI database.
+
+Path B is built with the trap designed out from the start: GC-030 and ALGO-031
+are each the sole grant for their hop, with no broader twin on either side.
+
+The demo walks finding -> fix -> gate -> queue -> rollback on one of these paths.
+If a hop had a broader twin, the proposed fix would delete the FINDING and leave
+the EXPOSURE, on the one screen whose entire pitch is that it does not do that.
 """
 
 from __future__ import annotations
@@ -80,6 +119,15 @@ def algosec_export() -> dict:
             # and nothing about that rule is relaxed to accommodate this.
             "internal-app-01": {"type": "host",    "value": "10.40.0.5",     "tags": ["prod", "internal-app"], "vpcId": VPC_ID},
             "dev-box-01":      {"type": "host",    "value": "10.31.0.10",    "tags": ["dev"]},
+            # --- path B (planted problem 6). A SECOND regulated database and the
+            #     concrete host that reaches it. `data-node-01` carries a vpcId
+            #     because it is a cloud data-service node; `db-prod-02` does NOT,
+            #     because it is on-prem like db-prod-01 -- and that absence is
+            #     load-bearing, not an oversight. It is what keeps the second path
+            #     honest: the terminal is reached because a rule grants it, never
+            #     because two tools' names for it were fused on a bare shared IP.
+            "data-node-01":    {"type": "host",    "value": "10.45.0.9",     "tags": ["prod", "data-svc"], "vpcId": VPC_ID},
+            "db-prod-02":      {"type": "host",    "value": "10.50.0.30",    "tags": ["pci", "customer-data", "prod"]},
         },
         "rules": [
             # --- planted problems ---
@@ -93,13 +141,31 @@ def algosec_export() -> dict:
             # below is the later over-broad widening of it, which is why ALGO-030
             # still scores as over_permissive on the /16 it resolves to (P8).
             {"rule_id": "ALGO-029", "order": 29, "src": "internal-app-01", "dst": "db-prod-01",    "service": "tcp/5432", "action": "allow", "comment": "internal app host to prod db"},
-            {"rule_id": "ALGO-030", "order": 30, "src": "internal-app",  "dst": "db-prod-01",    "service": "tcp/5432", "action": "allow", "comment": "app tier to prod db"},
+            # SOURCED FROM app-segment (10.30.0.0/16), NOT internal-app (10.40.0.0/16),
+            # and the difference is the anti-cheat described in the module docstring:
+            # 10.40.0.5 is NOT inside 10.30.0.0/16, so this rule does not cover
+            # ALGO-029 and "remove ALGO-029" is a real cut rather than a finding
+            # that vanishes while the access survives. It is still the widening
+            # ALGO-029 was the least-privilege version of, and it still scores
+            # over_permissive 70/high on the resolved /16 (P8).
+            {"rule_id": "ALGO-030", "order": 30, "src": "app-segment",   "dst": "db-prod-01",    "service": "tcp/5432", "action": "allow", "comment": "app tier to prod db"},
+            # Path B's last hop, and the ONLY grant for it: no broader rule in this
+            # catalog reaches db-prod-02 on 5432, so cutting ALGO-031 removes the
+            # access and not just the finding.
+            {"rule_id": "ALGO-031", "order": 31, "src": "data-node-01", "dst": "db-prod-02",    "service": "tcp/5432", "action": "allow", "comment": "data service node to prod db-02"},
             # --- secondary findings (medium) ---
             {"rule_id": "ALGO-046", "order": 46, "src": "172.16.0.0/12", "dst": "app-server-08", "service": "tcp/3389", "action": "allow", "comment": "ops RDP"},
             {"rule_id": "ALGO-050", "order": 50, "src": "10.0.0.0/8",    "dst": "app-server-09", "service": "tcp/22",   "action": "allow", "comment": "corp SSH to app-09"},
             # --- benign noise ---
             {"rule_id": "ALGO-060", "order": 60, "src": "10.30.5.0/24",  "dst": "app-server-08", "service": "tcp/443",  "action": "allow", "comment": "branch to app-08"},
             {"rule_id": "ALGO-061", "order": 61, "src": "10.30.0.0/16",  "dst": "app-server-08", "service": "tcp/443",  "action": "allow", "comment": "app segment to app-08 (redundant)"},
+            # Pairs with ALGO-070 below (10.30.0.0/24, the same service, the same
+            # destination) to keep a third `cidr_overlap` in the fixture -- the one
+            # that re-sourcing ALGO-030 off internal-app would otherwise have cost,
+            # since ALGO-029 and ALGO-030 no longer overlap. Aimed at a LEAF host
+            # (app-server-09 grants nothing onward), so it opens no third path and
+            # the two money shots stay the only two.
+            {"rule_id": "ALGO-062", "order": 62, "src": "10.30.0.0/16",  "dst": "app-server-09", "service": "tcp/443",  "action": "allow", "comment": "app segment to app-09 (redundant)"},
             {"rule_id": "ALGO-070", "order": 70, "src": "10.30.0.0/24",  "dst": "app-server-09", "service": "tcp/443",  "action": "allow", "comment": "web to app-09"},
             {"rule_id": "ALGO-071", "order": 71, "src": "10.31.0.0/24",  "dst": "dev-box-01",    "service": "tcp/22",   "action": "allow", "comment": "dev ssh"},
             {"rule_id": "ALGO-072", "order": 72, "src": "10.10.0.0/24",  "dst": "app-server-08", "service": "tcp/9100", "action": "allow", "comment": "monitoring scrape"},
@@ -135,6 +201,12 @@ def guardicore_export() -> dict:
             # is a legal pivot. AlgoSec names it identically, so the two views
             # merge on hostname -- no shared-IP inference needed.
             "internal-app-01": {"role": "app",     "env": "prod", "tags": ["prod", "internal-app"], "ip": "10.40.0.5", "vpcId": VPC_ID},
+            # Path B's pivot. Guardicore names it identically to AlgoSec, so the
+            # two views merge on HOSTNAME -- no shared-IP inference is needed and
+            # none is used. `role: app` (not a SEGMENT_ROLE) and a single /32 both
+            # resolve `object_is_abstract` to False, so it is a legal pivot on the
+            # same terms as internal-app-01.
+            "data-node-01":    {"role": "app",     "env": "prod", "tags": ["prod", "data-svc"], "ip": "10.45.0.9", "vpcId": VPC_ID},
             "web-tier":       {"role": "web",        "env": "prod", "tags": ["prod"]},
             "app-tier":       {"role": "app",        "env": "prod", "tags": ["prod"]},
             "monitoring":     {"role": "monitoring", "env": "prod", "tags": ["prod"]},
@@ -142,13 +214,23 @@ def guardicore_export() -> dict:
             "artifact-store": {"role": "storage",    "env": "dev",  "tags": ["dev"]},
         },
         "policies": [
-            {"policy_id": "GC-001", "src_label": "app-server-07", "dst_label": "internal-app",   "port": 8443, "protocol": "tcp", "action": "allow", "ruleset": "app-east-west"},
+            # 9443 / `app-admin`, NOT 8443 / `app-east-west`. On 8443 this rule
+            # granted app-server-07 the same service to the whole 10.40.0.0/16 that
+            # GC-002 grants to one host inside it, so "remove GC-002" deleted the
+            # cross-tool path finding and left the flow running underneath it. See
+            # the module docstring: the engine does not expand CIDR membership, so
+            # a covering twin turns the demo's own remediation beat into a lie.
+            {"policy_id": "GC-001", "src_label": "app-server-07", "dst_label": "internal-app",   "port": 9443, "protocol": "tcp", "action": "allow", "ruleset": "app-admin"},
             # The east-west allow to the concrete host. This is the middle hop of
             # the cross-tool path: Guardicore is the only tool that sees it.
             {"policy_id": "GC-002", "src_label": "app-server-07", "dst_label": "internal-app-01", "port": 8443, "protocol": "tcp", "action": "allow", "ruleset": "app-east-west"},
             {"policy_id": "GC-010", "src_label": "web-tier",      "dst_label": "app-tier",       "port": 8443, "protocol": "tcp", "action": "allow", "ruleset": "tiering"},
             {"policy_id": "GC-011", "src_label": "monitoring",    "dst_label": "app-server-07",  "port": 9100, "protocol": "tcp", "action": "allow", "ruleset": "observability"},
             {"policy_id": "GC-012", "src_label": "ci-runner",     "dst_label": "artifact-store", "port": 443,  "protocol": "tcp", "action": "allow", "ruleset": "ci"},
+            # Path B's middle hop, and like GC-002 the only tool on earth that sees
+            # it: AlgoSec has never heard of the east-west grant and Wiz has never
+            # heard of the database on the far side of it.
+            {"policy_id": "GC-030", "src_label": "app-server-08", "dst_label": "data-node-01",  "port": 8443, "protocol": "tcp", "action": "allow", "ruleset": "app-east-west"},
             # explicit App-ID policy: Guardicore names the app, not a port -> declared QUIC decode.
             {"policy_id": "GC-020", "src_label": "web-tier",      "dst_label": "app-tier",       "app": "quic", "action": "allow", "ruleset": "tiering-http3"},
         ],
@@ -188,6 +270,140 @@ def wiz_export() -> dict:
             {"exposure_id": "WIZ-020", "kind": "internet_ingress", "dst": "lb-public-01", "port": 443, "protocol": "udp"},
             {"exposure_id": "WIZ-021", "kind": "lateral", "src": "lb-public-01", "dst": "appsrv-07", "port": 443, "protocol": "udp"},
         ],
+    }
+
+
+# --------------------------------------------------------------------------
+# The CLEAN estate's policy — the control case.
+#
+# `demo` proves the analyzers find what is there. These three prove they do not
+# invent what is not, which is the harder half and the one a technical evaluator
+# actually tests: an engine that always returns findings is indistinguishable
+# from one that returns them at random. Measured: ZERO findings from all five
+# analyzers, and zero identity-review candidates.
+#
+# Every address lands inside a VLAN of `estate.build_resilient()` (10.20.0.0/24
+# dmz, 10.30.0.0/16 app-tier, 10.50.0.0/24 db-tier, 10.60.0.0/24 users), because
+# the two halves of a scenario must be ONE estate: a finding -- if there were one
+# -- has to have a floor and a switch port, and "which VLAN is this host in" is
+# answered by address containment on the Inventory screen.
+#
+# WHY EACH ANALYZER RETURNS NOTHING, rule by rule, so nobody later "tidies" one
+# of these and quietly turns the control case into a second demo:
+#
+#   over_permissive     every source is a /32 host object, so E == 0.1 -- below
+#                       `sensitive_dest_min_E` (0.3) even for the two grants that
+#                       reach the PCI database. There is no 0.0.0.0/0 anywhere.
+#   cross_tool_path     there is no internet entry at all. Nothing is
+#                       internet-facing in Wiz and no rule sources from
+#                       0.0.0.0/0, so `reachability.internet_entries` is empty
+#                       and no chain can start.
+#   cidr_overlap        no two rules grant the same service to the same
+#                       destination from sources where one contains the other.
+#                       C-003 and C-004 come closest and their sources are two
+#                       disjoint /32s.
+#   shadowed_rule       no rule precedes another that it subsumes -- there is no
+#                       broad allow at the top of the rulebase, which is the one
+#                       thing `demo` has and this does not.
+#   transport_exposure  no udp/443 and no `quic` token anywhere, and no
+#                       destination is reachable on both tcp and udp of one port.
+#
+# THIS IS NOT "THE EMPTY STATE". It is a real, plausible, internal-only policy of
+# eight least-privilege rules across three consoles, which is a much stronger
+# claim than an empty firewall: an export with two rules in it produces no
+# findings for the same reason an empty one does.
+# --------------------------------------------------------------------------
+
+#: Tenancy for the clean estate's cloud-resident pair. Declared on BOTH sides
+#: (AlgoSec and Wiz) so the one merge this fixture contains happens on evidence,
+#: exactly as it does in `demo` -- which is what makes `clean`'s "0 identity
+#: review candidates" an earned zero rather than an artefact of a fixture with
+#: nothing to correlate.
+CLEAN_VPC_ID = "vpc-0b41c9e77f25d8a30"
+
+
+def clean_algosec_export() -> dict:
+    return {
+        "vendor": "AlgoSec",
+        "export_type": "firewall_policy",
+        "device": "afa-core-fw-01",
+        "generated": "static-clean",
+        "objects": {
+            "web-lb-01":     {"type": "host", "value": "10.20.0.10", "tags": ["dmz", "prod"]},
+            "app-server-01": {"type": "host", "value": "10.30.1.10", "tags": ["prod"], "vpcId": CLEAN_VPC_ID},
+            "app-server-02": {"type": "host", "value": "10.30.1.11", "tags": ["prod"], "vpcId": CLEAN_VPC_ID},
+            # Regulated, and deliberately so: a clean estate is not one with
+            # nothing worth protecting. The two grants that reach it are the
+            # narrowest a database grant can be, which is the point.
+            "db-prod-01":    {"type": "host", "value": "10.50.0.10", "tags": ["pci", "customer-data", "prod"]},
+            "jump-01":       {"type": "host", "value": "10.60.0.10", "tags": ["mgmt"]},
+            "mon-01":        {"type": "host", "value": "10.60.0.20", "tags": ["mgmt"]},
+        },
+        "rules": [
+            {"rule_id": "C-001", "order": 1, "src": "web-lb-01",     "dst": "app-server-01", "service": "tcp/8443", "action": "allow", "comment": "published app, front end only"},
+            {"rule_id": "C-002", "order": 2, "src": "web-lb-01",     "dst": "app-server-02", "service": "tcp/8443", "action": "allow", "comment": "published app, front end only"},
+            {"rule_id": "C-003", "order": 3, "src": "app-server-01", "dst": "db-prod-01",    "service": "tcp/5432", "action": "allow", "comment": "app host to prod db"},
+            {"rule_id": "C-004", "order": 4, "src": "app-server-02", "dst": "db-prod-01",    "service": "tcp/5432", "action": "allow", "comment": "app host to prod db"},
+            {"rule_id": "C-005", "order": 5, "src": "jump-01",       "dst": "app-server-01", "service": "tcp/22",   "action": "allow", "comment": "jump host only"},
+            {"rule_id": "C-006", "order": 6, "src": "jump-01",       "dst": "app-server-02", "service": "tcp/22",   "action": "allow", "comment": "jump host only"},
+            {"rule_id": "C-007", "order": 7, "src": "mon-01",        "dst": "app-server-01", "service": "tcp/9100", "action": "allow", "comment": "metrics scrape"},
+            {"rule_id": "C-008", "order": 8, "src": "mon-01",        "dst": "app-server-02", "service": "tcp/9100", "action": "allow", "comment": "metrics scrape"},
+        ],
+    }
+
+
+def clean_guardicore_export() -> dict:
+    """The same grants as Guardicore sees them, on the same hostnames.
+
+    Deliberately OVERLAPPING with AlgoSec rather than disjoint: two consoles
+    naming the same hosts is what the identity layer is for, and a control case
+    in which nothing correlates would not exercise it. They merge on hostname --
+    no shared-IP inference, and nothing withheld for review.
+    """
+    return {
+        "vendor": "Guardicore (Akamai)",
+        "export_type": "segmentation_policy",
+        "labels": {
+            "web-lb-01":     {"role": "web", "env": "prod", "tags": ["dmz", "prod"], "ip": "10.20.0.10"},
+            "app-server-01": {"role": "app", "env": "prod", "tags": ["prod"], "ip": "10.30.1.10"},
+            "app-server-02": {"role": "app", "env": "prod", "tags": ["prod"], "ip": "10.30.1.11"},
+            "mon-01":        {"role": "monitoring", "env": "prod", "tags": ["mgmt"], "ip": "10.60.0.20"},
+        },
+        "policies": [
+            {"policy_id": "GCC-001", "src_label": "web-lb-01", "dst_label": "app-server-01", "port": 8443, "protocol": "tcp", "action": "allow", "ruleset": "tiering"},
+            {"policy_id": "GCC-002", "src_label": "web-lb-01", "dst_label": "app-server-02", "port": 8443, "protocol": "tcp", "action": "allow", "ruleset": "tiering"},
+            {"policy_id": "GCC-003", "src_label": "mon-01",    "dst_label": "app-server-01", "port": 9100, "protocol": "tcp", "action": "allow", "ruleset": "observability"},
+            {"policy_id": "GCC-004", "src_label": "mon-01",    "dst_label": "app-server-02", "port": 9100, "protocol": "tcp", "action": "allow", "ruleset": "observability"},
+        ],
+    }
+
+
+def clean_wiz_export() -> dict:
+    """Two cloud workloads, neither published, and `exposures: []`.
+
+    The empty list is the fixture's sharpest single line. Wiz was ASKED and
+    answered "nothing is exposed" -- which is a different card on the Sources
+    screen from a Wiz that was never onboarded, and `clean` is the scenario where
+    that distinction can be shown rather than asserted.
+
+    There is no internet-facing load balancer, and that is not squeamishness: a
+    published three-tier app whose web tier reaches an app tier that reaches a
+    PCI database IS a cross-tool path, correctly, and the engine reports two
+    critical ones for it. A clean estate cannot have an internet ingress that
+    reaches regulated data. The alternative -- keeping the LB and breaking the
+    chain by routing the database grant through an abstract segment so
+    `_valid_traversal` declines the pivot -- would manufacture a clean result out
+    of a documented engine limitation (docs/ENGINE.md 10.2), which is the exact
+    cheat this whole scenario exists to disprove.
+    """
+    return {
+        "vendor": "Wiz",
+        "export_type": "cloud_exposure",
+        "assets": {
+            "app-server-01": {"cloud": "aws", "type": "ec2", "internet_facing": False, "ip": "10.30.1.10", "tags": ["prod"], "vpcId": CLEAN_VPC_ID},
+            "app-server-02": {"cloud": "aws", "type": "ec2", "internet_facing": False, "ip": "10.30.1.11", "tags": ["prod"], "vpcId": CLEAN_VPC_ID},
+        },
+        "exposures": [],
     }
 
 

@@ -489,11 +489,13 @@ def test_a_vlan_name_comes_from_the_pool_and_never_from_an_svi_description():
 
     The pool's `ipPoolName` is a structured field and is the right source."""
     raw = _catalyst()
-    assert raw[DNA_VLAN_NAMES]["response"] == ["10", "20", "30", "40", "50", "60", "70"]
+    # 45 (data-svc) joined the estate with the demo's second cross-tool path;
+    # it is here because the pool enumerates it, which is the whole assertion.
+    assert raw[DNA_VLAN_NAMES]["response"] == ["10", "20", "30", "40", "45", "50", "60", "70"]
 
     res = normalize_catalyst(raw)
 
-    assert {v.vlan_id for v in res.vlans} == {10, 20, 30, 40, 50, 60, 70}
+    assert {v.vlan_id for v in res.vlans} == {10, 20, 30, 40, 45, 50, 60, 70}
     assert next(v for v in res.vlans if v.vlan_id == 30).name == "app-tier"
     # No VLAN is named after a fragment of an interface description.
     assert all("no L3" not in (v.name or "") for v in res.vlans)

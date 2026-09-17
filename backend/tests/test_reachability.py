@@ -95,9 +95,17 @@ from tests.test_analyzers import FOUR_ENCODINGS
 # internet-exposed for the same reason `internal-app` is — the merged
 # app-server-07 reaches it — and it is the hop that makes the cross-tool path a
 # chain of machines rather than a pivot through a range.
+# `data-node-01` and `db-prod-02` joined when `seed_demo` grew planted problem 6
+# -- the SECOND cross-tool path, internet -> lb-public-02 -> app-server-08 ->
+# data-node-01 -> db-prod-02. Both are genuinely reachable from the internet
+# through grants that exist in the exports, and both arrive here for the same
+# reason every other member does. `internal-app` stays in the set (the /16 is
+# REACHED by an any/any allow; what it may not be is a PIVOT, which is
+# `test_app_segment_is_not_internet_exposed`'s subject and is unchanged).
 INTERNET_EXPOSED = {
     "10.0.0.0/8", "app-server-07", "app-server-08", "app-server-09",
-    "db-prod-01", "internal-app", "internal-app-01",
+    "data-node-01", "db-prod-01", "db-prod-02",
+    "internal-app", "internal-app-01",
     "lb-public-01", "lb-public-02",
 }
 
@@ -108,9 +116,17 @@ INTERNET_EXPOSED = {
 # AlgoSec's view holds the only edges onward and is reachable only from the
 # abstract 10.0.0.0/8 (not a legal pivot) and from `monitoring` — so `appsrv-07`
 # enters the set and `app-server-07`, `internal-app` and `internal-app-01` leave.
+#
+# `data-node-01` and `db-prod-02` are in BOTH sets, and that is the interesting
+# part rather than an oversight: path B needs no scoped merge at all. Every tool
+# on it spells `app-server-08` and `data-node-01` the same way, so those views
+# fuse on HOSTNAME, which stripping a namespace cannot touch. Two paths resting
+# on two different kinds of evidence is exactly what this pair of sets now pins
+# -- one dies when the declared tenancy goes, the other does not.
 INTERNET_EXPOSED_IF_UNSCOPED = {
     "10.0.0.0/8", "app-server-08", "app-server-09", "appsrv-07",
-    "db-prod-01", "lb-public-01", "lb-public-02",
+    "data-node-01", "db-prod-01", "db-prod-02",
+    "lb-public-01", "lb-public-02",
 }
 
 

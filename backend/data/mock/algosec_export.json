@@ -67,6 +67,24 @@
       "tags": [
         "dev"
       ]
+    },
+    "data-node-01": {
+      "type": "host",
+      "value": "10.45.0.9",
+      "tags": [
+        "prod",
+        "data-svc"
+      ],
+      "vpcId": "vpc-0a7d3e91c4b28f56"
+    },
+    "db-prod-02": {
+      "type": "host",
+      "value": "10.50.0.30",
+      "tags": [
+        "pci",
+        "customer-data",
+        "prod"
+      ]
     }
   },
   "rules": [
@@ -136,11 +154,20 @@
     {
       "rule_id": "ALGO-030",
       "order": 30,
-      "src": "internal-app",
+      "src": "app-segment",
       "dst": "db-prod-01",
       "service": "tcp/5432",
       "action": "allow",
       "comment": "app tier to prod db"
+    },
+    {
+      "rule_id": "ALGO-031",
+      "order": 31,
+      "src": "data-node-01",
+      "dst": "db-prod-02",
+      "service": "tcp/5432",
+      "action": "allow",
+      "comment": "data service node to prod db-02"
     },
     {
       "rule_id": "ALGO-046",
@@ -177,6 +204,15 @@
       "service": "tcp/443",
       "action": "allow",
       "comment": "app segment to app-08 (redundant)"
+    },
+    {
+      "rule_id": "ALGO-062",
+      "order": 62,
+      "src": "10.30.0.0/16",
+      "dst": "app-server-09",
+      "service": "tcp/443",
+      "action": "allow",
+      "comment": "app segment to app-09 (redundant)"
     },
     {
       "rule_id": "ALGO-070",

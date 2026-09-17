@@ -252,6 +252,20 @@
         "interfaceType": "Virtual"
       },
       {
+        "id": "asw-acc-02:Vlan45",
+        "deviceId": "asw-acc-02",
+        "portName": "Vlan45",
+        "description": "trunked data-svc (no L3)",
+        "ipv4Address": null,
+        "ipv4Mask": null,
+        "vlanId": 45,
+        "status": null,
+        "adminStatus": "UP",
+        "speed": null,
+        "portMode": "access",
+        "interfaceType": "Virtual"
+      },
+      {
         "id": "asw-acc-02:Vlan50",
         "deviceId": "asw-acc-02",
         "portName": "Vlan50",
@@ -490,6 +504,20 @@
         "interfaceType": "Virtual"
       },
       {
+        "id": "csw-core-01:Vlan45",
+        "deviceId": "csw-core-01",
+        "portName": "Vlan45",
+        "description": "SVI data-svc",
+        "ipv4Address": "10.45.0.1",
+        "ipv4Mask": "255.255.255.0",
+        "vlanId": 45,
+        "status": null,
+        "adminStatus": "UP",
+        "speed": null,
+        "portMode": "routed",
+        "interfaceType": "Virtual"
+      },
+      {
         "id": "csw-core-01:Vlan50",
         "deviceId": "csw-core-01",
         "portName": "Vlan50",
@@ -672,6 +700,20 @@
         "interfaceType": "Virtual"
       },
       {
+        "id": "csw-core-02:Vlan45",
+        "deviceId": "csw-core-02",
+        "portName": "Vlan45",
+        "description": "SVI data-svc",
+        "ipv4Address": "10.45.0.1",
+        "ipv4Mask": "255.255.255.0",
+        "vlanId": 45,
+        "status": null,
+        "adminStatus": "UP",
+        "speed": null,
+        "portMode": "routed",
+        "interfaceType": "Virtual"
+      },
+      {
         "id": "csw-core-02:Vlan50",
         "deviceId": "csw-core-02",
         "portName": "Vlan50",
@@ -846,6 +888,17 @@
         "dnsServerIps": []
       },
       {
+        "id": "pool-45",
+        "ipPoolName": "data-svc",
+        "ipPoolCidr": "10.45.0.0/24",
+        "gateways": [
+          "10.45.0.1"
+        ],
+        "vlanId": 45,
+        "dhcpServerIps": [],
+        "dnsServerIps": []
+      },
+      {
         "id": "pool-50",
         "ipPoolName": "db-tier",
         "ipPoolCidr": "10.50.0.0/24",
@@ -966,6 +1019,7 @@
       "20",
       "30",
       "40",
+      "45",
       "50",
       "60",
       "70"
