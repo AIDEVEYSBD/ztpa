@@ -41,6 +41,7 @@
  */
 
 import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
+import { clampZoom, snap, tierFor } from "./zoom";
 import type { TopoNode } from "@/lib/types";
 import { cn } from "@/lib/cn";
 import { toolColour } from "@/lib/toolColour";
@@ -98,6 +99,9 @@ export interface CanvasProps {
    *  panel to be open. */
   onBackgroundClick?: () => void;
   zoom: number;
+  /** Set the zoom, from a gesture the canvas handled. Omitted, gestures are
+   *  ignored and the platform keeps its own behaviour. */
+  onZoomChange?: (z: number) => void;
   reduced: boolean;
   /** Reports the scroll viewport width so the caller can compute a fit zoom. */
   onViewport?: (width: number) => void;
@@ -160,7 +164,7 @@ function relationTip(r: PlacedRelation): string {
 export function Canvas({
   layout, bandsFor, redundancy, relations, simulatedTools, unlinked, focus, path, pathStage = 0,
   onToggleLane, onSelectNode, selectedNode, matches, activeMatch, focusRequest,
-  onBackgroundClick, zoom, reduced, onViewport, scrollMemo, className,
+  onBackgroundClick, zoom, onZoomChange, reduced, onViewport, scrollMemo, className,
 }: CanvasProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const drag = useRef<{ x: number; y: number; sl: number; st: number; moved: boolean } | null>(null);
@@ -177,12 +181,30 @@ export function Canvas({
     return () => ro.disconnect();
   }, [onViewport]);
 
+  /**
+   * Horizontal dead space either side of the scaled diagram.
+   *
+   * The inner wrapper is `mx-auto` (below), so below the zoom at which the
+   * diagram fills the viewport, layout x 0 is NOT scroll 0 -- it is half the
+   * slack in. Every layout-space <-> scroll conversion has to account for it or
+   * it lands off by that half. There is no padY: `mx-auto` centres one axis.
+   */
+  const padX = useCallback((z: number, el: HTMLElement) =>
+    Math.max(0, (el.clientWidth - layout.width * z) / 2), [layout.width]);
+
+  /** Clamp on BOTH sides. Clamping only at 0 truncates silently near the far
+   *  edge, which is invisible across eleven button presses and compounds into a
+   *  wandering diagram across hundreds of small gesture steps. */
   const centreOn = useCallback((cx: number, cy: number, z: number) => {
     const el = scrollRef.current;
-    if (!el || el.clientWidth === 0) return;
-    el.scrollLeft = Math.max(0, cx * z - el.clientWidth / 2);
-    el.scrollTop = Math.max(0, cy * z - el.clientHeight / 2);
-  }, []);
+    // Both axes guarded: a zero-HEIGHT canvas (collapsed flex parent, hidden
+    // tab) passed a width-only guard and then wrote a garbage scrollTop.
+    if (!el || el.clientWidth === 0 || el.clientHeight === 0) return;
+    const maxL = Math.max(0, el.scrollWidth - el.clientWidth);
+    const maxT = Math.max(0, el.scrollHeight - el.clientHeight);
+    el.scrollLeft = Math.min(maxL, Math.max(0, cx * z + padX(z, el) - el.clientWidth / 2));
+    el.scrollTop = Math.min(maxT, Math.max(0, cy * z - el.clientHeight / 2));
+  }, [padX]);
 
   // Restore the caller's remembered view on mount. This is what makes "go
   // fullscreen" non-destructive: the reader keeps the part of the estate they
@@ -202,25 +224,60 @@ export function Canvas({
   // and it is also what breaks the fullscreen restore above: fullscreen refits
   // the zoom immediately after mounting, and without this the restored centre
   // would be recomputed against the old scale.
+  // Read inside a native listener registered once; a captured `zoom` would be
+  // the value at registration for ever.
+  const zoomRef = useRef(zoom);
+  zoomRef.current = zoom;
+  /** Set by a gesture, consumed by the zoom effect below, then cleared. */
+  const pendingAnchor = useRef<{ clientX: number; clientY: number; prev: number } | null>(null);
+
+  // Derived once per render. The cards read it; nothing about the LAYOUT reads
+  // it, which is the invariant that keeps semantic zoom free: geometry is fixed
+  // and only the content changes.
+  const tier = tierFor(zoom);
+
   const lastZoom = useRef(zoom);
   useLayoutEffect(() => {
     const el = scrollRef.current;
     const prev = lastZoom.current;
     if (!el || prev === zoom || el.clientWidth === 0) { lastZoom.current = zoom; return; }
-    const cx = (el.scrollLeft + el.clientWidth / 2) / prev;
-    const cy = (el.scrollTop + el.clientHeight / 2) / prev;
     lastZoom.current = zoom;
+
+    // A GESTURE anchors to the cursor: the layout point under the pointer stays
+    // under the pointer, which is what makes pinch feel like the map apps
+    // everyone already knows. A BUTTON or a key anchors to the centre, because
+    // there is no pointer to anchor to.
+    const g = pendingAnchor.current;
+    pendingAnchor.current = null;
+    if (g) {
+      const r = el.getBoundingClientRect();
+      const lx = (el.scrollLeft + g.clientX - r.left - padX(g.prev, el)) / g.prev;
+      const ly = (el.scrollTop + g.clientY - r.top) / g.prev;
+      const maxL = Math.max(0, el.scrollWidth - el.clientWidth);
+      const maxT = Math.max(0, el.scrollHeight - el.clientHeight);
+      el.scrollLeft = Math.min(maxL, Math.max(0, lx * zoom + padX(zoom, el) - (g.clientX - r.left)));
+      el.scrollTop = Math.min(maxT, Math.max(0, ly * zoom - (g.clientY - r.top)));
+      return;
+    }
+    const cx = (el.scrollLeft - padX(prev, el) + el.clientWidth / 2) / prev;
+    const cy = (el.scrollTop + el.clientHeight / 2) / prev;
     centreOn(cx, cy, zoom);
-  }, [zoom, centreOn]);
+  }, [zoom, centreOn, padX]);
 
   const onScroll = useCallback(() => {
     const el = scrollRef.current;
     if (!el || !scrollMemo || el.clientWidth === 0) return;
+    // The VISIBLE CONTENT centre, not the viewport centre. When the diagram is
+    // shorter than the viewport the two differ, and the old form recorded a
+    // point below the diagram entirely -- with nothing clamping it, unlike the
+    // horizontal case. Restoring that memo put the reader under the estate.
+    const vw = Math.min(el.clientWidth, layout.width * zoom);
+    const vh = Math.min(el.clientHeight, layout.height * zoom);
     scrollMemo.current = {
-      cx: (el.scrollLeft + el.clientWidth / 2) / zoom,
-      cy: (el.scrollTop + el.clientHeight / 2) / zoom,
+      cx: (el.scrollLeft - padX(zoom, el) + vw / 2) / zoom,
+      cy: (el.scrollTop + vh / 2) / zoom,
     };
-  }, [scrollMemo, zoom]);
+  }, [scrollMemo, zoom, layout.width, layout.height, padX]);
 
   // Bring a card into view — the landing half of search, and of "focus this
   // node". Centred rather than merely scrolled-into-view, because a match that
@@ -236,16 +293,81 @@ export function Canvas({
     const p = layout.byId.get(focusRequest.id);
     if (!p) return;
     handledFocus.current = focusRequest.nonce;
-    const cx = (p.x + p.w / 2) * zoom;
+    const cx = (p.x + p.w / 2) * zoom + padX(zoom, el);
     const cy = (p.y + p.h / 2) * zoom;
+    const maxL = Math.max(0, el.scrollWidth - el.clientWidth);
+    const maxT = Math.max(0, el.scrollHeight - el.clientHeight);
     el.scrollTo({
-      left: Math.max(0, cx - el.clientWidth / 2),
-      top: Math.max(0, cy - el.clientHeight / 2),
+      left: Math.min(maxL, Math.max(0, cx - el.clientWidth / 2)),
+      top: Math.min(maxT, Math.max(0, cy - el.clientHeight / 2)),
       behavior: reduced ? "auto" : "smooth",
     });
     // Intentionally keyed on the nonce: asking for the same card twice must
     // scroll to it twice.
-  }, [focusRequest, layout, zoom, reduced]);
+  }, [focusRequest, layout, zoom, reduced, padX]);
+
+  /**
+   * Gesture zoom: ctrl/cmd + wheel, and Safari's pinch events.
+   *
+   * REGISTERED NATIVELY, NOT AS A JSX `onWheel`. React 18 attaches wheel through
+   * its delegated root listener as PASSIVE, so `preventDefault()` from a JSX
+   * handler is a silent no-op with a console warning -- and the browser would go
+   * on zooming the whole page while the canvas zoomed too.
+   *
+   * Only WITH a modifier. Plain wheel is this element's vertical scroll and it
+   * stays that way: it is a real overflow-auto scroller, `onScroll` is what
+   * persists `scrollMemo`, and rebinding it would cost the reader the scrollbar
+   * they can see. ctrl+wheel is also what a trackpad pinch emits on every
+   * platform, so this is the pinch handler as well.
+   *
+   * Cmd/Ctrl +/-/0 are deliberately NOT captured anywhere: taking the platform's
+   * zoom affordance away over one element is only defensible while the page's
+   * own zoom still works, which is also WCAG 1.4.4.
+   */
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || !onZoomChange) return;
+    const apply = (factor: number, clientX: number, clientY: number) => {
+      const next = snap(clampZoom(zoomRef.current * factor));
+      if (next === zoomRef.current) return;
+      // Recorded for the layout effect below, which runs after React commits
+      // the new scale. Anchoring here would compute against the OLD transform.
+      pendingAnchor.current = { clientX, clientY, prev: zoomRef.current };
+      onZoomChange(next);
+    };
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey && !e.metaKey) return;         // plain wheel stays scroll
+      e.preventDefault();
+      // deltaY is px/line/page depending on deltaMode, so normalise before
+      // damping: a line is roughly 16px and a page roughly a viewport.
+      const px = e.deltaMode === 1 ? e.deltaY * 16
+        : e.deltaMode === 2 ? e.deltaY * el.clientHeight
+        : e.deltaY;
+      // 0.0015 puts one mouse notch (~120px) at about 1.2x. The first draft
+      // used 0.01, which turned a single notch into 3.3x and slammed a real
+      // wheel from 100% to the ceiling in one movement.
+      apply(Math.exp(-px * 0.0015), e.clientX, e.clientY);
+    };
+    // Safari fires these INSTEAD of ctrl+wheel for a trackpad pinch.
+    let gestureBase = 1;
+    const onGestureStart = (e: Event) => { e.preventDefault(); gestureBase = 1; };
+    const onGestureChange = (e: Event) => {
+      e.preventDefault();
+      const ev = e as Event & { scale: number; clientX: number; clientY: number };
+      if (!ev.scale) return;
+      const factor = ev.scale / gestureBase;
+      gestureBase = ev.scale;
+      apply(factor, ev.clientX, ev.clientY);
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    el.addEventListener("gesturestart", onGestureStart as EventListener);
+    el.addEventListener("gesturechange", onGestureChange as EventListener);
+    return () => {
+      el.removeEventListener("wheel", onWheel);
+      el.removeEventListener("gesturestart", onGestureStart as EventListener);
+      el.removeEventListener("gesturechange", onGestureChange as EventListener);
+    };
+  }, [onZoomChange]);
 
   // Drag-to-pan. Cheap: no state, no re-render, and it defers to the native
   // scrollbars rather than replacing them.
@@ -256,6 +378,10 @@ export function Canvas({
     // Mouse only. A touch drag is already a scroll gesture, and capturing it
     // here would replace the platform's kinetic scrolling with a worse one.
     if (e.pointerType !== "mouse") return;
+    // Suppress the text selection a drag across cards would otherwise leave
+    // smeared behind it. Deliberately here and not a global `user-select: none`,
+    // which would also stop a reader selecting a hostname to copy it.
+    e.preventDefault();
     drag.current = { x: e.clientX, y: e.clientY, sl: el.scrollLeft, st: el.scrollTop, moved: false };
     el.setPointerCapture(e.pointerId);
   }, []);
@@ -263,6 +389,10 @@ export function Canvas({
     const el = scrollRef.current;
     const d = drag.current;
     if (!el || !d) return;
+    // The button is no longer held. Happens when the pointer is released
+    // outside the window and no pointercancel arrives: `drag.current` stayed
+    // set and the canvas kept panning on the next mouse move with nothing held.
+    if (e.buttons === 0) { drag.current = null; return; }
     if (Math.abs(e.clientX - d.x) > 3 || Math.abs(e.clientY - d.y) > 3) d.moved = true;
     el.scrollLeft = d.sl - (e.clientX - d.x);
     el.scrollTop = d.st - (e.clientY - d.y);
@@ -675,6 +805,7 @@ export function Canvas({
               <NodeCard
                 key={p.id}
                 placed={p}
+                tier={tier}
                 state={nodeState(p.id)}
                 bands={p.node ? bandsFor(p.node) : []}
                 simulatedTools={simulatedTools}

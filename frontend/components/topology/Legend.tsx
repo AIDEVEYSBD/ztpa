@@ -25,7 +25,7 @@ import { cn } from "@/lib/cn";
 import { EVIDENCE_COPY, RELATION_COPY, type EvidenceTier, type RelationLayer } from "./layout";
 import { VLAN_PALETTE, type RedundancyBand, type VlanBand } from "./palette";
 
-function LineSample({ tier, tint }: { tier: EvidenceTier; tint?: string }) {
+export function LineSample({ tier, tint }: { tier: EvidenceTier; tint?: string }) {
   return (
     <svg width={40} height={10} aria-hidden className="shrink-0">
       <path
@@ -42,7 +42,7 @@ function LineSample({ tier, tint }: { tier: EvidenceTier; tint?: string }) {
 
 /** The structural hairline, at exactly the weight and dash the canvas draws it,
  *  so the legend sample and the mark on screen are the same object. */
-function RelationSample() {
+export function RelationSample() {
   return (
     <svg width={40} height={10} aria-hidden className="shrink-0">
       <path
@@ -60,7 +60,7 @@ function RelationSample() {
 
 /** Two tinted lines, because "one of several paths" is a fact about a PAIR and a
  *  single sample line cannot show it. */
-function PairSample({ tint }: { tint: string }) {
+export function PairSample({ tint }: { tint: string }) {
   return (
     <svg width={40} height={10} aria-hidden className="shrink-0">
       <path d="M1 3H39" fill="none" stroke={tint} strokeWidth={1.7} strokeLinecap="round" />

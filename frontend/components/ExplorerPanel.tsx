@@ -68,6 +68,7 @@ import {
 import type { BlastRadius, Finding, SourceCard, TopoNode } from "@/lib/types";
 import { cn } from "@/lib/cn";
 import { useReducedMotion } from "@/lib/useReducedMotion";
+import { ZOOM, FIT, clampZoom, snap, tierFor } from "./topology/zoom";
 import { Chip, Eyebrow, SeverityPill, StatPill } from "./ui";
 import { ErrorState, InlineError } from "./ui/Feedback";
 import { NetIcon } from "./net/icons";
@@ -75,6 +76,7 @@ import { Canvas, type FocusView } from "./topology/Canvas";
 import { FindingSidebar } from "./topology/FindingSidebar";
 import { HopPanel } from "./topology/HopPanel";
 import { Legend } from "./topology/Legend";
+import { CanvasKey } from "./topology/CanvasKey";
 import { NodeDrawer } from "./topology/NodeDrawer";
 import { SearchBox } from "./topology/SearchBox";
 import {
@@ -107,15 +109,6 @@ const MAX_BLAST_TICKS = 14;
 const DOCK_AT = 860;
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
-
-/**
- * The lowest zoom "Fit" will choose.
- *
- * Fit fits the WIDTH, and it stops here rather than shrinking until everything
- * is on screen, because a diagram whose hostnames cannot be read is not a
- * diagram that fits — it is a picture of one.
- */
-const FIT_MIN = 0.72;
 
 export type ExplorerOverlay = "off" | "reachability" | "findings";
 
@@ -177,7 +170,7 @@ function ZoomBar({ zoom, setZoom, onFit }: { zoom: number; setZoom: (z: number) 
     <div className="flex shrink-0 items-center gap-1">
       <button
         type="button"
-        onClick={() => setZoom(clamp(zoom - 0.1, 0.5, 1.6))}
+        onClick={() => setZoom(snap(clampZoom(zoom / ZOOM.step)))}
         className="btn-ghost !h-7 !w-7 !px-0"
         aria-label="Zoom out"
       >
@@ -188,7 +181,7 @@ function ZoomBar({ zoom, setZoom, onFit }: { zoom: number; setZoom: (z: number) 
       </span>
       <button
         type="button"
-        onClick={() => setZoom(clamp(zoom + 0.1, 0.5, 1.6))}
+        onClick={() => setZoom(snap(clampZoom(zoom * ZOOM.step)))}
         className="btn-ghost !h-7 !w-7 !px-0"
         aria-label="Zoom in"
       >
@@ -800,12 +793,12 @@ export function ExplorerPanel({ snapshot, findings, findingsError, initialOverla
   useEffect(() => {
     if (!fitPending.current || viewW <= 0) return;
     fitPending.current = false;
-    setZoom(clamp(viewW / layout.width, FIT_MIN, 1));
+    setZoom(clamp(viewW / layout.width, FIT.min, FIT.max));
   }, [viewW, layout.width]);
 
   const fit = useCallback(() => {
     const w = viewportW.current;
-    if (w > 0) setZoom(clamp(w / layoutW.current, FIT_MIN, 1));
+    if (w > 0) setZoom(clamp(w / layoutW.current, FIT.min, FIT.max));
     else fitPending.current = true;
   }, []);
 
@@ -816,7 +809,7 @@ export function ExplorerPanel({ snapshot, findings, findingsError, initialOverla
 
   const closeFullscreen = useCallback(() => {
     setFullscreen(false);
-    setZoom(1);
+    fitPending.current = true;
     toggleRef.current?.focus();
   }, []);
 
@@ -866,6 +859,31 @@ export function ExplorerPanel({ snapshot, findings, findingsError, initialOverla
         return;
       }
       if (typing) return;
+      // MODIFIED KEYS BELONG TO THE BROWSER. Without this, `f` swallowed
+      // Cmd/Ctrl+F into canvas-fit instead of opening the find bar, and the
+      // arrow branches swallowed Alt+Left (Back) and Cmd+Arrow whenever a walk
+      // was loaded. It is also what keeps Cmd/Ctrl +/-/0 as PAGE zoom, which is
+      // the escape hatch that makes capturing ctrl+wheel over the canvas
+      // defensible (WCAG 1.4.4).
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+      // Keyboard parity for the zoom gesture. There was no keyboard route to
+      // zoom at all before this -- the +/- controls are buttons.
+      if (e.key === "+" || e.key === "=") {
+        e.preventDefault();
+        setZoom((z) => snap(clampZoom(z * ZOOM.step)));
+        return;
+      }
+      if (e.key === "-" || e.key === "_") {
+        e.preventDefault();
+        setZoom((z) => snap(clampZoom(z / ZOOM.step)));
+        return;
+      }
+      if (e.key === "0") {
+        e.preventDefault();
+        setZoom(1);
+        return;
+      }
 
       if (e.key === "/") {
         e.preventDefault();
@@ -890,6 +908,12 @@ export function ExplorerPanel({ snapshot, findings, findingsError, initialOverla
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [hasSelection, clearSelection, query, fullscreen, closeFullscreen, fit, step, walk.length]);
+
+  // A focus request does not survive the fullscreen remount. `handledFocus`
+  // resets there and `focusRequest` does not, so without this, entering or
+  // leaving fullscreen re-fires a smooth scroll to whatever was last searched
+  // for -- landing after the mount-time scrollMemo restore and overriding it.
+  useEffect(() => { setFocusRequest(null); }, [fullscreen]);
 
   // Fullscreen locks the page behind it.
   useEffect(() => {
@@ -1062,6 +1086,7 @@ export function ExplorerPanel({ snapshot, findings, findingsError, initialOverla
       focusRequest={focusRequest}
       onBackgroundClick={clearSelection}
       zoom={zoom}
+      onZoomChange={setZoom}
       reduced={reduced}
       onViewport={onViewport}
       scrollMemo={scrollMemo}
@@ -1178,7 +1203,25 @@ export function ExplorerPanel({ snapshot, findings, findingsError, initialOverla
 
   const workbench = (
     <div ref={workbenchRef} className="relative flex min-h-0 flex-1">
-      <div className="min-w-0 flex-1">{canvas}</div>
+      {/* `relative` so the key anchors to the canvas VIEWPORT. Inside <Canvas>
+          it would sit in the scaled content layer and zoom away with the
+          diagram; on the workbench box it could overlap the docked rail. */}
+      <div className="relative min-w-0 flex-1">
+        {canvas}
+        <CanvasKey
+          tiers={[...new Set(links.map((l) => evidenceTier(l.evidence)))]}
+          redundancy={[...redundancy.values()]}
+          relations={relationLayer}
+          relationsVisible={showRelations}
+          vlanBands={[...vlanBands.values()]}
+          hasAggregated={hasAggregated}
+          hasHa={hasHa}
+          simulatedCount={simulatedTools?.size ?? 0}
+          unlinkedCount={unlinked.size}
+          darkLanes={layout.lanes.filter((l) => l.observed === false).length}
+          showingHops={overlay === "reachability" && (placedPath?.hops.length ?? 0) > 0}
+        />
+      </div>
 
       {/* Docked beside the canvas on a wide screen… */}
       {panel && docked ? (
@@ -1713,52 +1756,13 @@ export function ExplorerPanel({ snapshot, findings, findingsError, initialOverla
               ) : null}
             </section>
 
-            {/* ── Legend ──────────────────────────────────────────────────────── */}
-            <section className="panel p-4">
-              <div className="mb-3 flex flex-wrap items-center gap-2">
-                <Eyebrow>Legend</Eyebrow>
-                <Shortcuts className="ml-auto" />
-              </div>
-              <Legend
-                redundancy={[...redundancy.values()]}
-                relations={relationLayer}
-                relationsVisible={showRelations}
-                vlanBands={[...vlanBands.values()]}
-                hasContainment={hasContainment}
-                hasAggregated={hasAggregated}
-                hasHa={hasHa}
-              />
-              <div className="mt-3 border-t border-hair pt-2.5">
-                <div className="label mb-1">The reachability overlay</div>
-                <div className="flex flex-wrap items-start gap-x-5 gap-y-2">
-                  <div className="flex items-start gap-2">
-                    <svg width={40} height={12} aria-hidden className="mt-0.5 shrink-0">
-                      <path d="M1 6H33" fill="none" stroke="var(--accent)" strokeWidth={2.4} strokeLinecap="round" />
-                      <path d="M33 2 L39 6 L33 10 z" fill="var(--accent)" />
-                    </svg>
-                    <div className="min-w-0">
-                      <div className="text-[11.5px] font-bold text-text2">A policy hop — not a cable</div>
-                      <div className="text-[11px] leading-snug text-text3">
-                        One allow rule permitting traffic from one node to the next. It bows the opposite way from a
-                        link, carries an arrow, and is tagged with the service and the console that permits it. Nothing
-                        on this overlay asserts a wire.
-                      </div>
-                    </div>
-                  </div>
-                  <div className="flex items-start gap-2">
-                    <span className="mono mt-0.5 inline-flex h-[14px] min-w-[14px] shrink-0 items-center justify-center bg-accent px-0.5 text-[9px] font-bold leading-none text-accent-ink">
-                      2
-                    </span>
-                    <div className="min-w-0">
-                      <div className="text-[11.5px] font-bold text-text2">Position in the chain</div>
-                      <div className="text-[11px] leading-snug text-text3">
-                        The terminal wears a red marker: it is where the chain ends, and its tags are why that matters.
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </section>
+            {/* The legend is no longer a section here. It lives INSIDE the
+                canvas as `CanvasKey`, which is what the brief asked for and also
+                what fixes the real defect: this block sat inside `inlineRef`,
+                which fullscreen marks inert and aria-hidden, so the key to the
+                diagram vanished in the mode this canvas is actually read in.
+                Rendering it in both places instead would have repeated the
+                Shortcuts bug -- two live copies, two tab stops. */}
           </>
         )}
       </div>
