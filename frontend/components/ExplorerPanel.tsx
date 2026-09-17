@@ -1364,9 +1364,15 @@ export function ExplorerPanel({ snapshot, findings, findingsError, initialOverla
                 3 findings" out of a half-loaded set is a claim about how many
                 there are. */}
               {resErr || resLoading ? null : walk.length > 0 ? (
-                <button type="button" onClick={() => selectFindingIndex(0)} className="btn-primary text-[12px]">
-                  <Play size={12} /> Walk {walk.length} finding
-                  {walk.length === 1 ? "" : "s"}
+                // "on the map", not "findings". This count is resilience findings
+                // PLUS the policy findings that name a device on this canvas, so it
+                // does not match the Risk To-Do badge beside it -- that one is the
+                // policy set, and some of it lands on addresses no card represents.
+                // Two bare numbers on one screen read as a bug; saying which set
+                // this one is costs three words.
+                <button type="button" onClick={() => selectFindingIndex(0)} className="btn-primary text-[12px]"
+                  title="Resilience findings, plus the policy findings that name a device on this canvas.">
+                  <Play size={12} /> Walk {walk.length} on the map
                 </button>
               ) : null}
             </div>

@@ -66,7 +66,7 @@ the EXPOSURE, on the one screen whose entire pitch is that it does not do that.
 
 from __future__ import annotations
 
-import json
+import sys
 from pathlib import Path
 
 MOCK_DIR = Path(__file__).resolve().parents[1] / "data" / "mock"
@@ -408,17 +408,29 @@ def clean_wiz_export() -> dict:
 
 
 def main() -> None:
-    MOCK_DIR.mkdir(parents=True, exist_ok=True)
-    artifacts = {
-        "algosec_export.json": algosec_export(),
-        "guardicore_export.json": guardicore_export(),
-        "wiz_export.json": wiz_export(),
-    }
-    for name, data in artifacts.items():
-        path = MOCK_DIR / name
-        path.write_text(json.dumps(data, indent=2) + "\n")
-        print(f"wrote {path.relative_to(MOCK_DIR.parents[1])}")
-    print("seed complete: 3 simulated exports with 5 planted problems + benign noise")
+    """Write the WHOLE demo dataset -- all ten exports, not just these three.
+
+    This used to write the three policy exports and stop, which is what `make
+    seed` and `python tasks.py seed` both run. The seven infrastructure exports
+    were therefore whatever was committed to git, regenerated only by a manual
+    `seed_topology.py`, and free to drift from `src/estate.py` with nothing to
+    notice: a fresh clone's topology was a function of the repository's history
+    rather than of the code. It also left the estate MIXED whenever this script
+    was used to "restore the demo" after running a different scenario -- the demo
+    rulebase beside the previous scenario's network.
+
+    Delegated to the scenario writer so there is ONE implementation of "write a
+    complete estate", with its atomic swap and its removal half. The import is
+    local because `src.scenarios` imports this module for the fixtures below.
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from src.scenarios import INFRA, POLICY, write_scenario
+
+    write_scenario("demo")
+    print(f"wrote {len(POLICY) + len(INFRA)} simulated exports to "
+          f"{MOCK_DIR.relative_to(MOCK_DIR.parents[2])}")
+    print("  · 3 policy exports with 6 planted problems (incl. BOTH cross-tool paths)")
+    print("  · 7 infrastructure exports, each one console's projection of src/estate.py")
 
 
 if __name__ == "__main__":

@@ -843,6 +843,51 @@ def test_a_scenario_that_onboards_fewer_consoles_removes_the_rest(
     assert on_disk() == set(scenarios.INFRA), "switching back re-onboards them"
 
 
+def test_the_carrier_rung_buys_what_the_aggregator_cannot(
+        sandbox_mock_dir: Path) -> None:
+    """The middle rung's whole reason to exist, pinned as a number.
+
+    `partial` reports ZERO resilience findings -- not because the estate is
+    sound, but because an aggregator models enforcement points and nothing
+    upstream of them. Adding ONE read of the carrier portal (not an API, not an
+    agent) brings the circuits, and with them findings the firewall consoles
+    cannot hold: "N circuits ride one carrier" is a fact about the invoice.
+
+    Asserted as a strict inequality with a floor rather than an exact count, so
+    the claim survives an analyzer gaining a check but fails if the rung ever
+    stops buying anything -- which is the only way this scenario becomes a lie.
+    """
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    import seed_topology as st
+    from src.analyzers.resilience import assess
+    from src.estate import build
+    from src.normalizers import algosec_topology as n_algo, carrier as n_carrier
+    from src.normalizers.common import NormalizeResult
+    from src.topology import reconstruct
+
+    def findings(consoles):
+        est = build()
+        nr = NormalizeResult()
+        nr.extend(n_algo.normalize(st.algosec_topology.algosec_topology_export(est)))
+        if "carrier_portal" in consoles:
+            nr.extend(n_carrier.normalize(st.carrier.carrier_portal_export(est)))
+        topo = reconstruct(nr.devices, nr.interfaces, nr.links,
+                           nr.vlans, nr.subnets, nr.circuits)
+        return assess(topo).findings
+
+    alone = findings(scenarios._PARTIAL_CONSOLES)
+    plus = findings(scenarios._CARRIER_CONSOLES)
+
+    assert not alone, "an aggregator alone cannot see a circuit, so it cannot rate one"
+    assert len(plus) >= 5
+    assert sum(1 for f in plus if f.severity_band == "critical") >= 2
+    # The named one. If this title stops appearing the rung still has findings,
+    # but it has lost the one that no policy console could ever have produced.
+    assert any("carrier" in f.title.lower() for f in plus), \
+        f"no shared-carrier finding: {[f.title for f in plus]}"
+
+
 def test_partial_changes_only_the_coverage_not_the_policy(
         sandbox_mock_dir: Path) -> None:
     """The whole argument the pair exists to make. If the policy exports differ

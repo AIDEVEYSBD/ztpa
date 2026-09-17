@@ -24,12 +24,11 @@ the picture. Both are fixed by not having a second implementation at all.
 
 RESTORING
 ---------
-`python backend/scripts/seed_demo.py` writes the three policy exports and NOT the
-seven infrastructure ones, so it would leave the branch topology on disk beside
-the demo rulebase. Restore with the scenario writer, which owns all ten:
+    python backend/scripts/seed_demo.py
 
-    python -c "import sys; sys.path.insert(0, 'backend'); \\
-               from src.scenarios import write_scenario; write_scenario('demo')"
+...which now writes all ten exports through the same scenario writer, so it
+genuinely restores the demo rather than leaving the branch topology on disk
+beside the demo rulebase.
 
 ⚠ SIMULATED DATA, like everything else under data/mock.
 """

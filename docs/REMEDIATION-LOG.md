@@ -19,6 +19,7 @@ Claims that could **not** be verified in this environment are called out explici
 | **2** — System of record | Governance survival, audit identity, migrations, logging, transaction boundaries | ✅ Complete (2 gaps carried) |
 | **3** — Pilot-ready | Real ingestion path, bounded algorithms, analyzer coverage | ⬜ Next |
 | **Network Analyser** | Sources → Inventory → Topology → Resilience; multi-console reconstruction | ✅ Complete |
+| **Demo scenario set** | One estate per scenario: all ten exports written, a second cross-tool path, an anti-cheat, `partial` added, `multi_path` deleted | ✅ Complete |
 | **4** — Production hardening | Provider parity, cost/latency limits, full coverage, reproducible builds | ⬜ Not started |
 
 | Metric | Baseline | Now |
@@ -461,3 +462,97 @@ five-step process has no route for the findings this work introduces.
 **3. `advisory/explain.py` has no branch for the new finding classes**, and
 `rank_deterministic` has no type weighting — hygiene findings would swamp the
 Risk To-Do.
+
+---
+
+## Demo scenario set — one estate per scenario ✅
+
+**Branch:** `remediation/prod-readiness`
+
+The picker offered four datasets and `scenarios._write` rewrote **three of the
+estate's ten console exports**. The seven infrastructure ones survived a switch
+and belonged to whichever scenario had written them last, so two of the four
+entries contradicted their own names on screen:
+
+* **"Clean estate"** reported zero policy findings beside an Explorer showing 13
+  devices and a resilience analyzer reporting **six** single points of failure,
+  four of them designed in.
+* **"At scale"** added 500 synthetic policy assets and left the topology at 13
+  devices — so the one screen the scale story exists for never changed, though
+  `estate.build(branches=N)` existed precisely to grow it.
+
+Nothing caught either, because no test had ever run a scenario end to end.
+
+### What was delivered
+
+| Area | Change |
+|---|---|
+| Writer | `_write_dataset(policy, infra)` owns all ten exports; an export a scenario does not onboard is **removed**, because absence is what `_load_optional` reads as "not onboarded". `_write(algo, gc, wiz)` is kept verbatim as a shim — two failure tests assert its exact `replaced`/`pending` lists, and those assertions are the proof the atomic swap works |
+| `demo` | A **second** cross-tool path to a second regulated database, disjoint from the first, and an **anti-cheat**: GC-001 moved to 9443 and ALGO-030 re-sourced to `app-segment`, so no cited grant has a broader twin. 35 → 38 findings, re-baselined line by line |
+| `partial` | **New.** The same policy with AlgoSec alone onboarded: 38 identical findings, 4 devices, six lanes named dark, and a resilience report that says it analysed almost nothing |
+| `clean` | **Rebuilt on both halves.** `estate.build_resilient()` (10 devices, two carriers, protected dual handoffs, everything criss-crossed) + an eight-rule internal-only policy. Measured: 0 policy findings, 0 resilience findings, `analysable: true` |
+| `scale` | Grows the topology too (`n/4` branch sites), and the synthetic address space moved **out of `10.0.0.0/8`** |
+| `seed_scale.py` | Was three bare `write_text` calls — the exact non-atomic pattern `_swap` exists to eliminate, in a second implementation. Now a six-line wrapper |
+| Docs | `docs/DEMO.md` rewritten to nine beats with every number measured; the stale root `DEMO.md` deleted |
+
+### The three things worth recording
+
+**1. The flagship's headline fix was cosmetic, and the demo walked into it.**
+`ALGO-030` (`internal-app` /16 → `db-prod-01`, 5432) covered `ALGO-029`, and
+`GC-001` covered `GC-002` the same way. The engine does not model CIDR-membership
+expansion (ENGINE.md §10.2), so `remove ALGO-029` **resolved the finding and left
+the access open** — on the Risk To-Do screen, whose entire pitch is that it does
+not do that. Fixed in the FIXTURE, not by weakening a rule, and pinned by a new
+check that cuts each cited grant out of the record set and re-derives the graph:
+`P5 cutting a cited grant cuts the ACCESS, not just the finding`.
+
+**2. `multi_path` was a lie and is deleted.** It advertised two cross-tool paths
+and reported **one**: its second pivot was `data-segment`, a `/16`, and
+`_valid_traversal` correctly refuses to originate from an address range. It had
+also started appending an `ALGO-031` and a `GC-002` that `seed_demo` already
+defines. Its content is now the flagship's second path, through a concrete host
+two tools independently name — data, not a relaxed traversal rule.
+
+**3. 516 of `scale`'s 535 findings were one finding, 516 times.** The synthetic
+hosts sat at `10.200.x.y` with `10.201.x.0/24` sources — both inside ALGO-001's
+destination (`0.0.0.0/0 → 10.0.0.0/8`, service any) — so every synthetic rule was
+shadowed by it. Moving them to `172.20`/`172.24` leaves **38**, the flagship's own
+number: the ranked list does not grow with the estate, which is the claim "At
+scale" is actually making.
+
+### Measured, all four scenarios end to end
+
+| scenario | consoles | devices | VLANs | circuits | policy findings | paths | resilience | `analysable` | lanes named dark |
+|---|---|---|---|---|---|---|---|---|---|
+| `demo` | 10 | 13 | 8 | 3 | 38 (5 critical) | 2 | 6 | true | `endpoint` |
+| `partial` | 4 | 4 | 0 | 0 | **38, identical** | 2 | 0 | true | 6 lanes |
+| `clean` | 10 | 10 | 5 | 2 | **0** | 0 | **0** | **true** | `endpoint` |
+| `scale` (n=500) | 10 | 513 | 133 | 3 | **38, identical** | 2 | 256 | true | `endpoint` |
+
+`1,921 tests pass` (from 1,899), `verify_engine` green with **39** checks (from
+35), snapshot `snap_173ab466881a`.
+
+### ⚠️ Carried forward
+
+**1. `ResilienceReport.clean` is `true` for `partial`.** It is `analysable and
+not findings`, and `partial` observes four devices and no circuit. The summary
+sentence does carry the denominators — *"…in the 4 devices, 4 adjacencies and 0
+circuits observed. That is a statement about what the onboarded sources reported,
+not about the estate."* — and `caveats` names the `device_connectivity` basis, so
+the payload is honest. But a caller reading the boolean alone gets "clean". The
+fix is to surface `summary()` from `/api/resilience` and render it wherever the
+empty list is rendered; gating `analysable` on `circuit_count > 0` would be the
+wrong fix, because it would destroy the one beat `partial` exists for.
+
+**2. `LANE_SOURCE_HINT` has no `internet` key.** With no circuits observed the
+internet lane is filtered out of `unobserved_layers` entirely, so `partial` draws
+neither the lane nor an account of its absence. One entry in `app/main.py`.
+
+**3. At `scale` the unlinked rail holds 126 devices** — 125 branch APs plus
+`ap-wifi-01`, each correctly reported (Meraki returns no neighbour table at any
+size). The Explorer must render that as a count, a sample and one shared reason,
+never as 126 boxes.
+
+**4. `Topology.subnets` is 0 on the reconstructed object** while the Inventory's
+gauge reads 8 from the VLAN pools. A bare zero on the screen that counts things
+is the empty-vs-unknown conflation appearing where it is least affordable.

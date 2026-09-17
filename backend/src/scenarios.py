@@ -82,6 +82,13 @@ SCENARIOS = [
      "description": "The same estate and the same 38 findings with one aggregator "
                     "connected. Two lanes drawn, the rest named dark with the API "
                     "that fills each"},
+    # THE MIDDLE RUNG, and the one worth pausing on. Between `partial` and `demo`
+    # sits a single extra read -- not an API, not an agent, three service orders
+    # off a web page -- and it is what turns a structural picture with NO
+    # findings into one with five, two of them critical.
+    {"id": "carrier", "label": "Partial onboarding (+ the carrier portal)",
+     "description": "One more read, no integration: the circuit and modem lanes "
+                    "light up and bring 5 resilience findings with them, 2 critical"},
     {"id": "clean", "label": "Clean estate (target state)",
      "description": "What good looks like: no policy findings, no single point of "
                     "failure, and the one lane it still cannot see"},
@@ -231,6 +238,15 @@ def _demo():
 #: brief describes, where the client hands over AlgoSec and no console access.
 _PARTIAL_CONSOLES = ("algosec_topology",)
 
+#: Rung 2. The carrier portal is neither an API nor an agent: it is three service
+#: orders somebody reads off a web page in an afternoon. Onboarding it takes the
+#: estate from 4 devices and ZERO resilience findings to 7 devices, 3 circuits and
+#: five findings -- two critical, one of which is "2 circuits ride one carrier".
+#: That is a fact about the INVOICE. No firewall console anywhere contains the
+#: string "Carrier-A", so no amount of policy tooling recovers it. Measured, not
+#: asserted: see `test_the_carrier_rung_buys_what_the_aggregator_cannot`.
+_CARRIER_CONSOLES = ("algosec_topology", "carrier_portal")
+
 
 def _partial():
     """The same estate, seen through one console instead of seven.
@@ -244,6 +260,19 @@ def _partial():
     """
     est = estate.build()
     _write_dataset(_policy(), seed_topology.build_exports(est, _PARTIAL_CONSOLES))
+
+
+def _carrier():
+    """Rung 2: the aggregator plus the carrier portal, on the same policy as both
+    its neighbours.
+
+    The step from `partial` to here is the one to watch. No firewall changed and
+    no policy finding moves; the estate simply gains the three circuits it always
+    had, and with them two critical structural risks that were invisible for want
+    of a source rather than absent from the network. "We found nothing" and
+    "nobody looked" stop being the same screen.
+    """
+    _write_dataset(_policy(), seed_topology.build_exports(estate.build(), _CARRIER_CONSOLES))
 
 
 #: What `clean` onboards: every console, Meraki included. The resilient estate
@@ -346,7 +375,8 @@ def _scale(n: int = 500):
                    seed_topology.build_exports(estate.build(branches=branches)))
 
 
-_BUILDERS = {"demo": _demo, "partial": _partial, "clean": _clean, "scale": _scale}
+_BUILDERS = {"demo": _demo, "partial": _partial, "carrier": _carrier,
+             "clean": _clean, "scale": _scale}
 
 
 def write_scenario(scenario: str, n: int = 500) -> None:
