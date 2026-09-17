@@ -52,6 +52,7 @@ import {
   Route,
   Scan,
   Unlink,
+  Waypoints,
   X,
   ZoomIn,
   ZoomOut,
@@ -75,7 +76,10 @@ import { HopPanel } from "./topology/HopPanel";
 import { Legend } from "./topology/Legend";
 import { NodeDrawer } from "./topology/NodeDrawer";
 import { SearchBox } from "./topology/SearchBox";
-import { buildLayout, EVIDENCE_COPY, evidenceTier, GEOM, orderHops, type Layout } from "./topology/layout";
+import {
+  buildLayout, EVIDENCE_COPY, evidenceTier, gatewayHolders, GEOM, normaliseRelations,
+  orderHops, placeRelations, type Layout,
+} from "./topology/layout";
 import { buildRedundancyBands, buildVlanBands, unknownVlanBand, type VlanBand } from "./topology/palette";
 import { fromPolicy, fromResilience, involvedCards, sortWalk, type WalkFinding } from "./topology/findings";
 import { normalisePaths, placePath, type CrossToolPath } from "./topology/paths";
@@ -359,6 +363,11 @@ export function ExplorerPanel({ snapshot, findings, findingsError, initialOverla
   const [reachStage, setReachStage] = useState(0);
   const [reachNonce, setReachNonce] = useState(0);
   const [query, setQuery] = useState("");
+  // Structure is ON by default. The complaint that produced it was "why don't I
+  // see edges for all devices", and a fix you have to find a button to turn on
+  // has not answered it. The button exists for the reverse trip: back to the
+  // cables alone, which is the right picture when the question is resilience.
+  const [showRelations, setShowRelations] = useState(true);
   const [matchIndex, setMatchIndex] = useState(0);
   const [searchFocusNonce, setSearchFocusNonce] = useState(0);
   const [focusRequest, setFocusRequest] = useState<{
@@ -479,6 +488,23 @@ export function ExplorerPanel({ snapshot, findings, findingsError, initialOverla
   const redundancy = useMemo(
     () => buildRedundancyBands(links.map((l) => l.redundant_group).filter((g): g is string => !!g)),
     [links],
+  );
+
+  // ── Structure ───────────────────────────────────────────────────────────
+  // `relations` is additive on the topology payload and is not in the shared
+  // TopologyResponse type, so it is read through a narrow cast and validated
+  // rather than trusted: a backend that predates the field yields an empty
+  // layer and the canvas draws exactly what it drew before.
+  const relationFacts = useMemo(
+    () => normaliseRelations((topo as { relations?: unknown } | undefined)?.relations),
+    [topo],
+  );
+  // Which devices provably hold a VLAN's gateway — how `carries` is thinned from
+  // "every switch that trunks it" to "where the segment is actually routed".
+  const gateways = useMemo(() => gatewayHolders(allNodes, topo?.vlans ?? []), [allNodes, topo]);
+  const relationLayer = useMemo(
+    () => placeRelations(layout, relationFacts, gateways),
+    [layout, relationFacts, gateways],
   );
 
   const simulatedTools = useMemo(
@@ -999,6 +1025,10 @@ export function ExplorerPanel({ snapshot, findings, findingsError, initialOverla
   const counts = topo?.counts;
   const caps = topo?.caps;
   const capped = !!caps && caps.nodes_shown < caps.nodes_total;
+  const structureNotDrawn =
+    showRelations &&
+    (relationLayer.trunkOnly > 0 || relationLayer.gatewayUnknown ||
+      relationLayer.hiddenInGroups > 0 || relationLayer.unresolved > 0);
   const hasContainment = links.some((l) => l.evidence === "containment");
   const hasAggregated = links.some((l) => l.aggregated);
   const hasHa = layout.units.length > 0;
@@ -1029,6 +1059,7 @@ export function ExplorerPanel({ snapshot, findings, findingsError, initialOverla
       layout={layout}
       bandsFor={bandsFor}
       redundancy={redundancy}
+      relations={showRelations ? relationLayer : null}
       simulatedTools={simulatedTools}
       unlinked={unlinked}
       focus={focus}
@@ -1223,6 +1254,29 @@ export function ExplorerPanel({ snapshot, findings, findingsError, initialOverla
         />
       </div>
       <div className="ml-auto flex shrink-0 items-center gap-1.5">
+        {relationLayer.lines.length > 0 ? (
+          <button
+            type="button"
+            onClick={() => setShowRelations((v) => !v)}
+            aria-pressed={showRelations}
+            // The ON state wears the same accent-soft fill the OverlaySwitch
+            // tabs beside it use for "this mode is active", rather than a
+            // border alone — a border change is what `.btn-ghost:hover` already
+            // does, so it read as a hover rather than as a state.
+            className={cn(
+              "btn-ghost !h-7 px-2 text-[11px]",
+              showRelations && "!border-accent !bg-accent-soft !text-accent-fg",
+            )}
+            title={
+              showRelations
+                ? "Hide structure — the dotted lines for the facts that are not cables (a circuit's CPE, a VLAN's gateway, a host's subnet). The cables stay."
+                : "Show structure — dotted lines for the facts that are not cables. Without them the internet, circuit, segment and host lanes have no line to anything."
+            }
+          >
+            <Waypoints size={13} />
+            <span className="hidden lg:inline">Structure</span>
+          </button>
+        ) : null}
         {hasSelection ? (
           <button
             type="button"
@@ -1430,6 +1484,9 @@ export function ExplorerPanel({ snapshot, findings, findingsError, initialOverla
                     {layout.lanes.length === 1 ? "" : "s"} · {layout.nodes.length} card
                     {layout.nodes.length === 1 ? "" : "s"} · {layout.links.length} link
                     {layout.links.length === 1 ? "" : "s"}
+                    {showRelations && relationLayer.lines.length > 0
+                      ? ` · ${relationLayer.lines.length} structural line${relationLayer.lines.length === 1 ? "" : "s"}`
+                      : ""}
                   </h2>
                 </div>
                 <Shortcuts className="ml-auto hidden md:flex" />
@@ -1446,7 +1503,7 @@ export function ExplorerPanel({ snapshot, findings, findingsError, initialOverla
                   workbench
                 )}
               </div>
-              {layout.unresolved.length > 0 || layout.hiddenInGroups > 0 ? (
+              {layout.unresolved.length > 0 || layout.hiddenInGroups > 0 || structureNotDrawn ? (
                 <footer className="shrink-0 border-t border-hair px-4 py-2 text-[11px] text-text3">
                   {layout.unresolved.length > 0 ? (
                     <span title={layout.unresolved.map((l) => `${l.a} ↔ ${l.b}`).join("\n")}>
@@ -1459,7 +1516,38 @@ export function ExplorerPanel({ snapshot, findings, findingsError, initialOverla
                     <span>
                       {layout.hiddenInGroups} link
                       {layout.hiddenInGroups === 1 ? " runs" : "s run"} between members of a collapsed group; expand the
-                      lane to see them.
+                      lane to see them.{" "}
+                    </span>
+                  ) : null}
+                  {/* A suppressed structural line and an absent one look exactly
+                      alike on the canvas, which is the defect the structural
+                      layer was added to fix — so every one it holds back is
+                      counted here with the reason it was held back. */}
+                  {showRelations && relationLayer.trunkOnly > 0 ? (
+                    <span>
+                      {relationLayer.trunkOnly} further <span className="mono">carries</span> relation
+                      {relationLayer.trunkOnly === 1 ? " is" : "s are"} not drawn: those switches trunk the VLAN but do
+                      not hold its gateway, and a line per trunk membership is a hairball rather than a picture. Open a
+                      switch for its full VLAN list.{" "}
+                    </span>
+                  ) : null}
+                  {showRelations && relationLayer.gatewayUnknown ? (
+                    <span>
+                      No device in this snapshot reports holding a VLAN gateway, so every{" "}
+                      <span className="mono">carries</span> relation is drawn rather than none.{" "}
+                    </span>
+                  ) : null}
+                  {showRelations && relationLayer.hiddenInGroups > 0 ? (
+                    <span>
+                      {relationLayer.hiddenInGroups} structural relation
+                      {relationLayer.hiddenInGroups === 1 ? " runs" : "s run"} between members of one collapsed card.{" "}
+                    </span>
+                  ) : null}
+                  {showRelations && relationLayer.unresolved > 0 ? (
+                    <span>
+                      {relationLayer.unresolved} structural relation
+                      {relationLayer.unresolved === 1 ? " names" : "s name"} something that is in no lane of this
+                      response and could not be drawn.
                     </span>
                   ) : null}
                 </footer>
@@ -1638,6 +1726,8 @@ export function ExplorerPanel({ snapshot, findings, findingsError, initialOverla
               </div>
               <Legend
                 redundancy={[...redundancy.values()]}
+                relations={relationLayer}
+                relationsVisible={showRelations}
                 vlanBands={[...vlanBands.values()]}
                 hasContainment={hasContainment}
                 hasAggregated={hasAggregated}
@@ -1692,8 +1782,22 @@ export function ExplorerPanel({ snapshot, findings, findingsError, initialOverla
               <div className="panel flex min-h-0 flex-1 flex-col overflow-hidden">
                 <header className="flex flex-wrap items-center gap-2 border-b border-hair px-3 py-2">
                   <Eyebrow>Explorer</Eyebrow>
-                  <span className="mono hidden text-[11px] text-text3 lg:inline">
+                  {/* Fullscreen has no footer to carry the "not drawn" counts,
+                      and fullscreen is where this canvas is actually read — so
+                      the structural total is stated here and what it holds back
+                      is one hover away, rather than nowhere. */}
+                  <span
+                    className="mono hidden text-[11px] text-text3 lg:inline"
+                    title={
+                      showRelations && relationLayer.trunkOnly > 0
+                        ? `${relationLayer.trunkOnly} further "carries" relations are not drawn: those switches trunk the VLAN but do not hold its gateway.`
+                        : undefined
+                    }
+                  >
                     {layout.lanes.length} lanes · {layout.nodes.length} cards · {layout.links.length} links
+                    {showRelations && relationLayer.lines.length > 0
+                      ? ` · ${relationLayer.lines.length} structural`
+                      : ""}
                   </span>
                   {sel ? (
                     <span className="mono text-[11px] tabular-nums text-text2">

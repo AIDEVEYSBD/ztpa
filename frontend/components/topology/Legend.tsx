@@ -11,11 +11,18 @@
  * would let a screen assert a physical topology built partly out of subnet
  * arithmetic, which is exactly the kind of confident-looking wrong answer this
  * product exists to stop.
+ *
+ * The same rule governs the two things this legend gained. STRUCTURE is a third
+ * line family — dotted, thinner than any cable — for the facts that are not
+ * adjacencies at all, and it is named here so a reader meets the distinction
+ * before they meet the mark. REDUNDANCY no longer maps a serial code back to a
+ * group name: the line itself says `2 paths`, so all this has left to do is say
+ * in one sentence what a tint means.
  */
 
 import { EyeOff, Unlink } from "lucide-react";
 import { cn } from "@/lib/cn";
-import { EVIDENCE_COPY, type EvidenceTier } from "./layout";
+import { EVIDENCE_COPY, RELATION_COPY, type EvidenceTier, type RelationLayer } from "./layout";
 import { VLAN_PALETTE, type RedundancyBand, type VlanBand } from "./palette";
 
 function LineSample({ tier, tint }: { tier: EvidenceTier; tint?: string }) {
@@ -29,6 +36,35 @@ function LineSample({ tier, tint }: { tier: EvidenceTier; tint?: string }) {
         strokeDasharray={tier === "containment" ? "5 4" : undefined}
         strokeLinecap="round"
       />
+    </svg>
+  );
+}
+
+/** The structural hairline, at exactly the weight and dash the canvas draws it,
+ *  so the legend sample and the mark on screen are the same object. */
+function RelationSample() {
+  return (
+    <svg width={40} height={10} aria-hidden className="shrink-0">
+      <path
+        d="M1 5H39"
+        fill="none"
+        stroke="var(--text-3)"
+        strokeOpacity={0.55}
+        strokeWidth={1}
+        strokeDasharray="1 3"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+/** Two tinted lines, because "one of several paths" is a fact about a PAIR and a
+ *  single sample line cannot show it. */
+function PairSample({ tint }: { tint: string }) {
+  return (
+    <svg width={40} height={10} aria-hidden className="shrink-0">
+      <path d="M1 3H39" fill="none" stroke={tint} strokeWidth={1.7} strokeLinecap="round" />
+      <path d="M1 7H39" fill="none" stroke={tint} strokeWidth={1.7} strokeLinecap="round" />
     </svg>
   );
 }
@@ -57,6 +93,10 @@ function Group({ title, children }: { title: string; children: React.ReactNode }
 export interface LegendProps {
   redundancy: RedundancyBand[];
   vlanBands: VlanBand[];
+  /** The placed structural layer — passed even while it is switched off, so the
+   *  legend can say what is missing instead of quietly losing a section. */
+  relations: RelationLayer;
+  relationsVisible: boolean;
   /** True when the payload actually contains a containment link. The tier is
    *  explained either way — a reader has to know what a dashed line WOULD mean
    *  before they meet one. */
@@ -66,10 +106,22 @@ export interface LegendProps {
   className?: string;
 }
 
-export function Legend({ redundancy, vlanBands, hasContainment, hasAggregated, hasHa, className }: LegendProps) {
+export function Legend({
+  redundancy, vlanBands, relations, relationsVisible, hasContainment, hasAggregated, hasHa, className,
+}: LegendProps) {
   const hatched = vlanBands.filter((b) => b.hatched);
+  const pathCounts = [...new Set(redundancy.map((r) => r.paths))].sort((a, b) => a - b);
+  const spread =
+    pathCounts.length === 0
+      ? ""
+      : pathCounts.length === 1
+        ? `each holding ${pathCounts[0]} path${pathCounts[0] === 1 ? "" : "s"}`
+        : `holding ${pathCounts[0]} to ${pathCounts[pathCounts.length - 1]} paths`;
   return (
-    <div className={cn("grid gap-x-6 gap-y-4 sm:grid-cols-2 xl:grid-cols-4", className)}>
+    // Five groups now, so 1920 gets all five across and 1440 wraps the VLAN
+    // bands onto a second row rather than squeezing five columns of prose into
+    // ~230px each, where every line breaks after two words.
+    <div className={cn("grid gap-x-6 gap-y-4 sm:grid-cols-2 xl:grid-cols-4 3xl:grid-cols-5", className)}>
       <Group title="How we know a link exists">
         {(["wire", "stated", "containment"] as EvidenceTier[]).map((t) => (
           <Row key={t} mark={<LineSample tier={t} />} title={EVIDENCE_COPY[t].label}>
@@ -81,6 +133,36 @@ export function Legend({ redundancy, vlanBands, hasContainment, hasAggregated, h
         ) : null}
       </Group>
 
+      <Group title="Structure, not cables">
+        <Row mark={<RelationSample />} title="Structural relation">
+          A dotted hairline is a fact about how the estate is PUT TOGETHER — containment, termination, membership — and
+          not an adjacency anything observed. Thinner than every cable and drawn beneath them, on purpose. Without these
+          lines the internet, circuit, segment and host lanes had no line to anything at all.
+        </Row>
+        {!relationsVisible ? (
+          <div className="mt-1 text-[10.5px] leading-snug text-text3">
+            Structure is switched off for this canvas; nothing here is dotted. The toolbar&rsquo;s{" "}
+            <b className="text-text2">Structure</b> button brings it back.
+          </div>
+        ) : relations.kinds.length === 0 ? (
+          <div className="mt-1 text-[10.5px] leading-snug text-text3">
+            This snapshot declares no structural relation, so nothing here is dotted.
+          </div>
+        ) : (
+          <dl className="mt-1.5 space-y-1">
+            {relations.kinds.map((k) => (
+              <div key={k} className="text-[11px] leading-snug">
+                <dt className="mono inline text-[10.5px] font-bold text-text2">{RELATION_COPY[k]?.label ?? k}</dt>{" "}
+                <dd className="inline text-text3">
+                  {RELATION_COPY[k]?.detail ??
+                    "A relation kind this build does not have copy for. It is drawn, and its own sentence is on the line's tooltip."}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        )}
+      </Group>
+
       <Group title="Redundancy">
         {redundancy.length === 0 ? (
           <div className="text-[11px] text-text3">
@@ -88,21 +170,26 @@ export function Legend({ redundancy, vlanBands, hasContainment, hasAggregated, h
             claim, not a judgement about the estate: a pair of links that nothing grouped is drawn as two ordinary lines.
           </div>
         ) : (
-          redundancy.map((r) => (
-            <Row
-              key={r.group}
-              mark={<LineSample tier="wire" tint={r.tint} />}
-              title={`${r.tag} · ${r.group}`}
-            >
-              Every line tagged {r.tag} belongs to this group. Two of them side by side is the criss-cross; one of them
-              alone is a single point of failure wearing the same colour.
+          <>
+            <Row mark={<PairSample tint={redundancy[0].tint} />} title="Alternate paths">
+              Lines sharing a tint are the <b className="text-text2">separate</b> paths one device has up to the tier
+              above it, and the badge between them counts those paths:{" "}
+              <span className="mono">2 paths</span> means two ways up. A line with no tint and no badge is the only path
+              there is — which is what a single point of failure looks like here.
             </Row>
-          ))
+            <div className="mt-1 text-[10.5px] leading-snug text-text3">
+              {redundancy.length} group{redundancy.length === 1 ? "" : "s"} in this snapshot, {spread}. Tints repeat
+              after three; the group&rsquo;s own name (<span className="mono">{redundancy[0].group}</span>) is on the
+              line&rsquo;s tooltip, because the name was never the fact a reader needed.
+            </div>
+          </>
         )}
         {hasAggregated ? (
           <Row mark={<span className="mono text-[10px] font-bold text-text2">×N</span>} title="Aggregated link">
             One line, N member cables (a LAG). One failure domain, several cables — the count is on the line because a
-            photograph of the rack shows the cables and not the domain.
+            photograph of the rack shows the cables and not the domain. A line standing for several{" "}
+            <b className="text-text2">distinct</b> cables reads <span className="mono">N links</span> instead: two
+            cables to one box and two cables to two boxes are the difference between a LAG and a survivable estate.
           </Row>
         ) : null}
         {hasHa ? (

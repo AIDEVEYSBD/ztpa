@@ -16,8 +16,8 @@
  * the printed report. They are used as a 1px keyline plus a low-alpha wash
  * behind a card, never as text colour, and — the rule that actually makes them
  * safe — COLOUR IS NEVER THE ONLY CARRIER. Every banded node prints its VLAN as
- * text (`VLAN 30 · app-tier`) and every redundant link carries a tag (`R1`)
- * that the legend spells out. Read the screen in greyscale and nothing is lost.
+ * text (`VLAN 30 · app-tier`) and every redundant link prints how many paths its
+ * group holds (`2 paths`). Read the screen in greyscale and nothing is lost.
  */
 
 import type { CSSProperties } from "react";
@@ -108,10 +108,9 @@ export function bandStyle(band: VlanBand): CSSProperties {
  * THREE, not eight, and they cycle. The number of redundant groups in a real
  * estate is small, and the thing that has to read at a glance is not "which
  * group is this" but "these two links are the pair" — so the tint ties members
- * together and the `R1` / `R2` tag on each member is what actually identifies
- * the group. Beyond three groups the tints repeat and the tags do not, which is
- * the right way round: an ambiguous colour with an unambiguous label is a
- * legible diagram, the reverse is a quiz.
+ * together and the badge on each member says how many paths the group holds.
+ * Beyond three groups the tints repeat, which is the right way round: the
+ * reader never needs to name a group, only to see that a line has company.
  *
  * All three are CSS tokens, because unlike a VLAN id these sit on top of link
  * strokes that must stay visible in both themes, and the tokens are already
@@ -126,17 +125,48 @@ export const REDUNDANCY_TINTS: readonly string[] = [
 
 export interface RedundancyBand {
   group: string;
-  /** `R1`, `R2`, … — the identity the legend maps back to the group name. */
+  /** How many links carry this group — how many alternate paths the device at
+   *  the near end has to the tier at the far end. */
+  paths: number;
+  /** What the line actually wears: `2 paths`. */
   tag: string;
   tint: string;
 }
 
-/** Tag + tint per `redundant_group`, ordered by group name so the mapping is
- *  stable between renders. */
+/**
+ * Tag + tint per `redundant_group`.
+ *
+ * The tag used to be a SERIAL — `R1`…`R7`, assigned in group-name order — and a
+ * product owner looking at the live canvas asked "what is R 1-7", which is the
+ * whole indictment: a badge whose meaning lives somewhere else tells the reader
+ * nothing at the point they are reading it, and the legend it pointed at only
+ * mapped it back to a group NAME, which is not a fact anybody needs either.
+ *
+ * What the reader needs is the count. `asw-acc-01-core` means "asw-acc-01 has
+ * two ways up to the core", so every line in that group says `2 paths` and the
+ * single-homed switch beside it says nothing at all — the exception now reads as
+ * an absence of a badge rather than as one more code to look up. The group name
+ * is still one hover away in the tooltip, for the reader who does want it.
+ *
+ * Counted from the caller's array WITH its duplicates: one entry per link, so
+ * the count is the number of links in the group. Ordered by group name so the
+ * tint mapping is stable between renders of the same snapshot.
+ */
 export function buildRedundancyBands(groups: string[]): Map<string, RedundancyBand> {
+  const counts = new Map<string, number>();
+  for (const g of groups) counts.set(g, (counts.get(g) ?? 0) + 1);
   const out = new Map<string, RedundancyBand>();
-  [...new Set(groups)].sort().forEach((g, i) => {
-    out.set(g, { group: g, tag: `R${i + 1}`, tint: REDUNDANCY_TINTS[i % REDUNDANCY_TINTS.length] });
+  [...counts.keys()].sort().forEach((g, i) => {
+    const paths = counts.get(g)!;
+    out.set(g, {
+      group: g,
+      paths,
+      // "1 path" is not a contradiction worth hiding: a group that declares
+      // redundancy and has one surviving member is a group whose redundancy is
+      // gone, and that is exactly what the reader should see.
+      tag: `${paths} path${paths === 1 ? "" : "s"}`,
+      tint: REDUNDANCY_TINTS[i % REDUNDANCY_TINTS.length],
+    });
   });
   return out;
 }

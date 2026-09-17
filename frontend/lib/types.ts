@@ -779,8 +779,27 @@ export interface TopoLane {
   would_be_filled_by?: string | null;
 }
 
+/** A structural fact that connects two lanes, and is NOT a cable.
+ *
+ *  A circuit names the CPE that terminates it, a VLAN names the devices carrying
+ *  it, a host's address provably sits inside a subnet. All true, none of them an
+ *  observed adjacency — so no `TopoLink` exists for them and none should. They
+ *  are kept in their own field, and drawn in their own line family, because the
+ *  moment one is mistaken for a cable the resilience analysis reads a broadcast
+ *  domain as a path and every single point of failure in the estate dissolves. */
+export interface TopoRelation {
+  a: string;
+  b: string;
+  kind: "reaches" | "terminates" | "carries" | "contains";
+  detail: string;
+}
+
 export interface TopologyResponse {
   lanes: TopoLane[];
+  /** Structural relations, drawn subordinate to `links`. Optional so a frontend
+   *  running against a backend that predates the field degrades to the old
+   *  four-island canvas rather than throwing. */
+  relations?: TopoRelation[];
   links: TopoLink[];
   vlans: { vlan_id: number; name?: string | null; subnets: string[]; gateways: string[] }[];
   counts: InventoryCounts;

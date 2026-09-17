@@ -6,12 +6,22 @@
  *
  * Four things here are the picture rather than decoration.
  *
- * REDUNDANCY. Links sharing a `redundant_group` are drawn in one tint with one
- * tag, so the criss-cross — two edge routers each reaching both firewalls —
- * reads as a single fact instead of four unrelated lines, and the access switch
- * with one line up reads as the exception it is. `aggregated` links carry ×N for
- * their member count, because a LAG is one failure domain and four cables, and
- * only one of those two numbers is visible in a photograph of the rack.
+ * REDUNDANCY. Links sharing a `redundant_group` are drawn in one tint and each
+ * one says how many paths the group holds (`2 paths`), so the criss-cross — two
+ * edge routers each reaching both firewalls — reads as a single fact instead of
+ * four unrelated lines, and the access switch whose single line up wears no
+ * badge at all reads as the exception it is. `aggregated` links carry ×N for
+ * their member count instead, because a LAG is one failure domain and four
+ * cables, and only one of those two numbers is visible in a photograph of the
+ * rack. The two counts are never spelled the same way: "two cables to one box"
+ * and "two paths to two boxes" is the distinction this whole screen is for.
+ *
+ * STRUCTURE. `relations` are the facts that are not cables — a circuit
+ * terminating on a CPE, the switch routing a VLAN, a host's address inside a
+ * subnet. Without them the internet, circuit, segment and endpoint lanes had no
+ * line to anything and the estate read as four disconnected islands. They are
+ * drawn UNDER the links, as straight dotted hairlines: a third geometry, so a
+ * structural fact is never mistaken for an observed adjacency even in greyscale.
  *
  * EVIDENCE. `containment` is dashed and everything else is solid, because
  * containment is not a cable (see EVIDENCE_COPY in layout.ts). A weaker fact
@@ -36,7 +46,7 @@ import { cn } from "@/lib/cn";
 import { toolColour } from "@/lib/toolColour";
 import { Lane } from "./Lane";
 import { NodeCard, type NodeState } from "./NodeCard";
-import { evidenceTier, type Layout, type PlacedLink } from "./layout";
+import { evidenceTier, type Layout, type PlacedLink, type PlacedRelation, type RelationLayer } from "./layout";
 import type { PlacedPath } from "./paths";
 import type { RedundancyBand, VlanBand } from "./palette";
 
@@ -64,6 +74,9 @@ export interface CanvasProps {
   layout: Layout;
   bandsFor: (node: TopoNode) => VlanBand[];
   redundancy: Map<string, RedundancyBand>;
+  /** The structural layer, already placed. Null when the reader has switched it
+   *  off — never an empty layer standing in for one that failed to load. */
+  relations?: RelationLayer | null;
   simulatedTools: ReadonlySet<string> | null;
   unlinked: Map<string, string>;
   focus?: FocusView | null;
@@ -126,8 +139,26 @@ function linkTip(l: PlacedLink): string {
     .join("\n");
 }
 
+/** Eight is as many lines as a native tooltip renders before it stops being
+ *  read; the rest are counted rather than dropped, so a collapsed lane's forty
+ *  memberships never quietly become "eight". */
+const TIP_ITEMS = 8;
+
+function relationTip(r: PlacedRelation): string {
+  const shown = r.items.slice(0, TIP_ITEMS);
+  return [
+    `${r.a} — ${r.b}`,
+    r.items.length > 1 ? `${r.items.length} structural relations drawn as one line` : null,
+    ...shown.map((i) => `${i.kind}: ${i.detail || `${i.a} → ${i.b}`}`),
+    r.items.length > shown.length ? `…and ${r.items.length - shown.length} more` : null,
+    "structure, not a cable: nothing observed this as an adjacency",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 export function Canvas({
-  layout, bandsFor, redundancy, simulatedTools, unlinked, focus, path, pathStage = 0,
+  layout, bandsFor, redundancy, relations, simulatedTools, unlinked, focus, path, pathStage = 0,
   onToggleLane, onSelectNode, selectedNode, matches, activeMatch, focusRequest,
   onBackgroundClick, zoom, reduced, onViewport, scrollMemo, className,
 }: CanvasProps) {
@@ -276,6 +307,104 @@ export function Canvas({
     return focus.lit.has(l.id) ? 1 : 0.1;
   };
 
+  // ── Tags ────────────────────────────────────────────────────────────────
+  //
+  // ONE TAG PER REDUNDANT GROUP, not one per link. The badge answers "how many
+  // separate paths does this device have up to that tier", which is a fact
+  // about the GROUP — printing it on both members said the same number twice
+  // and, where the two members cross, printed it twice in the same place. The
+  // tint is what ties a line to its group; the badge only has to be readable.
+  //
+  // That halves the chips on the criss-cross rows from four to two, which is
+  // what makes them fit: `2 paths` needs about 58px and four of them wanted
+  // 232px of a 170px span. It was survivable while the tag was `R5` only
+  // because a two-character chip mostly hid under the one on top of it.
+  //
+  // The ×N / N-links counts stay per LINE, because a LAG's member count is a
+  // fact about one cable bundle and belongs on that cable.
+  interface CanvasTag {
+    key: string;
+    x: number; y: number;
+    tint?: string;
+    label?: string;
+    count?: string;
+    opacity: number;
+    title?: string;
+  }
+
+  const tags: CanvasTag[] = [];
+  {
+    const byGroup = new Map<string, PlacedLink[]>();
+    for (const l of layout.links) {
+      if (!l.redundantGroup) continue;
+      const bucket = byGroup.get(l.redundantGroup);
+      if (bucket) bucket.push(l);
+      else byGroup.set(l.redundantGroup, [l]);
+    }
+    for (const [group, members] of byGroup) {
+      const band = redundancy.get(group);
+      if (!band) continue;
+      // The centroid of the group's drawn lines: between the pair, which is
+      // where a reader looking at a criss-cross is already looking.
+      const x = members.reduce((sc, m) => sc + m.mid.x, 0) / members.length;
+      const y = members.reduce((sc, m) => sc + m.mid.y, 0) / members.length;
+      tags.push({
+        key: `grp:${group}`,
+        x, y,
+        tint: band.tint,
+        label: band.tag,
+        // Lit if ANY member is lit: a group half-dimmed by a walkthrough still
+        // has to say how many paths it holds, or the trace reads as "one path".
+        opacity: Math.max(...members.map(linkOpacity)),
+        title: `${group}: ${band.tag} between the same device and the tier above it. ${
+          members.length === 1
+            ? "Only one of them resolved to a line on this canvas."
+            : "Every line in this tint is one of them."
+        }`,
+      });
+    }
+    for (const l of layout.links) {
+      const count = l.aggregated && l.memberCount > 1
+        ? `×${l.memberCount}`
+        : l.merged.length > 1
+          ? `${l.merged.length} links`
+          : "";
+      if (!count) continue;
+      tags.push({
+        key: `cnt:${l.id}`,
+        x: l.mid.x, y: l.mid.y,
+        count,
+        opacity: linkOpacity(l),
+        title: l.aggregated
+          ? `One aggregated link, ${l.memberCount} member cables — one failure domain.`
+          : `${l.merged.length} distinct links between these two cards, drawn as one line.`,
+      });
+    }
+  }
+
+  // Nudged SIDEWAYS where two still collide, never down: the vertical gap
+  // between two lanes is about twenty pixels and a tag pushed into it lands on
+  // a card or on the HA bracket label. Offsets alternate right/left and are
+  // tried in a fixed order over tags sorted by position, so one snapshot always
+  // draws its tags in the same place — the same reason the layout is arithmetic.
+  const tagAt = new Map<string, { x: number; y: number }>();
+  {
+    const TAG_W = 58;
+    const taken: { x: number; y: number }[] = [];
+    for (const t of [...tags].sort((a, b) => a.x - b.x || a.y - b.y || a.key.localeCompare(b.key))) {
+      let x = t.x;
+      for (let step = 0; step <= 6; step += 1) {
+        const k = Math.ceil(step / 2) * (step % 2 === 1 ? 1 : -1);
+        const cand = t.x + k * TAG_W;
+        if (cand - TAG_W / 2 < 0 || cand + TAG_W / 2 > layout.width) continue;
+        x = cand;
+        if (!taken.some((o) => Math.abs(o.x - x) < TAG_W && Math.abs(o.y - t.y) < 14)) break;
+      }
+      taken.push({ x, y: t.y });
+      tagAt.set(t.key, { x, y: t.y });
+    }
+  }
+
   const visibleHops = path ? path.hops.filter((h) => !h.selfLoop && h.index < pathStage) : [];
   const activeHopIndex = path ? Math.min(pathStage - 1, path.hops.length - 1) : -1;
 
@@ -330,6 +459,49 @@ export function Canvas({
               onToggle={lane.collapsible ? () => onToggleLane(String(lane.layer)) : undefined}
             />
           ))}
+
+          {/* ── Structure, beneath everything ───────────────────────────────
+              Painted BEFORE the links so a cable always wins the pixel, and at
+              a fraction of their weight: 1px, dotted, --text-3 at half alpha.
+              The eye still goes to the criss-cross first, which is the point —
+              these lines exist so the outer and inner lanes stop floating, not
+              to be read one by one. Under any overlay they drop nearly out: a
+              walkthrough dims the estate to what a finding names, and structure
+              is never what a finding names. */}
+          {relations && relations.lines.length > 0 ? (
+            <svg
+              width={layout.width}
+              height={layout.height}
+              className="pointer-events-none absolute left-0 top-0"
+              style={{ overflow: "visible" }}
+              aria-hidden
+            >
+              {relations.lines.map((r) => (
+                <g
+                  key={`rel:${r.id}`}
+                  opacity={focus ? 0.06 : 1}
+                  style={{ pointerEvents: "stroke" }}
+                  className={cn(!reduced && "transition-opacity duration-300")}
+                >
+                  <title>{relationTip(r)}</title>
+                  <path d={r.d} fill="none" stroke="transparent" strokeWidth={10} strokeLinecap="round" />
+                  <path
+                    d={r.d}
+                    fill="none"
+                    stroke="var(--text-3)"
+                    strokeOpacity={0.55}
+                    strokeWidth={1}
+                    // "1 3" and not the links' "5 4": a dotted hairline reads as
+                    // a relationship, a dashed line already means containment
+                    // evidence on this canvas, and the two must not rhyme.
+                    strokeDasharray="1 3"
+                    strokeLinecap="round"
+                    vectorEffect="non-scaling-stroke"
+                  />
+                </g>
+              ))}
+            </svg>
+          ) : null}
 
           <svg
             width={layout.width}
@@ -468,23 +640,19 @@ export function Canvas({
             </div>
           ))}
 
-          {/* Link tags. Positioned elements rather than SVG text so they get the
-              same hairline chip treatment as everything else on the screen. */}
-          {layout.links.map((l) => {
-            const band = l.redundantGroup ? redundancy.get(l.redundantGroup) : undefined;
-            const count = l.aggregated && l.memberCount > 1 ? `×${l.memberCount}` : l.merged.length > 1 ? `×${l.merged.length}` : "";
-            if (!band && !count) return null;
-            return (
-              <div
-                key={`tag:${l.id}`}
-                className="pointer-events-none absolute z-[5] flex -translate-x-1/2 -translate-y-1/2 items-center gap-0.5 border border-border bg-surface px-1 text-[9px] font-bold leading-[13px]"
-                style={{ left: l.mid.x, top: l.mid.y, opacity: linkOpacity(l) }}
-              >
-                {band ? <span style={{ color: band.tint }}>{band.tag}</span> : null}
-                {count ? <span className="mono text-text3">{count}</span> : null}
-              </div>
-            );
-          })}
+          {/* Link and group tags. Positioned elements rather than SVG text so
+              they get the same hairline chip treatment as everything else. */}
+          {tags.map((t) => (
+            <div
+              key={`tag:${t.key}`}
+              className="pointer-events-none absolute z-[5] flex -translate-x-1/2 -translate-y-1/2 items-center gap-0.5 border border-border bg-surface px-1 text-[9px] font-bold leading-[13px]"
+              style={{ left: tagAt.get(t.key)?.x ?? t.x, top: tagAt.get(t.key)?.y ?? t.y, opacity: t.opacity }}
+              title={t.title}
+            >
+              {t.label ? <span style={{ color: t.tint }}>{t.label}</span> : null}
+              {t.count ? <span className="mono text-text3">{t.count}</span> : null}
+            </div>
+          ))}
 
           {/* HA bracket labels. */}
           {layout.units.map((u) => (

@@ -526,3 +526,282 @@ export function orderHops(
   for (const l of involved) if (!takenLinks.has(l.id)) out.push(l);
   return out;
 }
+
+// ── Structural relations, which are NOT cables ──────────────────────────────
+//
+// The canvas drew eighteen cables and nothing else, and a product owner looking
+// at it asked why there were no edges for most of the devices. There were not:
+// every link in `topology.links` runs DEVICE to DEVICE, so the internet, the WAN
+// circuits, the segments and the hosts each floated in their own band with no
+// line to anything, and the picture read as four disconnected islands.
+//
+// The relationships were in the payload all along, in `topology.relations`, and
+// they are deliberately not links: a circuit terminating on a CPE, a VLAN a
+// switch routes, a host's address sitting inside a subnet are CONTAINMENT,
+// TERMINATION and MEMBERSHIP — structural facts — and none of them is an
+// observed adjacency. The backend keeps them out of `links` because the
+// resilience analyzer runs articulation points over that set and a broadcast
+// domain in it would dissolve every cut vertex in the estate.
+//
+// So the same rule holds on this side of the wire: they are placed here, in
+// their own layer, and drawn so that no reader can mistake one for a cable.
+
+/** The four the backend emits today. Read as a plain string everywhere else, so
+ *  a fifth kind from a newer backend still draws and still names itself rather
+ *  than being silently dropped. */
+export const RELATION_KINDS = ["reaches", "terminates", "carries", "contains"] as const;
+
+export interface TopoRelation {
+  a: string;
+  b: string;
+  kind: string;
+  /** The sentence the backend wrote for this one fact — the hover text, and the
+   *  reason a relation needs no label painted on the canvas. */
+  detail: string;
+}
+
+export const RELATION_COPY: Record<string, { label: string; detail: string }> = {
+  reaches: {
+    label: "reaches",
+    detail: "A WAN circuit is a path to the internet. That is what the word means, not an inference about this estate.",
+  },
+  terminates: {
+    label: "terminates",
+    detail: "The CPE on this site's end of that circuit — the box the carrier hands off to.",
+  },
+  carries: {
+    label: "carries",
+    detail:
+      "The L3 device holding that VLAN's gateway: where the segment is routed. Switches that merely trunk the VLAN are counted under the canvas rather than drawn.",
+  },
+  contains: {
+    label: "contains",
+    detail: "That host's address provably sits inside the VLAN's subnet. Arithmetic on the addresses, and not a cable.",
+  },
+};
+
+/**
+ * `relations` is additive on the topology payload and is not in the shared
+ * `TopologyResponse` type, so it is read defensively and nothing is invented: a
+ * backend that predates the field yields an empty layer and a canvas that draws
+ * exactly what it drew before, rather than a crash.
+ */
+export function normaliseRelations(raw: unknown): TopoRelation[] {
+  if (!Array.isArray(raw)) return [];
+  const out: TopoRelation[] = [];
+  for (const r of raw) {
+    if (!r || typeof r !== "object") continue;
+    const o = r as Record<string, unknown>;
+    if (typeof o.a !== "string" || typeof o.b !== "string" || typeof o.kind !== "string") continue;
+    out.push({ a: o.a, b: o.b, kind: o.kind, detail: typeof o.detail === "string" ? o.detail : "" });
+  }
+  return out;
+}
+
+export interface PlacedRelation {
+  id: string;
+  /** The card in the OUTER lane, and the card in the inner one. Relations carry
+   *  a direction in the payload, but nothing is drawn with an arrowhead — an
+   *  arrow on a containment fact would assert a flow that does not exist — so
+   *  the ends are ordered by lane instead, which is what the geometry needs. */
+  a: string;
+  b: string;
+  d: string;
+  mid: { x: number; y: number };
+  kinds: string[];
+  items: TopoRelation[];
+}
+
+export interface RelationLayer {
+  lines: PlacedRelation[];
+  /** The kinds actually on screen, in payload-sorted order, for the legend.
+   *  Explaining a mark nobody can find is how a legend stops being read. */
+  kinds: string[];
+  /** `carries` facts held back because the device only trunks the VLAN. Counted
+   *  and reported, never silently dropped: a suppressed edge and an absent one
+   *  look identical, which is the defect this whole layer exists to fix. */
+  trunkOnly: number;
+  /** Relations naming something in no lane of this response. */
+  unresolved: number;
+  /** Relations whose two ends landed on one collapsed group card. */
+  hiddenInGroups: number;
+  /**
+   * True when NO device in the payload could be matched to a VLAN gateway, so
+   * the gateway filter would have deleted every `carries` line and left the
+   * segment lane floating again — the exact symptom being fixed. In that case
+   * every `carries` is drawn and the canvas says why, because a filter that
+   * silently empties itself is worse than a busy picture.
+   */
+  gatewayUnknown: boolean;
+}
+
+export const EMPTY_RELATION_LAYER: RelationLayer = {
+  lines: [], kinds: [], trunkOnly: 0, unresolved: 0, hiddenInGroups: 0, gatewayUnknown: false,
+};
+
+/**
+ * Route one relation.
+ *
+ * Deliberately a STRAIGHT CHORD, where every cable on this canvas is a cubic
+ * bow and every policy hop bows the other way. Three line families, three
+ * geometries, before colour or weight is considered at all — so the distinction
+ * survives greyscale, a projector and a reader who never opens the legend.
+ *
+ * The anchors are spread across the card's width rather than taken from its
+ * centre, for two reasons: a cable already leaves the bottom centre, and the two
+ * core switches each hold seven VLAN gateways — seven chords from one point is a
+ * blot, seven from a comb is a fan you can count.
+ */
+function relationPath(
+  a: PlacedNode, b: PlacedNode, aFrac: number, bFrac: number,
+): { d: string; mid: { x: number; y: number } } {
+  const ax = a.x + a.w * aFrac;
+  const bx = b.x + b.w * bFrac;
+  if (Math.abs(a.y - b.y) < 2) {
+    // Same row. Bows ABOVE the cards — below is where a cable between two cards
+    // in one lane already bows.
+    const y = a.y;
+    const lift = 22;
+    const mx = (ax + bx) / 2;
+    return {
+      d: `M${r1(ax)} ${r1(y)} Q${r1(mx)} ${r1(y - lift)} ${r1(bx)} ${r1(y)}`,
+      mid: { x: mx, y: y - lift * 0.55 },
+    };
+  }
+  const [u, ux, l, lx] = a.y < b.y ? [a, ax, b, bx] : [b, bx, a, ax];
+  const uy = u.y + u.h;
+  const ly = l.y;
+  return {
+    d: `M${r1(ux)} ${r1(uy)} L${r1(lx)} ${r1(ly)}`,
+    mid: { x: (ux + lx) / 2, y: (uy + ly) / 2 },
+  };
+}
+
+/**
+ * Resolve the payload's relations onto the cards this layout placed.
+ *
+ * `gatewayHolders` holds `<device key>|<vlan card key>` for every device an
+ * interface address proves is a VLAN's gateway. It is how `carries` is thinned:
+ * thirty-nine relations on twenty-five cards is a hairball, and twenty-six of
+ * them are `carries` because every core and access switch trunks nearly every
+ * VLAN. "Which switch has the VLAN in its allowed list" is not a fact worth a
+ * line; "where the segment is routed" is, and it is the one the reader is
+ * actually looking for.
+ */
+export function placeRelations(
+  layout: Layout,
+  relations: TopoRelation[],
+  gatewayHolders: ReadonlySet<string>,
+): RelationLayer {
+  if (relations.length === 0) return EMPTY_RELATION_LAYER;
+
+  // The pair is checked both ways round because the filter must not depend on
+  // which end of a `carries` fact the backend happens to put first.
+  const atGateway = (r: TopoRelation) =>
+    gatewayHolders.has(`${r.a}|${r.b}`) || gatewayHolders.has(`${r.b}|${r.a}`);
+  const carries = relations.filter((r) => r.kind === "carries");
+  const gatewayUnknown = carries.length > 0 && !carries.some(atGateway);
+  const kept = gatewayUnknown
+    ? relations
+    : relations.filter((r) => r.kind !== "carries" || atGateway(r));
+  const trunkOnly = relations.length - kept.length;
+
+  let unresolved = 0;
+  let hiddenInGroups = 0;
+  // Two facts between the same pair of CARDS are one line — the segment lane
+  // collapses its fourteen hosts into one card, and four identical chords to it
+  // are one visible chord plus three lies by overdraw. What they were is kept on
+  // `items`, so the hover still lists every one.
+  const buckets = new Map<string, { a: PlacedNode; b: PlacedNode; items: TopoRelation[] }>();
+  for (const r of kept) {
+    const ca = layout.cardFor.get(r.a);
+    const cb = layout.cardFor.get(r.b);
+    if (!ca || !cb) { unresolved += 1; continue; }
+    if (ca === cb) { hiddenInGroups += 1; continue; }
+    const na = layout.byId.get(ca);
+    const nb = layout.byId.get(cb);
+    if (!na || !nb) { unresolved += 1; continue; }
+    // Ordered outer lane first, so the geometry below never has to ask twice.
+    const [u, l] = na.laneIndex <= nb.laneIndex ? [na, nb] : [nb, na];
+    const key = `${u.id}|${l.id}`;
+    const bucket = buckets.get(key);
+    if (bucket) bucket.items.push(r);
+    else buckets.set(key, { a: u, b: l, items: [r] });
+  }
+
+  // Spread the anchors. Both ends are combed the same way — by the other end's
+  // centre x — so the fan opens in the direction the eye is already travelling
+  // and the order is identical between two renders of one snapshot.
+  const byEnd = (pick: (e: { a: PlacedNode; b: PlacedNode }) => PlacedNode,
+                 other: (e: { a: PlacedNode; b: PlacedNode }) => PlacedNode) => {
+    const groups = new Map<string, string[]>();
+    for (const [key, e] of buckets) {
+      const id = pick(e).id;
+      (groups.get(id) ?? groups.set(id, []).get(id)!).push(key);
+    }
+    const frac = new Map<string, number>();
+    for (const keys of groups.values()) {
+      keys.sort((k1, k2) => {
+        const o1 = other(buckets.get(k1)!);
+        const o2 = other(buckets.get(k2)!);
+        return (o1.x + o1.w / 2) - (o2.x + o2.w / 2) || k1.localeCompare(k2);
+      });
+      // Inset to 15%–85% of the card: an anchor on the very corner reads as a
+      // line that missed the card rather than one that leaves it.
+      keys.forEach((k, i) => frac.set(k, keys.length === 1 ? 0.5 : 0.15 + 0.7 * (i / (keys.length - 1))));
+    }
+    return frac;
+  };
+  const aFrac = byEnd((e) => e.a, (e) => e.b);
+  const bFrac = byEnd((e) => e.b, (e) => e.a);
+
+  const lines: PlacedRelation[] = [];
+  for (const [id, e] of buckets) {
+    const { d, mid } = relationPath(e.a, e.b, aFrac.get(id) ?? 0.5, bFrac.get(id) ?? 0.5);
+    lines.push({
+      id, a: e.a.id, b: e.b.id, d, mid,
+      kinds: [...new Set(e.items.map((i) => i.kind))],
+      items: e.items,
+    });
+  }
+
+  // From the lines actually PLACED, not from what survived the filter: a kind
+  // whose every relation named a card off this canvas has no mark on screen, and
+  // a legend that explains a mark nobody can find is a legend that stops being
+  // read.
+  const present = new Set(lines.flatMap((l) => l.kinds));
+  const kinds = [
+    ...RELATION_KINDS.filter((k) => present.has(k)),
+    ...[...present].filter((k) => !(RELATION_KINDS as readonly string[]).includes(k)).sort(),
+  ];
+
+  return { lines, kinds, trunkOnly, unresolved, hiddenInGroups, gatewayUnknown };
+}
+
+/**
+ * Which `<device key>|<vlan card key>` pairs are provable gateways.
+ *
+ * Provable, not assumed: a device holds a VLAN's gateway when one of its own
+ * interface addresses IS the gateway address the payload declares for that VLAN.
+ * Both members of an HSRP/VRRP pair legitimately report the same address, and
+ * both get a line — dropping one would draw a single point of failure where the
+ * estate has a pair.
+ */
+export function gatewayHolders(
+  nodes: TopoNode[],
+  vlans: { vlan_id: number; gateways: string[] }[],
+): Set<string> {
+  const vlanOfGateway = new Map<string, string>();
+  for (const v of vlans) for (const g of v.gateways ?? []) vlanOfGateway.set(g, `vlan-${v.vlan_id}`);
+  const out = new Set<string>();
+  if (vlanOfGateway.size === 0) return out;
+  for (const n of nodes) {
+    for (const i of n.interfaces ?? []) {
+      for (const a of i.addresses ?? []) {
+        const card = vlanOfGateway.get(a.split("/")[0]);
+        if (card) out.add(`${n.key}|${card}`);
+      }
+    }
+  }
+  return out;
+}
