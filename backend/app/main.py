@@ -900,8 +900,90 @@ def rule_detail(ref: str, snapshot: str | None = None):
         live, provenance = _memory_fallback(t, f"rule {ref}", exc)
         rows = _narrow(sorted((r for r in canonical_rule_rows(live) if r["raw_rule_id"] == ref),
                               key=lambda r: (r["source_tool"], r["rule_order"])), _RULE_COLS)
-        return {"ref": ref, "rules": rows, **provenance}
-    return {"ref": ref, "rules": rows, "served_from": _DB_SOURCE}
+        return {"ref": ref, "rules": rows, **_rule_context(ref), **provenance}
+    return {"ref": ref, "rules": rows, **_rule_context(ref), "served_from": _DB_SOURCE}
+
+
+def _rule_context(ref: str) -> dict:
+    """What a reviewer needs to judge a rule, beyond the row itself.
+
+    A rule reference on its own -- "ALGO-029" -- is unreadable. Deciding whether
+    a grant should exist needs three things the raw row does not carry:
+
+      DIRECTION  inbound / outbound / internal, and whether a matching reverse
+                 grant makes the pair bidirectional. "0.0.0.0/0 reaches the PCI
+                 database" and "the PCI database reaches the internet" are
+                 different problems with different fixes, and the row spells both
+                 as source/destination columns a reader has to reason about.
+      ENDPOINTS  the ASSETS behind each token, by name and tag. A change that
+                 removes a rule has to say what it disconnects, and "internal-app"
+                 is an object name, not an answer.
+      REVERSE    the rule that makes it two-way, named, so a fix that removes one
+                 direction does not silently leave the other.
+
+    Computed from the live engine rather than stored: it is a projection of facts
+    already in the snapshot, and caching it would give it its own staleness.
+    """
+    live = engine()
+    recs = [r for r in live.records if r.raw_ref == ref]
+    if not recs:
+        return {"context": None}
+    assets_by_key = {a.asset_key: a for a in live.assets}
+
+    def endpoint(token: str, cidrs: list[str], kind: str) -> dict:
+        canon = live.alias_map.get(token, token)
+        a = assets_by_key.get(canon)
+        public = any(is_public(c) for c in cidrs) if cidrs else is_public(token)
+        return {
+            "token": token,
+            "resolved_to": canon if canon != token else None,
+            "kind": kind,
+            "cidrs": list(cidrs),
+            "public": bool(public),
+            "asset": None if a is None else {
+                "key": a.asset_key,
+                "display": a.display_name or a.asset_key,
+                "kind": a.kind,
+                "tags": list(a.tags),
+                "addresses": list(a.ip_set),
+                "seen_by": list(a.source_tools),
+            },
+        }
+
+    out = []
+    for rec in recs:
+        src = endpoint(rec.source, rec.source_cidrs, rec.source_kind)
+        dst = endpoint(rec.destination, rec.dest_cidrs, rec.destination_kind)
+        # Direction is a statement about TRUST BOUNDARIES, not about which column
+        # a token sits in. `is_public` is the same classifier the severity engine
+        # and the zone layer use, so a named object resolving to 0.0.0.0/0 reads
+        # here exactly as the literal string does.
+        if src["public"] and not dst["public"]:
+            flow, detail = "inbound", "from the internet into the estate"
+        elif dst["public"] and not src["public"]:
+            flow, detail = "outbound", "from inside the estate out to the internet"
+        elif src["public"] and dst["public"]:
+            flow, detail = "transit", "public space on both sides"
+        else:
+            flow, detail = "internal", "east-west, inside the estate"
+        # A reverse grant of the same service makes the pair two-way. Reported by
+        # REFERENCE rather than as a boolean: a fix that removes one direction and
+        # leaves the other is the mistake this exists to prevent.
+        reverse = next(
+            (o.raw_ref for o in live.records
+             if o.raw_ref != rec.raw_ref and o.action == rec.action
+             and o.source == rec.destination and o.destination == rec.source
+             and o.service == rec.service),
+            None,
+        )
+        out.append({
+            "raw_ref": rec.raw_ref, "tool": rec.source_tool, "action": rec.action,
+            "service": rec.service, "protocol": rec.protocol, "l7_app": rec.l7_app,
+            "source": src, "destination": dst,
+            "direction": {"flow": flow, "detail": detail,
+                          "bidirectional": reverse is not None, "reverse_ref": reverse},
+        })
+    return {"context": out}
 
 
 # The ingest inspector's rule query: the same columns as _RULE_COLS, but keyed by
