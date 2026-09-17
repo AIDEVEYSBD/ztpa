@@ -2238,6 +2238,66 @@ def staging_delete(staged_id: str, _: None = Depends(require_approver)):
     return {"ok": True, "deleted": staged_id}
 
 
+class RollbackBody(BaseModel):
+    reason: str | None = None
+
+
+@app.post("/api/staging/{staged_id}/rollback")
+def staging_rollback(staged_id: str, body: RollbackBody,
+                     _: None = Depends(require_approver)):
+    """Take a PUSHED change back out of the applied overlay.
+
+    The product could apply a change and never un-apply one. Asked for directly:
+    "if a change is approved, have a place where we had made changes and have a
+    way to rollback those."
+
+    HOW IT WORKS, and why it is honest. `persist.load_applied_changes` selects
+    `status='pushed'` and the engine re-applies exactly those rows to the records
+    on every run -- the applied state is a DERIVED overlay, not an edit to the
+    source data. So a rollback is a status transition, not a reverse edit: flip
+    the row out of `pushed` and the next recompute simply never applies it. No
+    inverse change is synthesised, and nothing has to guess what the estate
+    looked like before.
+
+    THE ROW IS NOT DELETED. `DELETE /api/staging/{id}` already exists for
+    discarding something never pushed; this is a different act on a different
+    kind of row. A change that WAS live and was withdrawn is compliance history
+    -- somebody approved it, it was applied, and somebody reversed it -- and
+    deleting the row would erase the middle of that sentence. The status carries
+    it and the audit trail names both actors.
+
+    Approver-gated, like every other governance write, and for the same reason:
+    un-applying a change alters what the engine reports as the estate's current
+    posture.
+    """
+    with get_conn() as conn, conn.cursor() as cur:
+        row = fetch_one(cur, "SELECT status FROM ztpa.staged_changes WHERE staged_id=%s",
+                        [staged_id])
+        if not row:
+            raise HTTPException(404, f"no staged change {staged_id}")
+        if row["status"] != "pushed":
+            # Only a change that is actually IN the overlay can come out of it.
+            # Refusing loudly beats reporting success for a no-op the caller
+            # would then believe had changed the estate.
+            raise HTTPException(
+                409,
+                f"staged change {staged_id} is '{row['status']}', not 'pushed'. Only a pushed "
+                f"change is in the applied overlay; there is nothing to roll back. Use "
+                f"DELETE /api/staging/{staged_id} to discard one that was never pushed.")
+        cur.execute(
+            "UPDATE ztpa.staged_changes SET status='rolled_back' WHERE staged_id=%s",
+            [staged_id])
+        audit(cur, "rollback_staged_change", subject=staged_id,
+              detail={"reason": body.reason, "from_status": "pushed"})
+    # The overlay is read at engine build time, so the running result still holds
+    # the change until it is rebuilt. Say so rather than implying the estate has
+    # already moved.
+    return {"ok": True, "staged_id": staged_id, "status": "rolled_back",
+            "recompute_required": True,
+            "detail": ("the change is out of the applied overlay; recompute to see the "
+                       "estate without it")}
+
+
 # --- Change Gate: reject a request -----------------------------------------
 class RejectBody(BaseModel):
     request_id: str

@@ -34,7 +34,7 @@ const META: Record<ScreenId, { title: string; sub: string }> = {
   explorer: { title: "Explorer", sub: "The estate layer by layer, the policy paths across it, and every finding on the map" },
   risks: { title: "Risk To-Do", sub: "Prioritized actions — iterate a fix, then send it to the Change Gate" },
   change: { title: "Change Gate", sub: "Simulated delta, then auto-approve or escalate — then send to staging" },
-  staging: { title: "Staging Area", sub: "Approved changes, ready to push to the source system" },
+  staging: { title: "Implementation Queue", sub: "Approved changes, waiting to be applied to the source system" },
   ask: { title: "Ask the Network", sub: "Plain-English questions, grounded in engine facts" },
   report: { title: "Posture Report", sub: "Executive and compliance summary" },
   connectors: { title: "Connectors", sub: "Bring your own source via a validated profile" },

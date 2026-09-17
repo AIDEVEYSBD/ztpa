@@ -39,7 +39,7 @@ const CONSOLE: NavDef[] = [
   { id: "sources", label: "Sources", icon: Plug },
   { id: "risks", label: "Risk To-Do", icon: ListChecks },
   { id: "change", label: "Change Gate", icon: GitBranch },
-  { id: "staging", label: "Staging Area", icon: Rocket },
+  { id: "staging", label: "Implementation Queue", icon: Rocket },
   { id: "ask", label: "Ask the Network", icon: MessageSquare },
   { id: "report", label: "Posture Report", icon: FileText },
 ];
