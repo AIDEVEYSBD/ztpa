@@ -18,7 +18,6 @@ import { Connectors } from "@/components/Connectors";
 import { SourcesPanel } from "@/components/SourcesPanel";
 import { InventoryPanel } from "@/components/InventoryPanel";
 import { ExplorerPanel } from "@/components/ExplorerPanel";
-import { IngestInspector } from "@/components/IngestInspector";
 import { Staging } from "@/components/Staging";
 import { SnapshotsAdmin } from "@/components/admin/SnapshotsAdmin";
 import { ToolsAdmin } from "@/components/admin/ToolsAdmin";
@@ -38,7 +37,6 @@ const META: Record<ScreenId, { title: string; sub: string }> = {
   ask: { title: "Ask the Network", sub: "Plain-English questions, grounded in engine facts" },
   report: { title: "Posture Report", sub: "Executive and compliance summary" },
   connectors: { title: "Connectors", sub: "Bring your own source via a validated profile" },
-  ingest: { title: "Ingested data", sub: "What the connectors produced for this snapshot (admin)" },
   snapshots: { title: "Snapshots", sub: "Point-in-time runs, with delete (admin)" },
   tools: { title: "Tools & Usage", sub: "Available tools, per-role access, and usage metrics (admin)" },
   metrics: { title: "Metrics & Cost", sub: "Application-wide KPIs, token usage and estimated cost (admin)" },
@@ -243,7 +241,6 @@ export default function Dashboard() {
                     redirect so an old nav entry or a bookmark lands on the
                     merged screen rather than on a blank panel; remove with the
                     nav entry itself. */}
-                {screen === "ingest" && <IngestInspector snapshot={viewSnap} />}
                 {screen === "snapshots" && <SnapshotsAdmin onView={(id) => { setViewSnap(id); setScreen("explorer"); }} />}
                 {screen === "tools" && <ToolsAdmin />}
                 {screen === "metrics" && <MetricsAdmin />}

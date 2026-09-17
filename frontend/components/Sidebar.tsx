@@ -3,13 +3,13 @@
 import { useSession } from "next-auth/react";
 import {
   Network, ListChecks, GitBranch, MessageSquare, FileText, Plug,
-  LogOut, Database, History, Rocket, SlidersHorizontal, BarChart3, ScrollText, Cog,
+  LogOut, History, Rocket, SlidersHorizontal, BarChart3, ScrollText, Cog,
   Boxes,
 } from "lucide-react";
 import { Brand, cn } from "./ui";
 import { ThemeToggle } from "./theme";
 
-export type ScreenId = "explorer" | "inventory" | "sources" | "risks" | "change" | "staging" | "ask" | "report" | "connectors" | "ingest" | "snapshots" | "tools" | "metrics" | "audit" | "config";
+export type ScreenId = "explorer" | "inventory" | "sources" | "risks" | "change" | "staging" | "ask" | "report" | "connectors" | "snapshots" | "tools" | "metrics" | "audit" | "config";
 
 type NavDef = { id: ScreenId; label: string; icon: typeof Network };
 
@@ -50,7 +50,6 @@ const REFERENCE: NavDef[] = [
 const ADMIN: NavDef[] = [
   { id: "tools", label: "Tools & Usage", icon: SlidersHorizontal },
   { id: "metrics", label: "Metrics & Cost", icon: BarChart3 },
-  { id: "ingest", label: "Ingested data", icon: Database },
   { id: "snapshots", label: "Snapshots", icon: History },
   //
   // There is no "Manage users" entry here any more, and there is no `users`
