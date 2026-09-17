@@ -59,10 +59,14 @@ function Figure({ label, icon, value }: { label: string; icon: ReactNode; value:
   return (
     <span className="inline-flex items-center gap-1.5" title={title}>
       <span className={cn("shrink-0", zero || !known ? "text-text3" : "text-text2")}>{icon}</span>
-      <span className={cn("mono text-[13px] font-bold leading-none tabular-nums", known && !zero ? "text-text" : "text-text3")}>
+      <span className={cn("mono text-[15px] font-bold leading-none tabular-nums", known && !zero ? "text-text" : "text-text3")}>
         {known ? String(value) : "—"}
       </span>
-      <span className="text-[10px] uppercase tracking-[0.1em] text-text3">{label}</span>
+      {/* 11px at 0.05em, not 10px at 0.1em. Wide tracking on small uppercase is
+          the thing that made this row scan as texture rather than as words. The
+          dim/em-dash semantics above are untouched: `text3` still means "this
+          figure is zero or unknown", it is just legible now. */}
+      <span className="text-[11px] uppercase tracking-[0.05em] text-text2">{label}</span>
     </span>
   );
 }
@@ -104,7 +108,7 @@ function CapabilityList({
     <div className="min-w-0 border border-border bg-sunk p-2.5">
       <div className="flex items-center gap-1.5">
         {blind ? <EyeOff size={11} className="text-sev-medium" /> : <ScanSearch size={11} className="text-text3" />}
-        <span className={cn("text-[9.5px] font-bold uppercase tracking-[0.14em]", blind ? "text-sev-medium" : "text-text3")}>
+        <span className={cn("text-[11px] font-bold uppercase tracking-[0.06em]", blind ? "text-sev-medium" : "text-text2")}>
           {blind ? "Blind to" : "Yields"}
         </span>
       </div>
@@ -117,7 +121,7 @@ function CapabilityList({
       ) : (
         <ul className="mt-1.5 space-y-1">
           {shown.map((y) => (
-            <li key={y} className="flex items-start gap-1.5 text-[11.5px] leading-snug text-text2">
+            <li key={y} className="flex items-start gap-1.5 text-[12px] leading-snug text-text2">
               <span
                 aria-hidden
                 className={cn("mt-[5px] h-[5px] w-[5px] shrink-0", blind ? "border border-sev-medium" : "bg-text3")}
@@ -170,10 +174,10 @@ export function SourceCardView({ card, expanded, onToggle }: SourceCardViewProps
         <span aria-hidden className="mt-[3px] h-2.5 w-2.5 shrink-0" style={{ background: colour }} />
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <span className={cn("min-w-0 break-words font-bold", connected ? "text-[14px]" : "text-[13px]")}>{card.label}</span>
-            <span className="text-[12px] text-text2">{card.vendor}</span>
+            <span className={cn("min-w-0 break-words font-bold", connected ? "text-[15px]" : "text-[14px]")}>{card.label}</span>
+            <span className="text-[12.5px] text-text2">{card.vendor}</span>
           </div>
-          <div className="mono mt-0.5 text-[10.5px] text-text3">{card.tool}</div>
+          <div className="mono mt-0.5 text-[11px] text-text3">{card.tool}</div>
         </div>
         <div className="flex shrink-0 flex-col items-end gap-1">
           <TierChip tier={card.tier} />
@@ -214,17 +218,20 @@ export function SourceCardView({ card, expanded, onToggle }: SourceCardViewProps
           flag is rendered wherever it is true, at full weight, because the
           audience for this screen is the client whose estate it describes. */}
       {card.simulated && (
-        <div className="mt-2 flex items-center gap-2 border border-sev-high-line bg-sev-high-bg px-2 py-1 text-[10.5px] font-bold uppercase tracking-[0.06em] text-sev-high">
+        <span
+          className="mt-2 inline-flex w-fit items-center gap-1.5 border border-sev-high-line bg-sev-high-bg px-1.5 py-0.5 text-[11px] font-bold text-sev-high"
+          title="Seeded export. Nothing contacted this vendor."
+        >
           <FlaskConical size={12} className="shrink-0" />
-          simulated export — not a live connector
-        </div>
+          simulated export
+        </span>
       )}
 
       {/* ── what it put into this snapshot (connected only) ───────────────── */}
       {connected && (
         contributed ? (
           <div className="mt-2.5 border-t border-hair pt-2.5">
-            <div className="label mb-1.5 text-[9.5px]">Contributed to this snapshot</div>
+            <div className="label mb-1.5 !text-text2">Contributed to this snapshot</div>
             <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
               {COMPACT_FIGURES.map((f) => (
                 <Figure key={f.key} label={f.label} icon={f.icon} value={contributed[f.key]} />
@@ -242,14 +249,6 @@ export function SourceCardView({ card, expanded, onToggle }: SourceCardViewProps
         )
       )}
 
-      {/* ── the API family, verbatim ──────────────────────────────────────── */}
-      <div className="sunk mt-2.5 px-2.5 py-2">
-        <div className="label text-[9px]">API family</div>
-        <div className={cn("mono mt-1 break-words text-[11px] leading-relaxed text-text2", !expanded && "line-clamp-2")}>
-          {card.api}
-        </div>
-      </div>
-
       {/* ── yields / blind to, equal weight ───────────────────────────────── */}
       <div className="mt-2.5 grid gap-2 sm:grid-cols-2">
         <CapabilityList items={card.yields ?? []} tone="yields" expanded={expanded} countHidden={connected} />
@@ -259,14 +258,18 @@ export function SourceCardView({ card, expanded, onToggle }: SourceCardViewProps
       {/* ── full detail ───────────────────────────────────────────────────── */}
       {expanded && (
         <div className="mt-2.5 space-y-2 border-t border-hair pt-2.5">
-          <div className="flex flex-wrap items-start gap-x-2 gap-y-1 text-[11.5px] text-text2">
+          <div className="sunk px-2.5 py-2">
+            <div className="label !text-text2">API family</div>
+            <div className="mono mt-1 break-words text-[11.5px] leading-relaxed text-text2">{card.api}</div>
+          </div>
+          <div className="flex flex-wrap items-start gap-x-2 gap-y-1 text-[12px] text-text2">
             <KeyRound size={12} className="mt-0.5 shrink-0 text-text3" />
-            <span className="label text-[9px] leading-[1.6]">Auth</span>
+            <span className="label leading-[1.6] !text-text2">Auth</span>
             <span className="mono min-w-0 break-words text-[11px]">{card.auth || "not stated"}</span>
           </div>
           {card.notes ? (
             <div>
-              <div className="label mb-0.5 text-[9px]">Notes</div>
+              <div className="label mb-0.5 !text-text2">Notes</div>
               <Prose className="!text-[11.5px]">{card.notes}</Prose>
             </div>
           ) : (

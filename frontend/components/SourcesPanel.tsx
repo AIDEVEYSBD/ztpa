@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { CircleSlash, Info, Layers3, Plug, Radio, Unplug } from "lucide-react";
+import { CircleSlash, FlaskConical, Info, Layers3, Plug, Radio, Unplug } from "lucide-react";
 import { api, asApiError, ApiError } from "@/lib/api";
 import type { SourceCard, SourceTier } from "@/lib/types";
 import { toolColour } from "@/lib/toolColour";
@@ -82,6 +82,7 @@ export function SourcesPanel({ snapshot }: { snapshot?: string }) {
 
   const all = useMemo(() => cards ?? [], [cards]);
   const connectedAll = useMemo(() => all.filter((c) => c.connected), [all]);
+  const simulatedCount = useMemo(() => connectedAll.filter((c) => c.simulated).length, [connectedAll]);
   const availableAll = useMemo(() => all.filter((c) => !c.connected), [all]);
 
   // Search covers vendor and tool, plus the product label — "catalyst" and
@@ -205,6 +206,16 @@ export function SourcesPanel({ snapshot }: { snapshot?: string }) {
           What we read, and what it cannot tell us.
         </p>
 
+        {simulatedCount > 0 && (
+          <div className="mt-2.5 flex items-start gap-2 border border-sev-high-line bg-sev-high-bg px-2.5 py-1.5 text-[12px] leading-snug text-sev-high">
+            <FlaskConical size={14} className="mt-px shrink-0" />
+            <span>
+              <b>{simulatedCount} of {connectedAll.length} connected sources are simulated exports.</b>{" "}
+              Nothing in this build contacts a vendor. Each card carries the flag.
+            </span>
+          </div>
+        )}
+
         <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-hair pt-3">
           <Seg
             label="Rung"
@@ -291,7 +302,7 @@ export function SourcesPanel({ snapshot }: { snapshot?: string }) {
           </div>
           {(ladderNote.blind_to ?? []).length > 0 && (
             <div className="mt-2 flex flex-wrap items-center gap-1.5">
-              <span className="label text-[9px]">It will not give you</span>
+              <span className="label !text-text2">It will not give you</span>
               {(ladderNote.blind_to ?? []).map((b) => (
                 <Chip key={b} variant="neutral">{b}</Chip>
               ))}
@@ -427,7 +438,7 @@ function Seg<T extends string>({
 }) {
   return (
     <div className="flex items-center gap-2">
-      <span className="label text-[9px]">{label}</span>
+      <span className="label !text-text2">{label}</span>
       <div className="flex border border-border">
         {options.map((o) => (
           <button
