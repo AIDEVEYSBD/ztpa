@@ -720,6 +720,23 @@ build_frontend_env() { # $1 = backend url  $2 = app url
     "AUTH_TRUST_HOST=true"
     "BACKEND_URL=$1"
     "APP_URL=$2"
+    # AUTH_URL, NOT just APP_URL -- and this line is why SSO could not work on a
+    # deployment that had no custom domain bound.
+    #
+    # APP_URL is read by this product's own code (lib/baseurl). AUTH_URL is what
+    # Auth.js builds the OIDC `redirect_uri` from. Without it Auth.js falls back
+    # to deriving the origin from the incoming request, and behind Container Apps
+    # ingress that resolves to the container's BIND ADDRESS: the app sent
+    # `redirect_uri=https://0.0.0.0:3000/api/auth/callback/autox`, the IdP
+    # rejected it as unregistered, and the failure surfaced as
+    # INVALID_REDIRECT_URI -- which reads as "you registered the wrong URL"
+    # rather than "the app asked for the wrong one".
+    #
+    # AUTH_URL was only ever set by bind-domain.sh, so this worked on the one
+    # deployment with a custom domain and on no other. That also made the
+    # NEXT STEPS printed at the end of this script wrong: they tell you to
+    # register the azurecontainerapps.io callback, which could never match.
+    "AUTH_URL=$2"
   )
   local n v
   for n in SSO_CLIENT_ID SSO_ISSUER SSO_RESOURCE SSO_SCOPE SSO_SESSION_MAX_AGE \
