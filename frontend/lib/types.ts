@@ -10,6 +10,15 @@ export interface Finding {
   involved: string[];
   raw_refs: string[];
   source_tools: string[];
+  /** The ANALYZER's own deterministic one-liner — "RDP open from the internet to
+   *  db-prod-01". Specific to this finding, and the right heading for it.
+   *
+   *  Optional only because it is derived on the way out rather than stored, so a
+   *  frontend running against an older backend must not throw. When it is
+   *  absent the caller should fall back to the type — but note that is exactly
+   *  the fallback that made all five over-permissive findings render under one
+   *  identical heading, so treat it as a degraded state, not a normal one. */
+  title?: string;
   /** MODEL PROSE, and null until somebody asks for it. Not the only explanation
    *  available — see `engine_explanation`. */
   explanation?: string | null;

@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import { ShieldAlert, GitBranch } from "lucide-react";
 import type { Band } from "@/lib/types";
 import { cn } from "@/lib/cn";
-import { toolColour } from "@/lib/toolColour";
+import { toolColour , toolLabel } from "@/lib/toolColour";
 import { SEV } from "./severity";
 
 /** Severity is always colour + icon + label. */
@@ -31,7 +31,7 @@ export function ToolBadge({ tool, detail }: { tool: string; detail?: string }) {
     <span className="chip mono text-[10.5px]">
       <GitBranch size={10} className="text-text3" />
       <span className="h-1.5 w-1.5 shrink-0" style={{ background: toolColour(tool) }} />
-      {tool}{detail ? ` · ${detail}` : ""}
+      {toolLabel(tool)}{detail ? ` · ${detail}` : ""}
     </span>
   );
 }

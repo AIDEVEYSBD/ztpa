@@ -66,3 +66,49 @@ export const UNKNOWN_TOOL_COLOUR = "var(--sev-low)";
 export function toolColour(tool: string): string {
   return TOOL_COLOUR[tool] ?? UNKNOWN_TOOL_COLOUR;
 }
+
+// ── Display names ──────────────────────────────────────────────────────────
+//
+// A tool KEY and a tool NAME are different things, and the UI was showing the
+// key. Badges read `junos_space` and `catalyst_center` while the Sources screen,
+// which reads `label` off the API, said "Junos Space / Security Director" and
+// "Cisco Catalyst Center" — so the same source had two names depending on which
+// screen you were looking at, and one of them was a snake_case identifier.
+//
+// These are the SHORT forms, because the long ones are for a source card with
+// room to breathe: a badge sitting inside a table row needs "Catalyst Center",
+// not "Cisco Catalyst Center", and certainly not `catalyst_center`.
+//
+// Mirrors backend/src/sources.py REGISTRY. A key absent here falls back to a
+// readable form of itself rather than to a guess — a bring-your-own connector
+// names itself, and inventing a prettier name for one would be putting words in
+// the operator's mouth.
+const TOOL_LABEL: Record<string, string> = {
+  algosec: "AlgoSec",
+  guardicore: "Guardicore",
+  wiz: "Wiz",
+  fortimanager: "FortiManager",
+  fortigate: "FortiGate",
+  panorama: "Panorama",
+  junos_space: "Junos Space",
+  catalyst_center: "Catalyst Center",
+  meraki: "Meraki",
+  carrier_portal: "Carrier portal",
+  sd_wan: "SD-WAN",
+  sd_lan: "SD-LAN",
+};
+
+/** The display name for a source tool. Never render a raw key to a user.
+ *
+ *  An unregistered key (a bring-your-own SourceProfile) is de-snaked and
+ *  title-cased rather than passed through raw or renamed: the operator chose
+ *  that name, so it must stay recognisable as theirs. */
+export function toolLabel(tool: string): string {
+  const known = TOOL_LABEL[tool];
+  if (known) return known;
+  return tool
+    .split(/[_-]/)
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+}

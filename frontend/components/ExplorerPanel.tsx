@@ -84,6 +84,7 @@ import { buildRedundancyBands, buildVlanBands, unknownVlanBand, type VlanBand } 
 import { fromPolicy, fromResilience, involvedCards, sortWalk, type WalkFinding } from "./topology/findings";
 import { normalisePaths, placePath, type CrossToolPath } from "./topology/paths";
 import { searchableFrom, searchNodes, vlanIndex, type ExplorerNode } from "./topology/node";
+import { toolLabel } from "@/lib/toolColour";
 
 /** How long one hop of a trace, or one batch of a blast reveal, is on screen. */
 const STAGE_MS = 520;
@@ -1393,7 +1394,7 @@ export function ExplorerPanel({ snapshot, findings, findingsError, initialOverla
                 <Chip variant="info" dot>
                   {simulated.length} of {src.length} sources are seeded exports
                 </Chip>
-                <span className="mono text-[11px] text-text3">{simulated.map((s) => s.tool).join(" · ")}</span>
+                <span className="mono text-[11px] text-text3">{simulated.map((s) => toolLabel(s.tool)).join(" · ")}</span>
                 <span className="text-text3">— every device below that one of these reported is marked</span>
                 <span className="mono text-info">sim</span>
               </span>
