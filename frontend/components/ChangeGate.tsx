@@ -54,7 +54,16 @@ export function ChangeGate({ onNavigate }: { onNavigate?: (s: ScreenId) => void 
   const [requests, setRequests] = useState<any[]>([]);
   const [reqLoading, setReqLoading] = useState(true);
   const [sel, setSel] = useState<string>();                 // a preset id, or "custom"
-  const [custom, setCustom] = useState({ source: "10.20.5.0/24", destination: "app-server-07", service: "tcp/443", justification: "" });
+  // `action` is part of the request, not an assumption. A firewall change is
+  // source / destination / service / ACTION, and a form that omits the last one
+  // silently only ever composes an allow -- while the presets above it say
+  // "Allow ...", which is what made this panel read as nonsense to a network
+  // engineer. The backend has always taken it (`simulate_change` branches on
+  // `is_deny`); only the form was missing.
+  const [custom, setCustom] = useState<{
+    source: string; destination: string; service: string;
+    action: "allow" | "deny"; justification: string;
+  }>({ source: "10.20.5.0/24", destination: "app-server-07", service: "tcp/443", action: "allow", justification: "" });
   const [result, setResult] = useState<ChangeResult & { request_id?: string }>();
   const [loading, setLoading] = useState(false);
   const [assets, setAssets] = useState<string[]>([]);
@@ -204,6 +213,36 @@ export function ChangeGate({ onNavigate }: { onNavigate?: (s: ScreenId) => void 
                     <input list="zt-services" value={custom.service} placeholder="tcp/443"
                       onChange={(e) => setCustom({ ...custom, service: e.target.value })} className="field mono !h-[28px] !text-[12px]" />
                   </label>
+                  <div>
+                    <span className="label mb-1 block">Action</span>
+                    <div className="flex border border-border">
+                      {(["allow", "deny"] as const).map((a) => (
+                        <button key={a} type="button"
+                          onClick={() => setCustom({ ...custom, action: a })}
+                          aria-pressed={custom.action === a}
+                          className={cn(
+                            "mono flex-1 border-r border-border px-2 py-1 text-[11px] font-bold uppercase last:border-r-0",
+                            custom.action === a
+                              ? a === "allow" ? "bg-ok-bg text-ok" : "bg-sev-critical-bg text-sev-critical"
+                              : "text-text3 hover:text-text",
+                          )}>
+                          {a}
+                        </button>
+                      ))}
+                    </div>
+                    {custom.action === "deny" && (
+                      // Stated BEFORE simulating, not only in the result. The
+                      // reachability graph is built from allow grants, so a deny
+                      // subtracts nothing from it -- the delta shows what the
+                      // rule does not OPEN, never what it blocks. A reader who
+                      // learns that after pressing the button has already formed
+                      // the wrong expectation.
+                      <span className="mt-1 block text-[10.5px] leading-snug text-sev-high">
+                        A deny tightens policy. The graph holds allow grants only, so the delta
+                        shows what this does not open, not what it blocks.
+                      </span>
+                    )}
+                  </div>
                   <label className="block">
                     <span className="label mb-1 block">Justification</span>
                     <input value={custom.justification} onChange={(e) => setCustom({ ...custom, justification: e.target.value })}

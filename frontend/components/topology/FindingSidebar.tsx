@@ -27,7 +27,7 @@
  * cannot undim it, is a trap.
  */
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   AlertTriangle, ChevronLeft, ChevronRight, Cpu, PanelRightClose, PanelRightOpen,
   RotateCw, Sparkles, Wrench, X,
@@ -36,15 +36,52 @@ import type { ApiError } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { Chip, SeverityPill, ToolBadge, Spinner } from "@/components/ui";
 import { ErrorState, InlineError } from "@/components/ui/Feedback";
-import { RuleRef } from "@/components/RuleRef";
+import { RuleTokens } from "@/components/risk/RuleToken";
 import { KV, SignalList } from "./kv";
 import { blastLines, type WalkFinding } from "./findings";
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+/**
+ * One collapsible block.
+ *
+ * Every section used to render open, so opening a finding presented nine
+ * headings at once -- blast radius, severity vector, signals, raw references,
+ * attribution, remediation -- and the sentence that says what is wrong was one
+ * of nine equal things rather than the answer. `defaultOpen` is set on the two
+ * a reader wants first; the rest are one click away and announce themselves by
+ * title.
+ *
+ * Uncontrolled on purpose. The open set is per-finding scratch state, and
+ * hoisting it would mean deciding whether it survives selecting a different
+ * finding -- for which there is no good answer and no request.
+ */
+function Section({
+  title, children, defaultOpen = false, count,
+}: {
+  title: string;
+  children: React.ReactNode;
+  defaultOpen?: boolean;
+  /** Shown beside the title, so a collapsed section still says how much it holds. */
+  count?: number;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
   return (
-    <div className="min-w-0 border-t border-hair px-3.5 py-3">
-      <div className="label mb-1.5">{title}</div>
-      {children}
+    <div className="min-w-0 border-t border-hair">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="flex w-full items-center gap-1.5 px-3.5 py-2 text-left hover:bg-surface-hover"
+      >
+        <ChevronRight
+          size={11}
+          className={cn("shrink-0 text-text3 transition-transform", open && "rotate-90")}
+        />
+        <span className="label !text-text2">{title}</span>
+        {count != null && (
+          <span className="mono text-[10px] text-text3">{count}</span>
+        )}
+      </button>
+      {open && <div className="min-w-0 px-3.5 pb-3">{children}</div>}
     </div>
   );
 }
@@ -105,7 +142,7 @@ export interface FindingSidebarProps {
 
 function AllFindings({ items, index, onIndex }: { items: WalkFinding[]; index: number | null; onIndex: (i: number) => void }) {
   return (
-    <Section title={`All findings (${items.length})`}>
+    <Section title={`All findings (${items.length})`} defaultOpen>
       <ul className="-mx-1">
         {items.map((f, i) => (
           <li key={f.id}>
@@ -149,7 +186,7 @@ function Explanation({
   const asking = explainingId === item.id;
 
   return (
-    <Section title="What the problem is">
+    <Section title="What the problem is" defaultOpen>
       {item.engineDetail ? (
         <div className="min-w-0">
           <Attribution
@@ -489,17 +526,23 @@ export function FindingSidebar(p: FindingSidebarProps) {
           ) : null}
 
           {item.ruleRefs.length > 0 ? (
-            <Section title="Rule references">
-              <div className="flex flex-wrap gap-x-2 gap-y-1">
-                {item.ruleRefs.map((r) => (
-                  <RuleRef key={r} refId={r} snapshot={p.snapshot} />
-                ))}
-              </div>
+            <Section title="Rule references" defaultOpen count={item.ruleRefs.length}>
+              {/* RuleTokens, not RuleRef. RuleRef anchors its card with
+                  `absolute`, and this sidebar is `overflow-y-auto` -- an
+                  absolutely-positioned child is clipped by a scrolling
+                  ancestor's overflow box no matter what its z-index is, so the
+                  rule card was cut off at the panel edge. `right-0` made it
+                  worse by pushing a 300px card off the left side. RuleToken
+                  portals to the body with a viewport-clamped fixed position,
+                  which cannot be clipped by anything, and it carries the
+                  direction chip and the full rule card the Risk To-Do panel
+                  shows -- so the two screens now explain a rule identically. */}
+              <RuleTokens refs={item.ruleRefs} snapshot={p.snapshot} />
             </Section>
           ) : null}
 
           {item.rawRefs.length > 0 ? (
-            <Section title="Raw references">
+            <Section title="Raw references" count={item.rawRefs.length}>
               <div className="flex flex-wrap gap-1">
                 {item.rawRefs.map((r) => (
                   <span key={r} className="mono max-w-full truncate border border-border bg-sunk px-1 text-[10px] text-text2" title={r}>
@@ -523,7 +566,7 @@ export function FindingSidebar(p: FindingSidebarProps) {
             </Section>
           ) : null}
 
-          <Section title="Remediation">
+          <Section title="Remediation" defaultOpen>
             {item.remediation ? (
               <div className="flex gap-2">
                 <Wrench size={13} className="mt-0.5 shrink-0 text-accent-fg" />
