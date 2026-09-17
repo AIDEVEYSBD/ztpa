@@ -202,8 +202,7 @@ export function SourcesPanel({ snapshot }: { snapshot?: string }) {
         </div>
 
         <p className="mt-2 max-w-3xl text-[12px] leading-relaxed text-text2">
-          What we read, what it contributed, and what it cannot tell us.{" "}
-          <b className="text-text">A catalogue entry is not an integration</b> — nothing is connected to it.
+          What we read, and what it cannot tell us.
         </p>
 
         <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-hair pt-3">
@@ -240,8 +239,7 @@ export function SourcesPanel({ snapshot }: { snapshot?: string }) {
           <div>
             <Eyebrow><Plug size={13} /> Connected sources</Eyebrow>
             <p className="mt-1.5 max-w-3xl text-[12px] leading-relaxed text-text2">
-              Aggregator first, then the vendor&apos;s console, then the device itself. An empty rung is a
-              coverage gap.
+              Aggregator, then the vendor&apos;s console, then the device.
             </p>
           </div>
 
@@ -345,7 +343,7 @@ function Header() {
     <div className="panel p-4">
       <Eyebrow><Radio size={13} /> Sources — inventory of intelligence</Eyebrow>
       <p className="mt-2 max-w-3xl text-[12px] leading-relaxed text-text2">
-        What we read, what it contributed, and what it cannot tell us.
+        What we read, and what it cannot tell us.
       </p>
     </div>
   );

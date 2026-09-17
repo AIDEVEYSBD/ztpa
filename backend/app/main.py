@@ -3550,8 +3550,68 @@ def topology(snapshot: str | None = None, lane_cap: int = Query(40, ge=5, le=400
                                    or LANE_SOURCE_HINT.get(layer)) if not nodes else None,
         })
 
+    # ── STRUCTURAL RELATIONS, which are NOT links ──────────────────────────
+    #
+    # The canvas drew eighteen cables and nothing else, so the top three lanes
+    # and the bottom three floated unconnected: a circuit sat above the modem
+    # that terminates it with no line between them, and every VLAN and host hung
+    # off nothing at all. The relationships ARE in the data -- a Circuit names
+    # its CPE, a Vlan names the devices carrying it, a host's address sits inside
+    # a VLAN's subnet -- they are simply not cables, so no NetLink exists for
+    # them and none should.
+    #
+    # THEY MUST NOT BECOME LINKS. `topology_links` is what the resilience
+    # analyzer runs articulation points and bridges over. Adding "vlan 30 is
+    # carried by both cores" to that set would make the two cores mutually
+    # reachable through a broadcast domain and dissolve every cut vertex in the
+    # estate -- the identical failure the management-VLAN mesh caused, arrived at
+    # from a different direction.
+    #
+    # So they are computed here, for display only, and travel in their own field
+    # so the UI can draw them differently from a cable and never confuse the two.
+    relations: list[dict] = []
+    circuits_by_dev: dict[str, list] = {}
+    for c in topo.circuits:
+        if c.device_key:
+            circuits_by_dev.setdefault(c.device_key, []).append(c)
+        # The internet is what a WAN circuit terminates against. That is what the
+        # word means; it is not an inference about this estate.
+        relations.append({
+            "a": "0.0.0.0/0", "b": c.circuit_id, "kind": "reaches",
+            "detail": f"{c.circuit_id} is a path to the internet"
+            + (f" via {c.provider}" if c.provider else ""),
+        })
+        if c.device_key:
+            relations.append({
+                "a": c.circuit_id, "b": c.device_key, "kind": "terminates",
+                "detail": f"{c.device_key} is the CPE terminating {c.circuit_id}"
+                + (f" ({c.interface})" if c.interface else ""),
+            })
+    for v in topo.vlans:
+        for dev in v.device_keys:
+            relations.append({
+                "a": dev, "b": f"vlan-{v.vlan_id}", "kind": "carries",
+                "detail": f"{dev} carries VLAN {v.vlan_id}"
+                + (f" ({v.name})" if v.name else ""),
+            })
+    # Hosts to the segment their address provably sits in. Containment, the same
+    # arithmetic the inventory's VLAN column already performs.
+    vlan_of_key = {f"vlan-{v.vlan_id}": v for v in topo.vlans}
+    for lane in lanes:
+        if lane["layer"] != "endpoint":
+            continue
+        for node in lane["nodes"]:
+            vid, _vname, _sub = _vlan_of(node.get("addresses") or [], topo)
+            if vid is not None and f"vlan-{vid}" in vlan_of_key:
+                relations.append({
+                    "a": f"vlan-{vid}", "b": node["key"], "kind": "contains",
+                    "detail": f"{node['key']}'s address sits inside VLAN {vid}",
+                })
+    relations.sort(key=lambda r: (r["kind"], r["a"], r["b"]))
+
     return {
         "lanes": lanes,
+        "relations": relations,
         "links": [{
             "id": l.link_key, "a": l.a_device, "b": l.b_device,
             "a_iface": l.a_interface, "b_iface": l.b_interface,

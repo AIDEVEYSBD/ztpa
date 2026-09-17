@@ -217,7 +217,7 @@ export function asApiError(e: unknown): ApiError {
  * plausible-looking empty payload, which is what made a dead database and a
  * clean estate render identically.
  */
-async function j<T>(url: string, init?: RequestInit): Promise<T> {
+async function j<T>(url: string, init?: RequestInit, attempt = 0): Promise<T> {
   let r: Response;
   try {
     r = await fetch(url, { cache: "no-store", ...init });
@@ -230,10 +230,35 @@ async function j<T>(url: string, init?: RequestInit): Promise<T> {
   try {
     return (await r.json()) as T;
   } catch {
-    // A 2xx whose body is not JSON means the proxy answered, not the API.
-    throw new ApiError(r.status, "The API returned a success status with a body that is not JSON.", url);
+    // A 2xx whose body is not JSON means the PROXY answered, not the API.
+    //
+    // On a scale-to-zero deployment this is the cold-start signature: the
+    // backend has no running replica, the platform's ingress answers the
+    // proxied request itself while it activates one, and its holding page is
+    // HTML with a 200. Reported as a parse failure this reads as "the API is
+    // broken" when the truth is "the API is not up yet", so it is retried a
+    // few times before it is believed -- and if it still will not parse, the
+    // message names the likely cause instead of only the symptom.
+    if (attempt < COLD_START_RETRIES) {
+      await sleep(COLD_START_BACKOFF_MS * 2 ** attempt);
+      return j<T>(url, init, attempt + 1);
+    }
+    throw new ApiError(
+      r.status,
+      "The API answered 200 with a body that is not JSON, " +
+        `${COLD_START_RETRIES + 1} times. On a scale-to-zero deployment this is what a cold ` +
+        "backend looks like: the platform's ingress is answering while it starts a replica. " +
+        "If it persists, the backend is not starting — check its logs.",
+      url,
+    );
   }
 }
+
+/** A cold backend takes seconds, not minutes; four tries over ~7s covers it
+ *  without making a genuinely broken API feel like a hang. */
+const COLD_START_RETRIES = 3;
+const COLD_START_BACKOFF_MS = 600;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
  * `/api/health` with its degraded fields. The backend's payload is additive, and
