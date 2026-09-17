@@ -76,7 +76,7 @@ import { Canvas, type FocusView } from "./topology/Canvas";
 import { FindingSidebar } from "./topology/FindingSidebar";
 import { HopPanel } from "./topology/HopPanel";
 import { Legend } from "./topology/Legend";
-import { CanvasKey } from "./topology/CanvasKey";
+import { CanvasKey, type KeyMode } from "./topology/CanvasKey";
 import { NodeDrawer } from "./topology/NodeDrawer";
 import { SearchBox } from "./topology/SearchBox";
 import {
@@ -350,6 +350,12 @@ export function ExplorerPanel({ snapshot, findings, findingsError, initialOverla
   // has not answered it. The button exists for the reverse trip: back to the
   // cables alone, which is the right picture when the question is resilience.
   const [showRelations, setShowRelations] = useState(true);
+  // Held HERE, not inside CanvasKey. The canvas cell is re-parented into the
+  // fullscreen portal, which remounts everything under it -- so local state
+  // would silently reset the key every time a reader went fullscreen, which is
+  // exactly where they are most likely to have just arranged it. Same reason
+  // `zoom` and `scrollMemo` live at this level.
+  const [keyMode, setKeyMode] = useState<KeyMode>("strip");
   const [matchIndex, setMatchIndex] = useState(0);
   const [searchFocusNonce, setSearchFocusNonce] = useState(0);
   const [focusRequest, setFocusRequest] = useState<{
@@ -1209,6 +1215,8 @@ export function ExplorerPanel({ snapshot, findings, findingsError, initialOverla
       <div className="relative min-w-0 flex-1">
         {canvas}
         <CanvasKey
+          mode={keyMode}
+          onMode={setKeyMode}
           tiers={[...new Set(links.map((l) => evidenceTier(l.evidence)))]}
           redundancy={[...redundancy.values()]}
           relations={relationLayer}

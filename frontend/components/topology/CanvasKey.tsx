@@ -25,14 +25,26 @@
  * partial-onboarding scenarios that is most of the key.
  */
 
-import { useState } from "react";
-import { ChevronDown, ChevronUp, EyeOff, Unlink } from "lucide-react";
+import { ChevronDown, ChevronUp, EyeOff, Minus, Unlink } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { EVIDENCE_COPY, RELATION_COPY, type EvidenceTier, type RelationLayer } from "./layout";
 import type { RedundancyBand, VlanBand } from "./palette";
 import { LineSample, PairSample, RelationSample } from "./Legend";
 
+/**
+ * How much of the key is showing.
+ *
+ *   min    a "Key" chip and nothing else, for a reader who wants the bottom-left
+ *          corner of the diagram back
+ *   strip  the marks, one row -- the default, because a key one click away is
+ *          not embedded in the viewer
+ *   open   the marks with their sentences, plus the VLAN bands
+ */
+export type KeyMode = "min" | "strip" | "open";
+
 export interface CanvasKeyProps {
+  mode: KeyMode;
+  onMode: (m: KeyMode) => void;
   /** Evidence tiers actually drawn on this canvas. */
   tiers: EvidenceTier[];
   redundancy: RedundancyBand[];
@@ -78,10 +90,10 @@ const SIM_CHIP = (
 
 export function CanvasKey(props: CanvasKeyProps) {
   const {
-    tiers, redundancy, relations, relationsVisible, vlanBands,
+    mode, onMode, tiers, redundancy, relations, relationsVisible, vlanBands,
     hasAggregated, hasHa, simulatedCount, unlinkedCount, darkLanes, showingHops,
   } = props;
-  const [open, setOpen] = useState(false);
+  const open = mode === "open";
 
   const structural = relationsVisible && !!relations && relations.lines.length > 0;
   // One swatch per distinct tint, not per group. The canvas cycles three tints
@@ -182,6 +194,23 @@ export function CanvasKey(props: CanvasKeyProps) {
 
   if (marks.length === 0) return null;
 
+  // Minimised: a chip, and nothing over the diagram. Still the same landmark
+  // region, so a reader who minimised it can find it again the same way.
+  if (mode === "min") {
+    return (
+      <aside role="region" aria-label="Canvas key" className="absolute bottom-2 left-2 z-[12]">
+        <button
+          type="button"
+          onClick={() => onMode("strip")}
+          title="Show the key to this diagram"
+          className="popover flex items-center gap-1.5 px-2 py-1 text-[9px] font-bold uppercase tracking-[0.08em] text-text3 hover:text-accent-fg"
+        >
+          <ChevronUp size={12} /> Key
+        </button>
+      </aside>
+    );
+  }
+
   return (
     <aside
       role="region"
@@ -194,22 +223,35 @@ export function CanvasKey(props: CanvasKeyProps) {
         open ? "max-h-[min(72%,420px)] w-[min(92%,330px)]" : "max-w-[min(94%,760px)]",
       )}
     >
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-        className="flex min-w-0 items-center gap-2 px-2 py-1 text-left hover:bg-surface-hover"
-      >
-        <span className="text-[9px] font-bold uppercase tracking-[0.08em] text-text3">Key</span>
-        {!open && (
-          <span className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1">
-            {marks.map((m) => <Mark key={m.key} mark={m.mark} label={m.label} title={m.title} />)}
+      {/* Two buttons, not one nested in another: expand and minimise are
+          different actions and a button inside a button is invalid markup. */}
+      <div className="flex min-w-0 items-center">
+        <button
+          type="button"
+          onClick={() => onMode(open ? "strip" : "open")}
+          aria-expanded={open}
+          className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1 text-left hover:bg-surface-hover"
+        >
+          <span className="text-[9px] font-bold uppercase tracking-[0.08em] text-text3">Key</span>
+          {!open && (
+            <span className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1">
+              {marks.map((m) => <Mark key={m.key} mark={m.mark} label={m.label} title={m.title} />)}
+            </span>
+          )}
+          <span className="ml-auto shrink-0 pl-1 text-text3">
+            {open ? <ChevronDown size={12} /> : <ChevronUp size={12} />}
           </span>
-        )}
-        <span className="ml-auto shrink-0 text-text3">
-          {open ? <ChevronDown size={12} /> : <ChevronUp size={12} />}
-        </span>
-      </button>
+        </button>
+        <button
+          type="button"
+          onClick={() => onMode("min")}
+          title="Minimise the key"
+          aria-label="Minimise the key"
+          className="shrink-0 border-l border-hair px-1.5 py-1 text-text3 hover:bg-surface-hover hover:text-accent-fg"
+        >
+          <Minus size={12} />
+        </button>
+      </div>
 
       {open && (
         <div className="zt-scroll min-h-0 overflow-y-auto border-t border-hair px-2 py-1">
