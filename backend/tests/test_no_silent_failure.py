@@ -811,6 +811,113 @@ def test_writing_a_scenario_says_which_dataset_the_engine_will_now_read(
     assert record.levelno == logging.INFO and record.scenario == "clean"
 
 
+def test_every_scenario_the_console_offers_has_a_builder() -> None:
+    """The dropdown is rendered from `SCENARIOS` and dispatched through
+    `_BUILDERS`, which are two lists. An id in the first and not the second is an
+    option an admin can pick that raises "unknown scenario" -- and the raise is
+    correct, so nothing else catches the drift."""
+    assert {s["id"] for s in scenarios.SCENARIOS} == set(scenarios._BUILDERS)
+
+
+def test_a_scenario_that_onboards_fewer_consoles_removes_the_rest(
+        sandbox_mock_dir: Path) -> None:
+    """The load-bearing half of `_write_dataset`.
+
+    `normalizers._load_optional` reads an ABSENT export as "this console is not
+    onboarded", so a file the previous scenario left behind onboards a console
+    the new one never asked for. That is not hypothetical: before the removal
+    existed, switching to `partial` showed one aggregator on the Sources screen
+    and a seven-console topology underneath it.
+    """
+    scenarios.write_scenario("demo")
+    on_disk = lambda: {f.name for f in sandbox_mock_dir.glob("*.json")} & set(scenarios.INFRA)
+    assert on_disk() == set(scenarios.INFRA), "demo onboards every console"
+
+    scenarios.write_scenario("partial")
+    assert on_disk() == {"algosec_topology_export.json"}
+    # ...and the policy half is untouched by the de-onboarding.
+    assert {f.name for f in sandbox_mock_dir.glob("*.json")} & set(scenarios.POLICY) \
+        == set(scenarios.POLICY)
+
+    scenarios.write_scenario("demo")
+    assert on_disk() == set(scenarios.INFRA), "switching back re-onboards them"
+
+
+def test_the_carrier_rung_buys_what_the_aggregator_cannot(
+        sandbox_mock_dir: Path) -> None:
+    """The middle rung's whole reason to exist, pinned as a number.
+
+    `partial` reports ZERO resilience findings -- not because the estate is
+    sound, but because an aggregator models enforcement points and nothing
+    upstream of them. Adding ONE read of the carrier portal (not an API, not an
+    agent) brings the circuits, and with them findings the firewall consoles
+    cannot hold: "N circuits ride one carrier" is a fact about the invoice.
+
+    Asserted as a strict inequality with a floor rather than an exact count, so
+    the claim survives an analyzer gaining a check but fails if the rung ever
+    stops buying anything -- which is the only way this scenario becomes a lie.
+    """
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    import seed_topology as st
+    from src.analyzers.resilience import assess
+    from src.estate import build
+    from src.normalizers import algosec_topology as n_algo, carrier as n_carrier
+    from src.normalizers.common import NormalizeResult
+    from src.topology import reconstruct
+
+    def findings(consoles):
+        est = build()
+        nr = NormalizeResult()
+        nr.extend(n_algo.normalize(st.algosec_topology.algosec_topology_export(est)))
+        if "carrier_portal" in consoles:
+            nr.extend(n_carrier.normalize(st.carrier.carrier_portal_export(est)))
+        topo = reconstruct(nr.devices, nr.interfaces, nr.links,
+                           nr.vlans, nr.subnets, nr.circuits)
+        return assess(topo).findings
+
+    alone = findings(scenarios._PARTIAL_CONSOLES)
+    plus = findings(scenarios._CARRIER_CONSOLES)
+
+    assert not alone, "an aggregator alone cannot see a circuit, so it cannot rate one"
+    assert len(plus) >= 5
+    assert sum(1 for f in plus if f.severity_band == "critical") >= 2
+    # The named one. If this title stops appearing the rung still has findings,
+    # but it has lost the one that no policy console could ever have produced.
+    assert any("carrier" in f.title.lower() for f in plus), \
+        f"no shared-carrier finding: {[f.title for f in plus]}"
+
+
+def test_partial_changes_only_the_coverage_not_the_policy(
+        sandbox_mock_dir: Path) -> None:
+    """The whole argument the pair exists to make. If the policy exports differ
+    between `demo` and `partial`, then a reviewer comparing the two is looking at
+    two estates and the comparison says nothing about coverage."""
+    scenarios.write_scenario("demo")
+    demo = {n: (sandbox_mock_dir / n).read_text() for n in scenarios.POLICY}
+    scenarios.write_scenario("partial")
+    assert {n: (sandbox_mock_dir / n).read_text() for n in scenarios.POLICY} == demo
+
+
+def test_scale_grows_the_topology_and_not_only_the_rule_table(
+        sandbox_mock_dir: Path) -> None:
+    """"At scale" answers "how long would this take on a real network". The
+    expensive half of that answer is the topology -- `bench_topology.py` measures
+    a per-device blast radius at O(V*(V+E)) -- so a scale dataset that grew 500
+    rules beside the stock thirteen-device estate benchmarked the cheap half."""
+    # Read through MERAKI, because that is the console that reports the access
+    # layer and a branch site IS an access-layer switch. AlgoSec would have
+    # answered the same number both times -- an aggregator sees the perimeter --
+    # which is a fact about coverage, not a fact about scale.
+    rows = lambda: sum(len(v) for v in json.loads(
+        (sandbox_mock_dir / "meraki_export.json").read_text()).values() if isinstance(v, list))
+    scenarios.write_scenario("demo")
+    demo_rows = rows()
+
+    scenarios.write_scenario("scale", 500)
+    assert rows() > demo_rows * 2
+
+
 def test_an_unknown_scenario_raises_and_leaves_the_dataset_alone(
         npr_logs: pytest.LogCaptureFixture, sandbox_mock_dir: Path) -> None:
     with pytest.raises(ValueError, match="unknown scenario"):

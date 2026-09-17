@@ -165,12 +165,38 @@ def analyze(records: list[PolicyRecord], g: nx.DiGraph, alias_map: dict[str, str
                     source_cidrs=later.source_cidrs,
                 )
                 dest_display = g.nodes[d]["display"] if d in g else d
+                # THE VOCABULARY IS THE INDUSTRY'S, NOT OURS.
+                #
+                # These used to read "Dead deny" and "Dead allow". A reviewer
+                # told us plainly that "dead allow" is nowhere -- and they are
+                # right: it is not a term anyone uses, so it cannot be looked up,
+                # cannot be matched against what AlgoSec or Tufin or Panorama
+                # calls the same condition, and makes the product sound like it
+                # invented its own theory of firewall policy.
+                #
+                # Al-Shaer & Hamed's anomaly classification is the vocabulary
+                # every serious policy tool uses, and both cases here land
+                # cleanly inside it:
+                #
+                #   SHADOWED   an earlier rule matches all of this rule's packets
+                #              with a DIFFERENT action, so this rule never fires.
+                #              A deny sitting under a broader allow is the
+                #              textbook case, and the dangerous one -- the
+                #              operator believes traffic is blocked.
+                #   REDUNDANT  an earlier rule already covers this one with the
+                #              SAME action, so removing it changes nothing.
+                #              Clutter, not exposure.
+                #
+                # The distinction is the action difference, which is exactly what
+                # this branch tests, so the two terms map onto it one-to-one.
                 if later.action == "deny":
-                    title = f"Dead deny on {dest_display}: blocked traffic is actually allowed"
+                    title = (f"Shadowed rule {later.raw_ref}: deny to {dest_display} never fires "
+                             f"(an earlier allow already permits it)")
                     reason = (f"deny {later.source} -> {dest_display} ({later.service}) never fires; earlier "
                               f"allow {earlier.raw_ref} ({earlier.source}) already permits it")
                 else:
-                    title = f"Dead allow on {dest_display}: redundant rule never adds anything"
+                    title = (f"Redundant rule {later.raw_ref}: allow to {dest_display} is already "
+                             f"covered by {earlier.raw_ref}")
                     reason = (f"allow {later.source} -> {dest_display} ({later.service}) is redundant; earlier "
                               f"rule {earlier.raw_ref} ({earlier.source}) already covers it")
                 findings.append(Finding(
@@ -179,6 +205,10 @@ def analyze(records: list[PolicyRecord], g: nx.DiGraph, alias_map: dict[str, str
                     severity=sc["severity"], severity_band=band(sc["severity"]), forced_critical=False,
                     signals={
                         "shadowed_ref": later.raw_ref, "shadowing_ref": earlier.raw_ref, "reason": reason,
+                        # Al-Shaer & Hamed's class, carried as data so the UI
+                        # groups and filters on the industry term instead of
+                        # pattern-matching our prose.
+                        "anomaly_class": "shadowed" if later.action == "deny" else "redundant",
                         "shadowed_action": later.action, "shadowing_action": earlier.action,
                         "dest": d, "service": later.service, "tool": tool,
                         # The resolved facts the coverage verdict was computed on,

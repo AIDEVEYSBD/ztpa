@@ -2,32 +2,54 @@
 
 import { useSession } from "next-auth/react";
 import {
-  Network, ListChecks, GitBranch, MessageSquare, FileText, Plug, Fingerprint,
-  LogOut, Database, History, Rocket, SlidersHorizontal, BarChart3, ScrollText, Cog,
+  Network, ListChecks, GitBranch, MessageSquare, FileText, Plug,
+  LogOut, History, Rocket, SlidersHorizontal, BarChart3, ScrollText, Cog,
+  Boxes,
 } from "lucide-react";
 import { Brand, cn } from "./ui";
 import { ThemeToggle } from "./theme";
 
-export type ScreenId = "map" | "risks" | "change" | "staging" | "ask" | "report" | "connectors" | "assets" | "ingest" | "snapshots" | "tools" | "metrics" | "audit" | "config";
+export type ScreenId = "explorer" | "inventory" | "sources" | "risks" | "change" | "staging" | "ask" | "report" | "connectors" | "snapshots" | "tools" | "metrics" | "audit" | "config";
 
 type NavDef = { id: ScreenId; label: string; icon: typeof Network };
 
+// Ordered as the review is actually conducted, which is also the order the
+// brief asks for ("Order of tables: Sources, assets"):
+//
+//   Sources    what we read, and from which rung of the collection ladder
+//   Inventory  what that found, and where each thing was found
+//   Topology   what the network looks like, and what fails with what
+//   Risk       what is wrong, then the gate, then staging
+//
+// The console used to open on the reachability graph -- step 3 of that process
+// with the first two missing, so a reviewer was shown conclusions before the
+// evidence and had no way to ask where any of it came from.
 const CONSOLE: NavDef[] = [
-  { id: "map", label: "Network Map", icon: Network },
+  // ONE MAP, NOT TWO. "Topology" drew the physical estate and "Reachability"
+  // drew the cross-tool policy path, and they were two views of one network
+  // sitting in two nav entries — so a user had to know which one held the
+  // answer before they could look for it. They are one canvas now, with the
+  // policy path traced ACROSS the physical lanes, which only became possible
+  // once every endpoint had a lane to be drawn in.
+  { id: "explorer", label: "Explorer", icon: Network },
+  // ONE INVENTORY, NOT TWO. "Assets & Identity" rendered a second, narrower
+  // copy of this table; its only unique content was the duplicate-identity
+  // review queue, which now lives inside this screen.
+  { id: "inventory", label: "Inventory", icon: Boxes },
+  { id: "sources", label: "Sources", icon: Plug },
   { id: "risks", label: "Risk To-Do", icon: ListChecks },
   { id: "change", label: "Change Gate", icon: GitBranch },
-  { id: "staging", label: "Staging Area", icon: Rocket },
+  { id: "staging", label: "Implementation Queue", icon: Rocket },
   { id: "ask", label: "Ask the Network", icon: MessageSquare },
   { id: "report", label: "Posture Report", icon: FileText },
 ];
 const REFERENCE: NavDef[] = [
   { id: "connectors", label: "Connectors", icon: Plug },
-  { id: "assets", label: "Assets & Identity", icon: Fingerprint },
 ];
+
 const ADMIN: NavDef[] = [
   { id: "tools", label: "Tools & Usage", icon: SlidersHorizontal },
   { id: "metrics", label: "Metrics & Cost", icon: BarChart3 },
-  { id: "ingest", label: "Ingested data", icon: Database },
   { id: "snapshots", label: "Snapshots", icon: History },
   //
   // There is no "Manage users" entry here any more, and there is no `users`

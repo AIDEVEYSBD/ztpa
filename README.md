@@ -21,12 +21,15 @@ One unified, cross-tool view of network-policy risk — assembled from **AlgoSec
 >   bundled demo that is every chain there is.** An abstract node may start or end a path but
 >   never sit in the middle: reaching hosts inside a range does not let you originate as that
 >   range, and CIDR-membership expansion — which would put the concrete hosts inside the range
->   in as the real pivots — is not built (ENGINE.md §10.2, Phase-3 scope). The seeded 3-tool
->   chain pivots through `internal-app`, an AlgoSec network object `10.40.0.0/16`, so the
->   engine declines it and reports **0** cross-tool paths. `scripts/verify_engine.py` asserts
->   that state on purpose (`P5`); `DEMO.md` §2 says what to present instead. Refusing to route
->   an attack path through an address range is the correct behaviour — it is *also* the reason
->   the flagship number is currently zero, and both halves belong in the same sentence.
+>   in as the real pivots — is not built (ENGINE.md §10.2, Phase-3 scope). The rule is still in
+>   force and still bites: the demo's `internal-app` (`10.40.0.0/16`) is refused as a pivot, and
+>   `0.0.0.0/0 → 10.0.0.0/8 → app-segment → db-prod-01` is a complete internet-to-PCI chain of
+>   real edges that the engine declines in full because every hop of it is a range. What the
+>   fixture supplies instead is CONCRETE hosts inside those segments that a second tool
+>   independently observes, so the two reported paths pivot through machines — **2** cross-tool
+>   paths, walked hop by hop by `scripts/verify_engine.py` (`P5`), with the counterfactual that
+>   deletes them asserted alongside. Data, not a relaxed rule. `docs/DEMO.md` beat 6 presents
+>   them; the under-counting above is still the honest caveat to state beside the number.
 > - **However the export spells the internet.** The search starts from *every* node the graph
 >   classifies as internet — `0.0.0.0/0`, `any`, `ANY-EXTERNAL`, a named group that
 >   dereferences to public space — because the entry set is derived from **resolved address
@@ -163,7 +166,8 @@ docs/              ENGINE.md       # core logic, calculations & math (the determ
                    SSO.md          # AutoX OIDC integration + the app-role model
                    DEPLOY.md       # Render + Vercel + Neon deployment
                    PROD-READINESS-AUDIT.md   # the standing gap register these docs are held to
-tasks.py  DEMO.md  README.md      # tasks.py = cross-platform runner (no make required)
+                   DEMO.md         # the ten-minute demo script, beat by beat
+tasks.py  README.md                # tasks.py = cross-platform runner (no make required)
 ```
 
 ---

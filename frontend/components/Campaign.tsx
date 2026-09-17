@@ -67,13 +67,13 @@ export function CampaignPanel({ readOnly = false, onNavigate }: { readOnly?: boo
         <div className="min-w-0 flex-1">
           <div className="text-sm font-bold">Remediation campaign</div>
           <div className="text-xs text-muted">
-            The agent plans a worst-first fix sequence and re-simulates after every step, proving it drives the
+            The agent plans a worst-first fix sequence and re-analyses after every step, proving it drives the
             critical count down. Nothing is applied — send the proven fixes to the Change Gate to act on them.
           </div>
         </div>
         {!readOnly && (
           <button onClick={run} disabled={loading || initial} className="btn-primary shrink-0 !py-2 text-xs">
-            {loading ? <Spinner label="Planning + re-simulating each fix…" />
+            {loading ? <Spinner label="Planning + re-analysing each fix…" />
               : initial ? <Spinner label="Loading…" />
               : <><Sparkles size={14} /> {plan ? "Re-plan" : "Plan the campaign"}</>}
           </button>

@@ -42,14 +42,16 @@ db-prod-01`, a path across **3 tools** into PCI/customer data that **no single c
 show**. Each hop is labelled with the tool that enforces it.
 - *Where:* `backend/src/graph/reachability.py`, `backend/src/analyzers/path_trace.py`.
 - ⚠️ **On the bundled fixture this detector currently reports ZERO findings, by design.** That
-  seeded chain pivots through `internal-app`, an AlgoSec network object `10.40.0.0/16`, and
   `_valid_traversal` refuses to pivot *through* an abstract node — a subnet is an address range,
-  not a machine you can land on. The path returns when CIDR-membership expansion lands (Phase 3,
-  [ENGINE.md §10.2](ENGINE.md)); until then `scripts/verify_engine.py` asserts the zero on
-  purpose (`P5`), `docs/REMEDIATION-LOG.md` records when and why it changed, and `DEMO.md` §2 says
-  what to present instead. **Do not quote a cross-tool-path count from the demo as evidence the
-  detector works** — build the case on `over_permissive` (100/critical/forced, RDP internet →
-  `db-prod-01`) and the QUIC blind spot (78/critical/forced) instead.
+  not a machine you can land on — and `internal-app` (`10.40.0.0/16`) is still refused today.
+  The demo reports **two** cross-tool paths anyway, because the fixture supplies concrete hosts
+  inside those segments that a second tool independently observes (`internal-app-01`,
+  `data-node-01`): the rule was never relaxed, the DATA changed. `scripts/verify_engine.py`
+  walks both hop by hop (`P5`), asserts no pivot on either is abstract, and asserts that the
+  all-ranges chain through the /16 still exists as edges and is still declined. CIDR-membership
+  expansion remains unbuilt (Phase 3, [ENGINE.md §10.2](ENGINE.md)), so multi-hop paths are still
+  UNDER-counted — which is the honest caveat to state beside the two, and the reason `P5` also
+  pins that cutting a cited grant removes the ACCESS and not merely the finding.
 - ✅ *Entry point is address space, not a string.* The search starts from **every** node the
   graph classifies as internet — `reachability.internet_entries` reads the zone `graph.build`
   stamped from each node's **resolved** `ip_set`, so `0.0.0.0/0`, `any`, `ANY-EXTERNAL` and a
@@ -313,8 +315,8 @@ byte-identically) rather than a total.
   and two more gaps that fail toward a clean bill of health (a malformed address object
   scoring E = 0.1 so an internet-to-PCI grant produces no finding; `l7_app` inferred from the
   first port interval, so *widening* a service deletes the QUIC blind-spot finding).
-  **The most consequential correction is that §1.3's flagship detector currently reports
-  zero on the bundled fixture** — the seeded chain's only pivot is a `/16` network object and
-  the traversal rule correctly refuses it. That was recorded in `REMEDIATION-LOG.md` when it
-  happened and pinned by `verify_engine.py`, but `README.md`, `DEMO.md` and this file all went
-  on promising the animation. They no longer do.
+  **§1.3's flagship detector once reported zero on the bundled fixture** — the seeded chain's
+  only pivot was a `/16` network object and the traversal rule correctly refused it, while
+  `README.md`, `DEMO.md` and this file went on promising the animation. That gap is closed in
+  both directions now: the fixture carries concrete pivots that two tools each observe, the
+  detector reports two paths, and the traversal rule is unchanged and still asserted.

@@ -29,6 +29,7 @@ from src.identity import (
     canonical_ip, context_of, is_sentinel_ip, resolve_identities,
 )
 from src.normalizers.common import ObservedEntity
+from src.sources import HOST_DESCRIBING_TOOLS
 
 
 def _ent(name: str, tool: str = "wiz", *, ip: str | None = None, cidr: str | None = None,
@@ -343,16 +344,66 @@ def test_six_names_on_one_address_do_not_collapse_the_estate():
 
 
 @pytest.mark.parametrize("count,expect_union", [
-    (MAX_IP_FANOUT, True),        # the widest fan-out one genuine host can produce
-    (MAX_IP_FANOUT + 1, False),   # one more name than any single host can explain
+    (len(HOST_DESCRIBING_TOOLS), True),       # one name per tool: the widest a host can produce
+    (len(HOST_DESCRIBING_TOOLS) + 1, False),  # one more name than any single host can explain
 ])
 def test_fanout_cap_boundary(count, expect_union):
-    entities = [_ent(f"host-{i}", "wiz", ip="10.9.9.9", context="vpc-a") for i in range(count)]
+    """The cap is one name PER NAMING TOOL, not a fixed number.
+
+    Each entity here carries a DIFFERENT tool, which is what makes the union
+    arm reachable at all: a host produces at most one name per tool that
+    observes it, so N names are only explicable by N tools. The extra name in
+    the second case is a second name from a tool that already named this
+    address, which no single host can account for.
+    """
+    tools = list(HOST_DESCRIBING_TOOLS)
+    entities = [
+        _ent(f"host-{i}", tools[i % len(tools)], ip="10.9.9.9", context="vpc-a")
+        for i in range(count)
+    ]
 
     r = resolve_identities(entities)
 
     assert (len(r.assets) == 1) is expect_union
     assert (r.suppressed_merges == 0) is expect_union
+
+
+def test_many_names_from_one_tool_is_fanout_however_few():
+    """Two names on one address from ONE tool is a shared address, not a host.
+
+    This is stricter than the old fixed cap of 3 and deliberately so. A tool
+    holds one record per host; when it hands us two names for one address, the
+    address is a cluster VIP, a NAT pool or an unresolved-DNS default. Withheld
+    means "a human confirms", not "the data is dropped" — the fail-safe
+    direction for a claim about which two things are the same machine.
+    """
+    r = resolve_identities([
+        _ent("vip-a", "wiz", ip="10.9.9.9", context="vpc-a"),
+        _ent("vip-b", "wiz", ip="10.9.9.9", context="vpc-a"),
+    ])
+
+    assert len(r.assets) == 2
+    assert r.suppressed_by_reason == {"ip_fanout": 1}
+
+
+def test_four_tools_naming_one_host_now_merge():
+    """The bug the fixed cap of 3 caused, pinned.
+
+    With a hardcoded MAX_IP_FANOUT = 3, a host observed by four tools was
+    withheld as `ip_fanout` — the asset silently split in two and any cross-tool
+    path through it vanished from the findings, with nothing reporting a
+    problem. Four tools, four names, one address is exactly what good coverage
+    looks like.
+    """
+    r = resolve_identities([
+        _ent("app-server-07", "algosec", ip="10.30.7.7", context="vpc-1"),
+        _ent("appsrv-07", "wiz", ip="10.30.7.7", context="vpc-1"),
+        _ent("app07", "guardicore", ip="10.30.7.7", context="vpc-1"),
+        _ent("APP-SERVER-07.corp", "fortimanager", ip="10.30.7.7", context="vpc-1"),
+    ])
+
+    assert len(r.assets) == 1
+    assert r.suppressed_merges == 0
 
 
 def test_one_name_seen_by_many_tools_is_not_fanout():
@@ -578,8 +629,12 @@ def test_suppression_reasons_are_published_and_exhaustive():
         _ent("mismatch-b", "wiz", ip="10.1.0.1", context="vpc-b"),
         _ent("unscoped-a", "wiz", ip="10.2.0.1"),
         _ent("unscoped-b", "wiz", ip="10.2.0.1", context="vpc-a"),
+        # Two DIFFERENT tools: one name each is within the fan-out cap, so the
+        # env guard is the one that gets to refuse this pair. Both from one tool
+        # would (correctly) be caught as fan-out first and this arm would never
+        # be exercised.
         _ent("env-a", "wiz", ip="10.3.0.1", context="vpc-a", tags=("prod",)),
-        _ent("env-b", "wiz", ip="10.3.0.1", context="vpc-a", tags=("dev",)),
+        _ent("env-b", "algosec", ip="10.3.0.1", context="vpc-a", tags=("dev",)),
         _ent("sentinel-a", "wiz", ip="127.0.0.1", context="vpc-a"),
         _ent("sentinel-b", "wiz", ip="127.0.0.1", context="vpc-a"),
     ] + [_ent(f"vip-{i}", "wiz", ip="10.4.0.1", context="vpc-a") for i in range(4)]

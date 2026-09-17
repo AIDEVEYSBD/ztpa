@@ -16,7 +16,35 @@ from .netaddr import ANY_V4, is_any, parse_net
 
 Tag = str  # e.g. "pci", "customer-data", "crown-jewel", "prod", "dev", "dmz"
 
-SourceTool = Literal["algosec", "guardicore", "wiz", "sd_wan", "sd_lan"]
+# The tools this build ships a normalizer for. Hand-written rather than derived,
+# because a pydantic Literal has to exist at class-definition time and `sources`
+# imports FROM this module -- but `test_source_registry.py` asserts these members
+# are exactly `sources.TOOL_KEYS`, so the two cannot drift.
+#
+# THIS IS THE CATALOGUE, NOT THE CONSTRAINT. `PolicyRecord.source_tool` is a
+# plain `str`, deliberately, and the reason is a product feature rather than
+# laxity: an operator can bring their own source via a declarative
+# `SourceProfile` (normalizers/profile.py), and a profile IS a registration --
+# the operator has told us, in their own words, what this source is called.
+#
+# The closed Literal used to be enforced here, and the way that played out is
+# instructive. `profile.py` knew records had to satisfy it, so a record from any
+# tool outside the list was relabelled `source_tool="algosec"` to make the
+# insert succeed. Bringing your own connector therefore did not fail -- it
+# ingested cleanly, the counts looked right, and every provenance claim
+# downstream (the source badge on a finding, the "seen by" column, the rule
+# reference an operator would click to go verify something in their own console,
+# the audit trail) pointed at a different vendor's product.
+#
+# A constraint that a shipped feature has to lie to satisfy is a bug in the
+# constraint. So the vocabulary is open, the tool is carried as given, and
+# `sources.BY_KEY` decides only whether we can say anything ABOUT it -- an
+# unrecognised tool renders as a custom source with the narrowest assumed
+# scope, never as a tool it is not.
+SourceTool = Literal[
+    "algosec", "carrier_portal", "catalyst_center", "fortigate", "fortimanager",
+    "guardicore", "junos_space", "meraki", "panorama", "sd_lan", "sd_wan", "wiz",
+]
 FindingType = Literal[
     "over_permissive", "cidr_overlap", "shadowed_rule", "cross_tool_path", "transport_exposure",
 ]
@@ -38,7 +66,7 @@ class PolicyRecord(BaseModel):
     """
 
     id: str
-    source_tool: SourceTool
+    source_tool: str                                  # a TOOL_KEYS member, or a BYO profile's own name
     raw_ref: str                                      # rule id in the source tool
     source: str                                       # CIDR or identity/label
     source_kind: Literal["cidr", "identity"]
@@ -221,3 +249,322 @@ class Snapshot(BaseModel):
     label: Optional[str] = None
     status: Literal["running", "complete", "failed"] = "complete"
     notes: Optional[str] = None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# THE INFRASTRUCTURE LAYER
+#
+# Everything above this line describes POLICY: who may reach what, and the
+# findings that fall out of it. Everything below describes the NETWORK the
+# policy runs on -- devices, the interfaces they terminate, the links between
+# them, the segments those links carry, and the circuits that reach the
+# internet.
+#
+# These are two different graphs and they are kept apart on purpose.
+# `graph.reachability` traverses POLICY edges only. A topology link is a
+# statement about cabling and adjacency; it is NOT a grant, and letting one
+# become the other would let the engine report reachability that no rule
+# permits. `verify_engine` asserts `cross_tool_paths` is byte-identical with
+# and without any of the models below present.
+#
+# The unifying rule of this whole layer: EVERY fact carries the tool that
+# observed it, the TIER that tool sits at, and the raw reference it came from.
+# A device we were told about by an aggregator and a device we logged into are
+# not the same quality of fact, and the UI is required to say which it has.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Where a source sits in the collection ladder. Stated as its own axis because
+# it decides how much a fact is worth, not merely where it came from:
+#
+#   aggregator         -- a cross-vendor console (AlgoSec, Panorama, FortiManager,
+#                         Wiz). Broad, and second-hand: it reports what it was
+#                         told by the devices it manages, which is a subset of
+#                         what those devices know. AlgoSec in particular models
+#                         ENFORCEMENT POINTS and their policy -- it is not a
+#                         network-inventory product and will not enumerate an
+#                         access switch or a workstation.
+#   management_console -- a vendor's own manager for its own fleet (Catalyst
+#                         Center, Meraki Dashboard, Mist, FMC). Deep on its
+#                         vendor, blind to every other.
+#   device             -- read off the box itself (FortiGate REST, PAN-OS op,
+#                         NETCONF). The most authoritative and the least
+#                         scalable.
+#
+# The ladder is the answer to partial onboarding: an estate whose AlgoSec covers
+# only the perimeter still yields a whole picture if the console tier fills the
+# campus, and the picture says, per node, which rung it came from.
+SourceTier = Literal["aggregator", "management_console", "device"]
+
+# What a box IS. `l2_switch` and `l3_switch` are DISTINCT members rather than
+# one "switch" with a flag: whether a switch routes decides whether inter-VLAN
+# traffic is a policy decision on that device or a trip to the gateway, and a
+# diagram that cannot show the difference cannot be used to reason about either.
+DeviceRole = Literal[
+    "modem", "router", "firewall", "l3_switch", "l2_switch", "hub", "bridge",
+    "load_balancer", "wireless_ap", "server", "workstation", "virtual_appliance",
+    "unknown",
+]
+
+# The lanes of the layered picture, ordered from the outside in. This is a
+# DERIVED property of a device's position in the link graph, not a label a
+# source hands us -- see `topology.reconstruct.assign_layers`.
+TopologyLayer = Literal[
+    "internet",    # the boundary itself; never a device we own
+    "circuit",     # the carrier service (MPLS / P2P / ISDN / broadband / ...)
+    "modem",       # the CPE terminating a circuit
+    "edge",        # edge / gateway routers
+    "perimeter",   # perimeter firewalls
+    "core",        # core + distribution, where L3 switching happens
+    "access",      # access-layer L2 switches, APs
+    "segment",     # VLANs and subnets
+    "endpoint",    # hosts, workloads, appliances
+]
+
+# How we know a link exists.
+#
+# THERE IS DELIBERATELY NO "inferred" MEMBER, and there must never be one.
+# Every value here names a specific observation: a neighbour protocol reported
+# it, a management API returned it as topology, a config declared it, a routing
+# table pointed through it, or two interfaces provably share an address block.
+# A line drawn between two boxes because the picture looked incomplete without
+# it is a claim about someone's cabling that nobody made, and this product's
+# entire moat is that it does not do that. The database CHECK mirrors this
+# tuple, so an unevidenced link cannot be stored -- and therefore cannot be
+# drawn -- rather than relying on a reviewer to catch it.
+LinkEvidence = Literal[
+    "lldp",           # LLDP neighbour table
+    "cdp",            # CDP neighbour table
+    "api_topology",   # the console returned this adjacency as topology
+    "config",         # a config stanza names the peer (HA pair, LAG member)
+    "routing",        # a route's next hop resolves to the peer's interface
+    "declared",       # an operator or export asserted it outright
+    "containment",    # two interfaces hold addresses in one block: an OBSERVED
+                      # L3 adjacency, which is weaker than a cable and is
+                      # labelled as such, not a guess at one
+]
+
+CircuitTechnology = Literal[
+    "mpls", "p2p", "isdn", "broadband", "fiber", "lte", "satellite", "unknown",
+]
+
+
+class Provenance(BaseModel):
+    """Who told us, from which rung, and what they called it.
+
+    Carried by every infrastructure fact. `raw_ref` is the identifier in the
+    source system -- the interface id, the device serial, the VLAN's own name --
+    so any row on any screen can be taken back to the console it came from.
+    """
+
+    source_tool: str
+    source_tier: SourceTier
+    raw_ref: str
+    # True when this came from a seeded export rather than a live connector.
+    # Read from the `sources.config.mode` the persistence layer already writes
+    # and which, until now, nothing read back. A client-facing screen has to be
+    # able to say "simulated" without the operator having to remember.
+    simulated: bool = False
+
+
+class NetDevice(BaseModel):
+    """One box. Physical or virtual, ours or the carrier's."""
+
+    device_key: str                                   # canonical, stable
+    name: str
+    role: DeviceRole = "unknown"
+    # Provenance of the ROLE, kept separate from provenance of the device,
+    # because they genuinely differ: FortiManager tells us a FortiGate is a
+    # firewall (declared), while a box that merely holds SVIs and forwards
+    # between them is called an l3_switch by US (derived). The DB CHECK refuses
+    # a named role whose source is "unknown", so a role can never appear
+    # without a story behind it.
+    role_source: Literal["declared", "derived", "unknown"] = "unknown"
+    role_reason: str = ""
+    vendor: Optional[str] = None                      # "Cisco", "Fortinet", ...
+    model: Optional[str] = None                       # "ISR4331", "FortiGate-100F"
+    os_version: Optional[str] = None
+    serial: Optional[str] = None
+    mgmt_ip: Optional[str] = None
+    site: Optional[str] = None
+    # HA membership. `ha_group` is the pair's name; two devices sharing one are
+    # drawn bracketed. A pair whose members share a failure domain is a finding,
+    # not a reassurance -- see `analyzers.resilience`.
+    ha_group: Optional[str] = None
+    ha_role: Optional[str] = None                     # primary | secondary | active | passive
+    # Assigned by `topology.reconstruct.assign_layers`, never by a source.
+    # `layer is None` and `layer_source == "unknown"` are the SAME state and the
+    # DB CHECK enforces that they move together: a node we could not place must
+    # say so on both columns or neither, so "unplaced" can never be silently
+    # rendered as a lane.
+    layer: Optional[TopologyLayer] = None
+    layer_source: Literal["declared", "derived", "unknown"] = "unknown"
+    layer_reason: str = ""
+    tags: list[Tag] = Field(default_factory=list)
+    # Every console that saw this, once the views are merged. `provenance` above
+    # is the winning one; this is the whole list, because "where did we find it"
+    # has three answers for a firewall that FortiManager, the FortiGate itself
+    # and AlgoSec all describe. Entries are {tool, tier, raw_ref}, sorted.
+    observed_by: list[dict] = Field(default_factory=list)
+    # Fields two sources STATED differently, each naming both values and both
+    # tools. Recorded rather than resolved away: two consoles disagreeing about a
+    # device is a fact about the estate's record-keeping -- a stale entry, or a
+    # box replaced without the aggregator being told -- and the operator is the
+    # one who can act on it.
+    conflicts: list[dict] = Field(default_factory=list)
+    provenance: Provenance
+
+
+class NetInterface(BaseModel):
+    """One port, SVI or logical interface on a device."""
+
+    interface_key: str                                # f"{device_key}:{name}"
+    device_key: str
+    name: str                                         # "port5", "port5.30", "Gi0/0/1", "vlan30"
+    description: Optional[str] = None
+    addresses: list[str] = Field(default_factory=list)   # canonical CIDRs ON the interface
+    # Everything reachable THROUGH this interface, when the source says so.
+    # AlgoSec's "IPs behind interface" is the richest instance of this and is
+    # the single most useful field available for reconstructing topology from a
+    # policy product.
+    networks_behind: list[str] = Field(default_factory=list)
+    vlan_id: Optional[int] = None
+    zone: Optional[str] = None
+    # NULL MEANS NOT REPORTED. It must never default to False: "the source did
+    # not tell us whether this port is up" and "this port is down" are different
+    # facts, and a diagram that greys out every un-reported port invents an
+    # outage. Three-valued at the column, not merely in the component.
+    admin_up: Optional[bool] = None
+    oper_up: Optional[bool] = None
+    speed_mbps: Optional[int] = None
+    lag_group: Optional[str] = None                   # port-channel / aggregate name
+    mac: Optional[str] = None
+    # Neighbour as the box itself reported it (LLDP/CDP). Present only when a
+    # neighbour protocol was actually read.
+    neighbor_device: Optional[str] = None
+    neighbor_interface: Optional[str] = None
+    # Every console that saw this, once the views are merged. `provenance` above
+    # is the winning one; this is the whole list, because "where did we find it"
+    # has three answers for a firewall that FortiManager, the FortiGate itself
+    # and AlgoSec all describe. Entries are {tool, tier, raw_ref}, sorted.
+    observed_by: list[dict] = Field(default_factory=list)
+    # Fields two sources STATED differently, each naming both values and both
+    # tools. Recorded rather than resolved away: two consoles disagreeing about a
+    # device is a fact about the estate's record-keeping -- a stale entry, or a
+    # box replaced without the aggregator being told -- and the operator is the
+    # one who can act on it.
+    conflicts: list[dict] = Field(default_factory=list)
+    provenance: Provenance
+
+
+class NetLink(BaseModel):
+    """An adjacency between two devices, and what makes us believe in it."""
+
+    link_key: str
+    a_device: str
+    a_interface: Optional[str] = None
+    b_device: str
+    b_interface: Optional[str] = None
+    evidence: LinkEvidence
+    evidence_detail: str = ""                         # the specific observation, quoted
+    # Links in one `redundant_group` are alternate paths for the same purpose --
+    # the criss-cross uplinks between a core pair and an access switch. Drawn
+    # tinted together, and read by the SPOF analyzer, which must not report a
+    # bridge that has a live sibling.
+    redundant_group: Optional[str] = None
+    aggregated: bool = False                          # a LAG / port-channel
+    member_count: int = 1
+    # Every console that saw this, once the views are merged. `provenance` above
+    # is the winning one; this is the whole list, because "where did we find it"
+    # has three answers for a firewall that FortiManager, the FortiGate itself
+    # and AlgoSec all describe. Entries are {tool, tier, raw_ref}, sorted.
+    observed_by: list[dict] = Field(default_factory=list)
+    # Fields two sources STATED differently, each naming both values and both
+    # tools. Recorded rather than resolved away: two consoles disagreeing about a
+    # device is a fact about the estate's record-keeping -- a stale entry, or a
+    # box replaced without the aggregator being told -- and the operator is the
+    # one who can act on it.
+    conflicts: list[dict] = Field(default_factory=list)
+    provenance: Provenance
+
+
+class Vlan(BaseModel):
+    """A broadcast domain, and the subnets carried on it."""
+
+    vlan_id: int
+    name: Optional[str] = None
+    subnets: list[str] = Field(default_factory=list)
+    gateways: list[str] = Field(default_factory=list)   # SVI / FHRP addresses
+    device_keys: list[str] = Field(default_factory=list)
+    tags: list[Tag] = Field(default_factory=list)
+    provenance: Provenance
+
+
+class Subnet(BaseModel):
+    """An addressable block, and where it lives."""
+
+    cidr: str
+    name: Optional[str] = None
+    vlan_id: Optional[int] = None
+    gateways: list[str] = Field(default_factory=list)
+    device_keys: list[str] = Field(default_factory=list)
+    zone: Optional[str] = None
+    tags: list[Tag] = Field(default_factory=list)
+    provenance: Provenance
+
+    @field_validator("cidr", mode="after")
+    @classmethod
+    def _canonical(cls, v: str) -> str:
+        net = parse_net(v)
+        return str(net) if net is not None else v
+
+
+class Circuit(BaseModel):
+    """One path to the outside world.
+
+    Modelled separately from the device that terminates it because the whole
+    point of the redundancy question is that two circuits can share a modem, a
+    router, a building entry or -- most expensively -- a carrier, and each of
+    those is a different single point of failure. A circuit that is merely an
+    attribute of an interface cannot express any of them.
+    """
+
+    circuit_id: str
+    provider: Optional[str] = None                    # the carrier, e.g. "Airtel"
+    technology: CircuitTechnology = "unknown"
+    bandwidth_mbps: Optional[int] = None
+    public_ips: list[str] = Field(default_factory=list)
+    device_key: Optional[str] = None                  # the CPE terminating it
+    interface: Optional[str] = None
+    state: Literal["up", "down", "standby", "unknown"] = "unknown"
+    provenance: Provenance
+
+
+class Topology(BaseModel):
+    """The reconstructed infrastructure view of one snapshot."""
+
+    devices: list[NetDevice] = Field(default_factory=list)
+    interfaces: list[NetInterface] = Field(default_factory=list)
+    links: list[NetLink] = Field(default_factory=list)
+    vlans: list[Vlan] = Field(default_factory=list)
+    subnets: list[Subnet] = Field(default_factory=list)
+    circuits: list[Circuit] = Field(default_factory=list)
+    # Layers we have NO observed node for, each with the reason and the concrete
+    # API that would fill it. Rendered as a named absence -- never as a ghost
+    # device, and never silently omitted, because a lane that simply is not
+    # drawn reads as a lane that does not exist.
+    unobserved_layers: list[dict] = Field(default_factory=list)
+    # Fields two consoles STATED differently while describing one entity. Not an
+    # error and not resolved away: it is a fact about the estate's own
+    # record-keeping -- a stale entry in one console, or a box replaced without
+    # the aggregator being told -- and it is exactly the kind of thing a review
+    # is for. The merge picks a winner by tier so the picture can be drawn; this
+    # is the audit trail of what it had to pick between.
+    source_conflicts: list[dict] = Field(default_factory=list)
+    # Devices we inventoried but whose CABLE nobody reported. Named explicitly,
+    # because a box sitting on the canvas with no line to anything reads as a
+    # rendering bug, and it is not one -- it is the most common real coverage
+    # gap there is. `ap-wifi-01` on the demo estate is the worked example: Meraki
+    # manages it and reports no adjacency, and the Catalyst switch it is plugged
+    # into is a different vendor's console that (correctly) does not borrow the
+    # answer. Each entry carries the concrete API that would close it.
+    unlinked_devices: list[dict] = Field(default_factory=list)

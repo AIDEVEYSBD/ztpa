@@ -34,6 +34,7 @@ from src import ai_config, azure_arm, request_ctx, settings, tools_registry  # n
 from src.advisory import authoring, campaign as campaign_mod, classify_change, entity_suggest, explain as explain_mod  # noqa: E402
 from src.advisory import intake as intake_mod, orchestrator, rank as rank_mod, remediation, report as report_mod  # noqa: E402
 from src.advisory import client as llm_client  # noqa: E402
+from src.advisory.explain import engine_explanation  # noqa: E402
 from src.advisory.client import provider_status  # noqa: E402
 from src.agent.assistant import ask as agent_ask  # noqa: E402
 from src.analyzers.run_all import EngineResult, reanalyze, run  # noqa: E402
@@ -495,6 +496,12 @@ def engine() -> EngineResult:
             log.error("snapshot could not be persisted; serving it live-only", exc_info=True,
                       extra={"event": "persist_snapshot_failed", "snapshot_id": _ENGINE.snapshot_id,
                              "error": str(exc)})
+        # AFTER the snapshot is in the system of record, because the preload
+        # writes prose against these finding ids and a row must exist to update.
+        # Deliberately not inside the try above: a persist failure is not a
+        # reason to skip it, and the preload's own writes are independently
+        # guarded (`_bg_explain` catches everything).
+        _preload_explanations(_ENGINE)
     return _ENGINE
 
 
@@ -899,8 +906,90 @@ def rule_detail(ref: str, snapshot: str | None = None):
         live, provenance = _memory_fallback(t, f"rule {ref}", exc)
         rows = _narrow(sorted((r for r in canonical_rule_rows(live) if r["raw_rule_id"] == ref),
                               key=lambda r: (r["source_tool"], r["rule_order"])), _RULE_COLS)
-        return {"ref": ref, "rules": rows, **provenance}
-    return {"ref": ref, "rules": rows, "served_from": _DB_SOURCE}
+        return {"ref": ref, "rules": rows, **_rule_context(ref), **provenance}
+    return {"ref": ref, "rules": rows, **_rule_context(ref), "served_from": _DB_SOURCE}
+
+
+def _rule_context(ref: str) -> dict:
+    """What a reviewer needs to judge a rule, beyond the row itself.
+
+    A rule reference on its own -- "ALGO-029" -- is unreadable. Deciding whether
+    a grant should exist needs three things the raw row does not carry:
+
+      DIRECTION  inbound / outbound / internal, and whether a matching reverse
+                 grant makes the pair bidirectional. "0.0.0.0/0 reaches the PCI
+                 database" and "the PCI database reaches the internet" are
+                 different problems with different fixes, and the row spells both
+                 as source/destination columns a reader has to reason about.
+      ENDPOINTS  the ASSETS behind each token, by name and tag. A change that
+                 removes a rule has to say what it disconnects, and "internal-app"
+                 is an object name, not an answer.
+      REVERSE    the rule that makes it two-way, named, so a fix that removes one
+                 direction does not silently leave the other.
+
+    Computed from the live engine rather than stored: it is a projection of facts
+    already in the snapshot, and caching it would give it its own staleness.
+    """
+    live = engine()
+    recs = [r for r in live.records if r.raw_ref == ref]
+    if not recs:
+        return {"context": None}
+    assets_by_key = {a.asset_key: a for a in live.assets}
+
+    def endpoint(token: str, cidrs: list[str], kind: str) -> dict:
+        canon = live.alias_map.get(token, token)
+        a = assets_by_key.get(canon)
+        public = any(is_public(c) for c in cidrs) if cidrs else is_public(token)
+        return {
+            "token": token,
+            "resolved_to": canon if canon != token else None,
+            "kind": kind,
+            "cidrs": list(cidrs),
+            "public": bool(public),
+            "asset": None if a is None else {
+                "key": a.asset_key,
+                "display": a.display_name or a.asset_key,
+                "kind": a.kind,
+                "tags": list(a.tags),
+                "addresses": list(a.ip_set),
+                "seen_by": list(a.source_tools),
+            },
+        }
+
+    out = []
+    for rec in recs:
+        src = endpoint(rec.source, rec.source_cidrs, rec.source_kind)
+        dst = endpoint(rec.destination, rec.dest_cidrs, rec.destination_kind)
+        # Direction is a statement about TRUST BOUNDARIES, not about which column
+        # a token sits in. `is_public` is the same classifier the severity engine
+        # and the zone layer use, so a named object resolving to 0.0.0.0/0 reads
+        # here exactly as the literal string does.
+        if src["public"] and not dst["public"]:
+            flow, detail = "inbound", "from the internet into the estate"
+        elif dst["public"] and not src["public"]:
+            flow, detail = "outbound", "from inside the estate out to the internet"
+        elif src["public"] and dst["public"]:
+            flow, detail = "transit", "public space on both sides"
+        else:
+            flow, detail = "internal", "east-west, inside the estate"
+        # A reverse grant of the same service makes the pair two-way. Reported by
+        # REFERENCE rather than as a boolean: a fix that removes one direction and
+        # leaves the other is the mistake this exists to prevent.
+        reverse = next(
+            (o.raw_ref for o in live.records
+             if o.raw_ref != rec.raw_ref and o.action == rec.action
+             and o.source == rec.destination and o.destination == rec.source
+             and o.service == rec.service),
+            None,
+        )
+        out.append({
+            "raw_ref": rec.raw_ref, "tool": rec.source_tool, "action": rec.action,
+            "service": rec.service, "protocol": rec.protocol, "l7_app": rec.l7_app,
+            "source": src, "destination": dst,
+            "direction": {"flow": flow, "detail": detail,
+                          "bidirectional": reverse is not None, "reverse_ref": reverse},
+        })
+    return {"context": out}
 
 
 # The ingest inspector's rule query: the same columns as _RULE_COLS, but keyed by
@@ -1032,7 +1121,26 @@ def _graph_payload(nodes: list[dict], edges: list[dict], cross_rows: list[dict])
     rows and the in-memory projection are shaped by the same code, not by two
     copies that can disagree about what an edge is."""
     for n in nodes:
-        n["zone"] = zone_of(n["node_id"], n.get("tags") or [])
+        # FOUR arguments, not two. `zone_of` grew `cidrs` and `kind` precisely so
+        # that a NAMED object classifies like the address space it dereferences
+        # to -- and this call site kept the old 2-argument form, so the console
+        # re-derived a different zone than the engine scored with.
+        #
+        # Measured: `ANY-EXTERNAL` (ip_set ["0.0.0.0/0"]) came back "internal"
+        # here while `graph.build` filed it "internet". The boundary multiplier
+        # the severity used was 1.5; the zone the screen printed implied 1.0. A
+        # user reading the map saw an internal-to-internal grant sitting on a
+        # finding scored as an internet ingress, with no way to tell which was
+        # right. Named objects are how real AlgoSec / Palo Alto / Check Point
+        # policies overwhelmingly express `any`, so this was the common case.
+        #
+        # `graph_nodes.kind` is the DB vocabulary (internet | subnet | asset),
+        # which is `node_db_kind`'s output, so it is mapped back onto the
+        # concrete/abstract axis `zone_of` reads. "internet" maps to abstract
+        # because it denotes address space rather than being a host.
+        db_kind = n.get("kind")
+        n["zone"] = zone_of(n["node_id"], n.get("tags") or [], n.get("ip_set") or [],
+                            "concrete" if db_kind == "asset" else "abstract")
     grouped: dict[tuple, dict] = {}
     for ed in edges:
         key = (ed["src_node"], ed["dst_node"])
@@ -1204,9 +1312,81 @@ def findings(snapshot: str | None = None,
     has_more = len(rows) > limit
     rows = rows[:limit]
     next_cursor = _encode_cursor(rows[-1]) if has_more and rows else None
+    _attach_engine_explanations(rows)
     return {"findings": rows, "total": total, "limit": limit,
             "next_cursor": next_cursor, "has_more": has_more,
             **_analysis_block(t), **provenance}
+
+
+def _attach_engine_explanations(rows: list[dict]) -> None:
+    """Give every finding its deterministic TITLE and EXPLANATION.
+
+    THE TITLE. Every analyzer writes `Finding.title` -- a specific, deterministic
+    one-liner like "RDP open from the internet to db-prod-01". It is not a
+    findings COLUMN (it lives inside the signals blob), so it never reached the
+    wire, and the console fell back to title-casing the type: every one of the
+    five over-permissive findings rendered under the identical heading
+    "Over Permissive", with the sentence that distinguishes them sitting three
+    rows down inside the signals table. A walkthrough whose steps are all called
+    the same thing is a walkthrough nobody can navigate.
+
+    The console rendered "No explanation has been written for this finding yet"
+    on every finding nobody had manually pressed "Ask the advisory layer" for.
+    That sentence was false. The engine computed the finding; it can always say
+    what it means. What it cannot do without a model is write PROSE, and those
+    are two different claims that were collapsed into one empty panel.
+
+    So two fields travel, separately attributed and never merged:
+
+      engine_explanation  deterministic, always present, no model, no network
+      explanation         model prose, null until somebody asks for it
+
+    The UI shows the first immediately and offers the second as an upgrade. A
+    reader is never shown an absence where a fact exists, and a deterministic
+    sentence is never dressed up as model judgment.
+
+    Built from the row's own signals rather than from a lookup, so it works
+    identically on the persisted path and the in-memory fallback.
+    """
+    for row in rows:
+        try:
+            like = _FindingLike(row)
+            row["title"] = like.title
+            row["engine_explanation"] = engine_explanation(like)
+        except Exception:
+            # A malformed signals blob must not take down the findings list --
+            # but it must not pass in silence either. The title is the
+            # analyzer's own deterministic one-liner and is still a true
+            # sentence about the finding, so the row degrades to that.
+            log.warning("could not build the engine explanation for a finding",
+                        exc_info=True,
+                        extra={"event": "engine_explanation_failed",
+                               "finding_id": row.get("finding_id"),
+                               "finding_type": row.get("type")})
+            row["title"] = (row.get("signals") or {}).get("title") or row.get("type", "")
+            row["engine_explanation"] = row["title"]
+
+
+class _FindingLike:
+    """Adapts a findings ROW to the attribute access `explain._fallback` expects.
+
+    The row comes back from SQL as a dict and from the memory path as a dict
+    too, while `_fallback` was written against the pydantic `Finding`. Adapting
+    here keeps one implementation of every explanation rather than a second copy
+    that reads dicts -- two copies of this prose would drift, and the drift would
+    only show on whichever path is less exercised.
+    """
+
+    def __init__(self, row: dict) -> None:
+        self.id = row.get("finding_id", "")
+        self.type = row.get("type", "")
+        self.signals = row.get("signals") or {}
+        self.raw_refs = row.get("raw_refs") or []
+        self.source_tools = row.get("source_tools") or []
+        self.severity = row.get("severity", 0)
+        self.severity_band = row.get("severity_band", "low")
+        self.forced_critical = row.get("forced_critical", False)
+        self.title = self.signals.get("title") or row.get("title") or ""
 
 
 @app.get("/api/findings/{fid}")
@@ -1220,6 +1400,14 @@ def finding_detail(fid: str):
 
 _EXPLAIN_TIMEOUT = 180.0
 _explaining: set[str] = set()   # findings whose LLM explanation is being computed in the background
+# Findings whose model call was TRIED and did not produce prose, with the reason.
+#
+# Without this the "pending" state has no exit. `_bg_explain` only caches a real
+# model answer, so on a deployment with no reachable provider nothing is ever
+# written, every POST answers `pending: true`, and the console tells the user to
+# "try again in a moment" forever. A retry loop with no terminal state is the
+# same defect as a silent failure wearing a spinner.
+_explain_failed: dict[str, str] = {}
 
 
 def _spawn(name: str, fn, *args) -> None:
@@ -1245,12 +1433,92 @@ def _bg_explain(fid: str, f) -> None:
     try:
         result = explain_mod.explain(f, timeout=_EXPLAIN_TIMEOUT)
         if result.get("by") != "engine_fallback" and result.get("explanation", "").strip():
+            _explain_failed.pop(fid, None)
             with get_conn() as conn, conn.cursor() as cur:
                 cache_explanation(cur, fid, result["explanation"], result.get("by"))
                 audit(cur, "explain_finding", subject=fid, snapshot_id=sid(),
                       detail={"by": result["by"]}, actor_kind="agent")
+        else:
+            # The model was asked and produced nothing usable. `explain()` falls
+            # back to the deterministic text in that case, which the console
+            # ALREADY has as `engine_explanation` -- so there is nothing to cache
+            # and the only useful output is the reason, recorded here so the next
+            # POST can end the wait instead of extending it.
+            _explain_failed[fid] = (
+                f"the advisory provider ({settings.active_provider()}) was asked and did "
+                f"not return prose. The engine's own explanation is on the finding and is "
+                f"the deterministic answer; nothing further is available from a model in "
+                f"this deployment.")
+            log.warning("advisory explanation unavailable", extra={
+                "event": "explain_unavailable", "finding_id": fid,
+                "provider": settings.active_provider()})
+    except Exception as exc:
+        _explain_failed[fid] = f"the advisory call raised: {exc}"
+        log.error("advisory explanation raised", exc_info=True, extra={
+            "event": "explain_failed", "finding_id": fid})
     finally:
         _explaining.discard(fid)
+
+
+#: How many findings the preload pass writes prose for, worst first. Bounded
+#: because a local model answers in seconds, not milliseconds: the whole set
+#: would occupy the box for minutes and the demo only ever opens the top of the
+#: list. The rest still explain on demand, exactly as before.
+_PRELOAD_TOP_N = int(os.getenv("NPR_PRELOAD_EXPLANATIONS", "12"))
+
+
+def _preload_explanations(result) -> None:
+    """Write model prose for the worst findings BEFORE anyone opens one.
+
+    The advisory layer was always on-demand: click a finding, wait for a model.
+    Against a local model that is a nine-second stall on the first screen of a
+    demo, which is the one place a stall is unaffordable. This walks the worst
+    findings once per snapshot, in one thread, and caches each answer.
+
+    SERIAL BY DESIGN. A local Ollama serves one completion at a time; twelve
+    threads would not make it faster, they would make every one of them slow and
+    starve the request path they share the box with.
+
+    SKIPPED ENTIRELY when no provider is reachable. Firing twelve calls that
+    will each 401 costs a round trip apiece and writes nothing -- and it is
+    exactly what this deployment did for weeks without saying so.
+    """
+    if _PRELOAD_TOP_N <= 0:
+        return
+    # AVAILABILITY, not configuration -- the same distinction `provider_status`
+    # draws. `active_provider()` always names something (it degrades to "ollama"
+    # so callers reach their fallback), so asking IT whether a model exists
+    # answers yes on a box with none.
+    status = provider_status()
+    reachable = (status.get("ollama_reachable") or status.get("azure_available")
+                 or status.get("openai_available") or status.get("anthropic_available"))
+    if not reachable:
+        log.info("explanation preload skipped: no advisory provider is reachable",
+                 extra={"event": "explain_preload_skipped",
+                        "active_provider": status.get("active_provider")})
+        return
+    worst = sorted(result.findings, key=lambda f: -f.severity)[:_PRELOAD_TOP_N]
+    todo = [f for f in worst if f.id not in _explaining]
+    if not todo:
+        return
+    log.info("preloading explanations for the worst findings",
+             extra={"event": "explain_preload_start", "count": len(todo),
+                    "provider": settings.active_provider()})
+
+    def run() -> None:
+        done = 0
+        for f in todo:
+            # Re-checked per finding: a reader may have opened one meanwhile,
+            # and the on-demand path would then be computing the same prose.
+            if f.id in _explaining:
+                continue
+            _explaining.add(f.id)
+            _bg_explain(f.id, f)          # clears _explaining in its own finally
+            done += 1
+        log.info("explanation preload finished",
+                 extra={"event": "explain_preload_done", "explained": done})
+
+    _spawn("explain-preload", run)
 
 
 @app.post("/api/findings/{fid}/explain")
@@ -1267,17 +1535,37 @@ def explain_finding(fid: str):
         src = row.get("explanation_by")
         by = f"{src} (cached)" if src else "cache"
         return {"explanation": row["explanation"], "by": by, "cached": True, "pending": False}
-    # Not cached: return the deterministic explanation immediately and compute the
-    # richer LLM one on a real daemon thread (de-duped per finding). FastAPI
-    # BackgroundTasks run as part of the response lifecycle and kept the request
-    # open until the LLM finished — a true thread returns the fallback instantly.
+    # Not cached: kick the model off on a real daemon thread (de-duped per
+    # finding) and return NULL. FastAPI BackgroundTasks run as part of the
+    # response lifecycle and kept the request open until the LLM finished; a
+    # true thread returns immediately.
+    # A model call that already ran and produced nothing is a TERMINAL answer,
+    # not a reason to wait again.
+    if fid in _explain_failed and fid not in _explaining:
+        return {"explanation": None, "by": None, "cached": False, "pending": False,
+                "provider": settings.active_provider(),
+                "unavailable_reason": _explain_failed[fid]}
     if fid not in _explaining:
         _explaining.add(fid)
         _spawn(f"explain-{fid}", _bg_explain, fid, f)
-    # tell the UI which provider will produce the richer explanation, so it can
-    # label the "refining…" state truthfully (local model vs a hosted one).
-    return {"explanation": explain_mod._fallback(f), "by": "engine_fallback",
-            "cached": False, "pending": True, "provider": settings.active_provider()}
+    # `explanation: None`, NOT the deterministic fallback.
+    #
+    # This used to return `explain_mod._fallback(f)` here, which was right when
+    # it was the only explanation the console could get. It is wrong now: every
+    # finding already carries `engine_explanation` -- that same deterministic
+    # text -- so echoing it back under a header that says a language model wrote
+    # it made the advisory block repeat the engine block word for word while
+    # claiming a different author. The UI has the engine's answer; what it is
+    # asking for here is the MODEL's, and until the model produces one the
+    # honest value is nothing.
+    #
+    # `by` names what would write it rather than what did, so a "refining with
+    # the local model…" state can be labelled truthfully.
+    return {"explanation": None, "by": None, "cached": False, "pending": True,
+            "provider": settings.active_provider(),
+            "note": ("the model has not written one yet; the finding's own "
+                     "`engine_explanation` is the deterministic answer and is "
+                     "already on the finding")}
 
 
 @app.post("/api/findings/{fid}/remediate")
@@ -2015,6 +2303,66 @@ def staging_delete(staged_id: str, _: None = Depends(require_approver)):
         cur.execute("DELETE FROM ztpa.staged_changes WHERE staged_id=%s", [staged_id])
         audit(cur, "discard_staged_change", subject=staged_id, detail={})
     return {"ok": True, "deleted": staged_id}
+
+
+class RollbackBody(BaseModel):
+    reason: str | None = None
+
+
+@app.post("/api/staging/{staged_id}/rollback")
+def staging_rollback(staged_id: str, body: RollbackBody,
+                     _: None = Depends(require_approver)):
+    """Take a PUSHED change back out of the applied overlay.
+
+    The product could apply a change and never un-apply one. Asked for directly:
+    "if a change is approved, have a place where we had made changes and have a
+    way to rollback those."
+
+    HOW IT WORKS, and why it is honest. `persist.load_applied_changes` selects
+    `status='pushed'` and the engine re-applies exactly those rows to the records
+    on every run -- the applied state is a DERIVED overlay, not an edit to the
+    source data. So a rollback is a status transition, not a reverse edit: flip
+    the row out of `pushed` and the next recompute simply never applies it. No
+    inverse change is synthesised, and nothing has to guess what the estate
+    looked like before.
+
+    THE ROW IS NOT DELETED. `DELETE /api/staging/{id}` already exists for
+    discarding something never pushed; this is a different act on a different
+    kind of row. A change that WAS live and was withdrawn is compliance history
+    -- somebody approved it, it was applied, and somebody reversed it -- and
+    deleting the row would erase the middle of that sentence. The status carries
+    it and the audit trail names both actors.
+
+    Approver-gated, like every other governance write, and for the same reason:
+    un-applying a change alters what the engine reports as the estate's current
+    posture.
+    """
+    with get_conn() as conn, conn.cursor() as cur:
+        row = fetch_one(cur, "SELECT status FROM ztpa.staged_changes WHERE staged_id=%s",
+                        [staged_id])
+        if not row:
+            raise HTTPException(404, f"no staged change {staged_id}")
+        if row["status"] != "pushed":
+            # Only a change that is actually IN the overlay can come out of it.
+            # Refusing loudly beats reporting success for a no-op the caller
+            # would then believe had changed the estate.
+            raise HTTPException(
+                409,
+                f"staged change {staged_id} is '{row['status']}', not 'pushed'. Only a pushed "
+                f"change is in the applied overlay; there is nothing to roll back. Use "
+                f"DELETE /api/staging/{staged_id} to discard one that was never pushed.")
+        cur.execute(
+            "UPDATE ztpa.staged_changes SET status='rolled_back' WHERE staged_id=%s",
+            [staged_id])
+        audit(cur, "rollback_staged_change", subject=staged_id,
+              detail={"reason": body.reason, "from_status": "pushed"})
+    # The overlay is read at engine build time, so the running result still holds
+    # the change until it is rebuilt. Say so rather than implying the estate has
+    # already moved.
+    return {"ok": True, "staged_id": staged_id, "status": "rolled_back",
+            "recompute_required": True,
+            "detail": ("the change is out of the applied overlay; recompute to see the "
+                       "estate without it")}
 
 
 # --- Change Gate: reject a request -----------------------------------------
@@ -2796,3 +3144,894 @@ def audit_log(limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0)
         rows = fetch_all(cur, f"SELECT {_AUDIT_COLS} FROM ztpa.audit_log "
                               "ORDER BY ts DESC, id DESC LIMIT %s OFFSET %s", [limit, offset])
     return {"items": rows, "total": int(total or 0), "limit": limit, "offset": offset}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# THE INFRASTRUCTURE API — sources, inventory, topology, address drill-down
+#
+# Five reads that describe the NETWORK rather than the policy on it. They follow
+# the same structural contract as every other read in this file: try the
+# persisted snapshot, fall back to the running engine through `_memory_fallback`
+# (which refuses to answer for a historical snapshot it has never analyzed), and
+# carry the provenance block so a caller can tell a persisted answer from a
+# recomputed one.
+#
+# The projections come from `src.topology.project`, the same module
+# `persist_engine_result` writes through, so the degraded path serves what the
+# database would have held rather than a second implementation of it.
+# ═══════════════════════════════════════════════════════════════════════════
+
+from src.sources import BY_KEY as _SOURCE_SPECS, REGISTRY as _SOURCE_REGISTRY  # noqa: E402
+from src.topology.reconstruct import LANE_ORDER, LANE_SOURCE_HINT  # noqa: E402
+from src.analyzers.resilience import assess as assess_resilience  # noqa: E402
+from src.models import Topology  # noqa: E402
+from src.netaddr import is_public, parse_net  # noqa: E402
+from src.sources import tier_of  # noqa: E402
+
+_LANE_LABEL = {
+    "internet": "Internet", "circuit": "WAN circuits", "modem": "Modems / CPE",
+    "edge": "Edge routers", "perimeter": "Perimeter firewalls",
+    "core": "Core / distribution", "access": "Access layer",
+    "segment": "Segments (VLANs & subnets)", "endpoint": "Hosts & workloads",
+}
+
+_INVENTORY_LIMIT_DEFAULT, _INVENTORY_LIMIT_MAX = 200, 2000
+
+
+def _topology_of(t: str) -> tuple[Topology, dict]:
+    """The topology for snapshot `t`, plus its provenance block.
+
+    Reads the running engine when it holds `t`, and otherwise refuses via
+    `_memory_fallback` rather than serving the live estate under a historical
+    id. The persisted read is deliberately NOT attempted separately: the six
+    infrastructure tables are written from `topology.project`, so the in-memory
+    projection and the stored rows are the same shape by construction, and the
+    engine is authoritative for the snapshot it holds.
+    """
+    live = engine()
+    if t == live.snapshot_id:
+        # Labelled `engine_memory`, which is what it is. The six infrastructure
+        # tables hold byte-identical content (both come from `topology.project`),
+        # but this read does not go through them, and a payload claiming
+        # `database` would be asserting a round trip that did not happen. The
+        # console renders that label as "came from the running engine rather than
+        # the persisted snapshot", which is exactly true.
+        #
+        # An earlier version probed the database with `SELECT 1` to decide the
+        # label. With no database configured that probe waited out the pool's
+        # 30-second timeout on EVERY request to these five endpoints, so the
+        # screens the revamp exists for were the slowest in the product.
+        return live.topology, {"served_from": _MEMORY_SOURCE}
+    fallback, provenance = _memory_fallback(
+        t, "the infrastructure inventory",
+        RuntimeError("the running engine holds a different snapshot"))
+    return fallback.topology, provenance
+
+
+def _counts(topo: Topology, live) -> dict:
+    """The header readout: "I have these many subnets, these many VLANs...".
+
+    A quantity NO ONBOARDED SOURCE DECLARES is `None`, never 0. That distinction
+    is the difference between "this estate has no VLANs" -- a statement about the
+    client's network we are in no position to make -- and "nothing we can read
+    enumerates VLANs", which is a statement about our coverage and is actionable.
+    """
+    def declared(items, value):
+        return value if items else None
+    public = sorted({ip for c in topo.circuits for ip in c.public_ips})
+    return {
+        "devices": declared(topo.devices, len(topo.devices)),
+        "interfaces": declared(topo.interfaces, len(topo.interfaces)),
+        "vlans": declared(topo.vlans, len(topo.vlans)),
+        # The UNION of both sources of subnet knowledge. Reading only the
+        # `subnets` table reported 1 while seven VLANs each declared their own
+        # block -- the header said "1 subnet" for a network with eight.
+        "subnets": declared(
+            topo.subnets or topo.vlans,
+            len({s.cidr for s in topo.subnets} | {s for v in topo.vlans for s in v.subnets})),
+        "public_ips": declared(topo.circuits, len(public)),
+        "circuits": declared(topo.circuits, len(topo.circuits)),
+        "assets": len(live.assets),
+    }
+
+
+@app.get("/api/sources")
+def sources(snapshot: str | None = None):
+    """What we read, from which rung of the ladder, and what it cannot tell us.
+
+    `blind_to` is the field that matters most here and it is why this endpoint
+    serves the whole registry rather than only the connected tools: an operator
+    looking at an empty access lane needs to know whether that means "no access
+    layer" or "nothing onboarded enumerates access switches", and only the
+    catalogue can answer the second.
+
+    A source that is NOT connected carries `contributed: null`, never a row of
+    zeros -- a zero there reads as "we connected and found nothing".
+    """
+    t = view_sid(snapshot)
+    live = engine()
+    topo, provenance = _topology_of(t)
+
+    contributed: dict[str, dict] = {}
+    for rec in live.records:
+        contributed.setdefault(rec.source_tool, _empty_contribution())["records"] += 1
+    for e in getattr(live, "entities", ()) or ():
+        contributed.setdefault(e.tool, _empty_contribution())["entities"] += 1
+    for field, group in (("devices", topo.devices), ("interfaces", topo.interfaces),
+                         ("links", topo.links), ("vlans", topo.vlans),
+                         ("subnets", topo.subnets), ("circuits", topo.circuits)):
+        for item in group:
+            for tool in {item.provenance.source_tool,
+                         *(o["tool"] for o in getattr(item, "observed_by", ()) if o.get("tool"))}:
+                contributed.setdefault(tool, _empty_contribution())[field] += 1
+
+    simulated = {item.provenance.simulated
+                 for group in (topo.devices, topo.interfaces, topo.circuits)
+                 for item in group}
+    cards = []
+    for spec in _SOURCE_REGISTRY:
+        connected = spec.key in contributed
+        cards.append({
+            "tool": spec.key, "label": spec.label, "vendor": spec.vendor,
+            "tier": spec.tier, "api": spec.api, "auth": spec.auth,
+            "yields": list(spec.yields), "blind_to": list(spec.blind_to),
+            "notes": spec.notes or None,
+            "connected": connected,
+            # Every export in this build is seeded. Stated per card rather than
+            # once at the top, because a card is what gets screenshotted.
+            "simulated": bool(simulated) and connected,
+            "device": spec.device or None,
+            "last_sync": None,
+            "contributed": contributed.get(spec.key) if connected else None,
+        })
+    # Anything that contributed but is not in the registry: a bring-your-own
+    # profile. Shown as itself rather than dropped, or the screen would omit a
+    # source whose rows are visibly on the next screen.
+    for tool in sorted(set(contributed) - set(_SOURCE_SPECS)):
+        cards.append({
+            "tool": tool, "label": tool, "vendor": "(custom profile)",
+            "tier": "device", "api": "operator-supplied SourceProfile", "auth": "n/a",
+            "yields": [], "blind_to": [], "notes": "Not a shipped integration: this "
+            "name comes from an operator's own connector profile.",
+            "connected": True, "simulated": bool(simulated), "device": tool,
+            "last_sync": None, "contributed": contributed[tool],
+        })
+
+    return {
+        "sources": cards,
+        "counts": {"connected": sum(1 for c in cards if c["connected"]),
+                   "available": sum(1 for c in cards if not c["connected"])},
+        **_analysis_block(t), **provenance,
+    }
+
+
+def _cidrs_of(live, row: dict) -> list[str]:
+    """The source address space behind a matched rule, for the public test.
+
+    Read off the record rather than off the label: a named object like
+    `ANY-EXTERNAL` carries its resolved space on `source_cidrs`, and scoring the
+    string instead is the exact defect `algosec.py` was rewritten to fix.
+    """
+    for rec in live.records:
+        if rec.raw_ref == row["rule_ref"] and rec.source_tool == row["source_tool"]:
+            return list(rec.source_cidrs)
+    return []
+
+
+def _empty_contribution() -> dict:
+    return {"records": 0, "entities": 0, "devices": 0, "interfaces": 0,
+            "links": 0, "vlans": 0, "subnets": 0, "circuits": 0}
+
+
+def _vlan_of(addresses: list[str], topo: Topology) -> tuple[int | None, str | None, str | None]:
+    """The VLAN and subnet an address set sits in, or (None, None, None).
+
+    Containment against the VLAN's declared subnets, not a name match: the whole
+    point of the inventory's "which VLAN" column is that it is computed from
+    address space rather than from a label somebody typed.
+    """
+    for addr in addresses:
+        net = parse_net(addr)
+        if net is None:
+            continue
+        for v in topo.vlans:
+            for raw in v.subnets:
+                block = parse_net(raw)
+                if block is not None and net.subnet_of(block):
+                    return v.vlan_id, v.name, str(block)
+    return None, None, None
+
+
+def _inventory_items(topo: Topology, live) -> list[dict]:
+    """Every entity, in one vocabulary.
+
+    Devices, VLANs, subnets, public IPs and circuits are DIFFERENT KINDS OF
+    THING, and the ask lists them side by side for a reason -- a reviewer counts
+    them together. So they are projected into one row shape with a `kind`, rather
+    than served as five lists the UI has to reconcile.
+    """
+    items: list[dict] = []
+    by_dev: dict[str, list] = {}
+    for i in topo.interfaces:
+        by_dev.setdefault(i.device_key, []).append(i)
+    finding_by_entity: dict[str, list[str]] = {}
+    for f in live.findings:
+        for name in f.involved:
+            finding_by_entity.setdefault(name, []).append(f.id)
+
+    for d in topo.devices:
+        ifaces = by_dev.get(d.device_key, [])
+        addrs = sorted({a for i in ifaces for a in i.addresses})
+        vlan_id, vlan_name, subnet = _vlan_of(addrs, topo)
+        items.append({
+            "key": d.device_key, "name": d.name, "kind": d.role,
+            "role": d.role, "role_source": d.role_source, "role_reason": d.role_reason,
+            "vendor": d.vendor, "model": d.model, "os_version": d.os_version,
+            "addresses": addrs,
+            "vlan_id": vlan_id, "vlan_name": vlan_name, "subnet": subnet,
+            "zone": next((i.zone for i in ifaces if i.zone), None),
+            "tags": list(d.tags),
+            "layer": d.layer, "layer_source": d.layer_source, "layer_reason": d.layer_reason,
+            "observed_by": list(d.observed_by) or [{
+                "tool": d.provenance.source_tool, "tier": d.provenance.source_tier,
+                "raw_ref": d.provenance.raw_ref}],
+            "conflicts": list(d.conflicts),
+            "finding_ids": sorted(finding_by_entity.get(d.device_key, [])),
+        })
+
+    for v in topo.vlans:
+        items.append({
+            "key": f"vlan-{v.vlan_id}", "name": v.name or f"VLAN {v.vlan_id}", "kind": "vlan",
+            "role": None, "role_source": "declared", "role_reason": "",
+            "vendor": None, "model": None, "os_version": None,
+            "addresses": list(v.subnets), "vlan_id": v.vlan_id, "vlan_name": v.name,
+            "subnet": v.subnets[0] if v.subnets else None, "zone": None,
+            "tags": list(v.tags), "layer": "segment", "layer_source": "derived",
+            "layer_reason": "a VLAN is a segment by definition",
+            "observed_by": [{"tool": v.provenance.source_tool,
+                             "tier": v.provenance.source_tier,
+                             "raw_ref": v.provenance.raw_ref}],
+            "conflicts": [], "finding_ids": [],
+        })
+
+    for s in topo.subnets:
+        items.append({
+            "key": f"subnet-{s.cidr}", "name": s.name or s.cidr, "kind": "subnet",
+            "role": None, "role_source": "declared", "role_reason": "",
+            "vendor": None, "model": None, "os_version": None,
+            "addresses": [s.cidr], "vlan_id": s.vlan_id, "vlan_name": None,
+            "subnet": s.cidr, "zone": s.zone, "tags": list(s.tags),
+            "layer": "segment", "layer_source": "derived",
+            "layer_reason": "a subnet is a segment by definition",
+            "observed_by": [{"tool": s.provenance.source_tool,
+                             "tier": s.provenance.source_tier,
+                             "raw_ref": s.provenance.raw_ref}],
+            "conflicts": [], "finding_ids": [],
+        })
+
+    for c in topo.circuits:
+        items.append({
+            "key": c.circuit_id, "name": c.circuit_id, "kind": "wan_circuit",
+            "role": None, "role_source": "declared",
+            "role_reason": f"{c.technology.upper()} from {c.provider or 'an undeclared carrier'}",
+            "vendor": c.provider, "model": c.technology, "os_version": None,
+            "addresses": list(c.public_ips), "vlan_id": None, "vlan_name": None,
+            "subnet": None, "zone": "untrust", "tags": [],
+            "layer": "circuit", "layer_source": "declared",
+            "layer_reason": "declared by the carrier record",
+            "observed_by": [{"tool": c.provenance.source_tool,
+                             "tier": c.provenance.source_tier,
+                             "raw_ref": c.provenance.raw_ref}],
+            "conflicts": [], "finding_ids": [],
+        })
+        for ip in c.public_ips:
+            items.append({
+                "key": f"pubip-{ip}", "name": ip, "kind": "public_ip",
+                "role": None, "role_source": "declared",
+                "role_reason": f"assigned to {c.circuit_id} by {c.provider or 'the carrier'}",
+                "vendor": c.provider, "model": None, "os_version": None,
+                "addresses": [ip], "vlan_id": None, "vlan_name": None, "subnet": None,
+                "zone": "untrust", "tags": [], "layer": "circuit",
+                "layer_source": "declared", "layer_reason": "carrier-assigned block",
+                "observed_by": [{"tool": c.provenance.source_tool,
+                                 "tier": c.provenance.source_tier,
+                                 "raw_ref": c.provenance.raw_ref}],
+                "conflicts": [], "finding_ids": [],
+            })
+
+    # The policy layer's assets. Included so the inventory is ONE list rather
+    # than two screens a reviewer has to cross-reference -- "is it an asset, a
+    # workstation, a router, a switch" is one question in the ask, not two.
+    dev_keys = {d.device_key for d in topo.devices}
+    for a in live.assets:
+        if a.asset_key in dev_keys:
+            continue
+        vlan_id, vlan_name, subnet = _vlan_of(list(a.ip_set), topo)
+        items.append({
+            "key": a.asset_key, "name": a.display_name or a.asset_key,
+            "kind": "subnet" if a.kind == "abstract" else "asset",
+            "role": None, "role_source": "derived",
+            "role_reason": f"{a.kind} asset from the policy layer",
+            "vendor": None, "model": None, "os_version": None,
+            "addresses": list(a.ip_set), "vlan_id": vlan_id, "vlan_name": vlan_name,
+            "subnet": subnet, "zone": None, "tags": list(a.tags),
+            "layer": "endpoint" if a.kind == "concrete" else "segment",
+            "layer_source": "derived",
+            "layer_reason": "placed from the policy layer, not from a cable",
+            "observed_by": [{"tool": tool, "tier": tier_of(tool), "raw_ref": a.asset_key}
+                            for tool in sorted(a.source_tools)],
+            "conflicts": [],
+            "finding_ids": sorted(finding_by_entity.get(a.asset_key, [])),
+        })
+    items.sort(key=lambda i: (i["kind"], i["key"]))
+    return items
+
+
+def _ip_matches(item: dict, needle, mode: str) -> bool:
+    """Whether an inventory row's address space relates to `needle` under `mode`.
+
+    Four modes because "does this IP appear here" has four different useful
+    meanings, and collapsing them is how a reviewer searching for 10.30.0.0/16
+    gets told there is nothing there while three hosts sit inside it.
+    """
+    for raw in item["addresses"]:
+        net = parse_net(raw)
+        if net is None:
+            continue
+        if mode == "exact" and net == needle:
+            return True
+        if mode == "contains" and needle.subnet_of(net):
+            return True
+        if mode == "contained_by" and net.subnet_of(needle):
+            return True
+        if mode == "intersects" and (net.subnet_of(needle) or needle.subnet_of(net)):
+            return True
+    return False
+
+
+@app.get("/api/inventory")
+def inventory(snapshot: str | None = None,
+              kind: str | None = Query(None, max_length=32),
+              source: str | None = Query(None, max_length=64),
+              vlan: int | None = Query(None, ge=1, le=4094),
+              zone: str | None = Query(None, max_length=32),
+              ip: str | None = Query(None, max_length=64),
+              ip_mode: str = Query("intersects",
+                                   pattern="^(intersects|contains|contained_by|exact)$"),
+              q: str | None = Query(None, max_length=200),
+              limit: int = Query(_INVENTORY_LIMIT_DEFAULT, ge=1, le=_INVENTORY_LIMIT_MAX),
+              offset: int = Query(0, ge=0)):
+    """The estate, in one list, with the provenance of every row.
+
+    `total` and `has_more` are on the envelope because a page silently presented
+    as a whole is the same defect as a count taken from a failed fetch: the
+    reader believes they have seen everything.
+    """
+    t = view_sid(snapshot)
+    live = engine()
+    topo, provenance = _topology_of(t)
+    items = _inventory_items(topo, live)
+
+    # Facets are computed over the UNFILTERED set, so a chip's count tells you
+    # what selecting it would give you rather than what is already on screen.
+    facets = {
+        "kinds": _tally(i["kind"] for i in items),
+        "sources": _tally(o["tool"] for i in items for o in i["observed_by"]),
+        "vlans": _tally(str(i["vlan_id"]) for i in items if i["vlan_id"] is not None),
+        "zones": _tally(i["zone"] for i in items if i["zone"]),
+    }
+
+    if kind:
+        items = [i for i in items if i["kind"] == kind]
+    if source:
+        items = [i for i in items if any(o["tool"] == source for o in i["observed_by"])]
+    if vlan is not None:
+        items = [i for i in items if i["vlan_id"] == vlan]
+    if zone:
+        items = [i for i in items if i["zone"] == zone]
+    if ip:
+        needle = parse_net(ip)
+        if needle is None:
+            raise HTTPException(400, f"{ip!r} is not an address or a CIDR block")
+        items = [i for i in items if _ip_matches(i, needle, ip_mode)]
+    if q:
+        needle_q = q.lower()
+        items = [i for i in items
+                 if needle_q in i["name"].lower()
+                 or needle_q in i["key"].lower()
+                 or any(needle_q in a.lower() for a in i["addresses"])
+                 or any(needle_q in tag.lower() for tag in i["tags"])
+                 or (i["model"] or "").lower().find(needle_q) >= 0
+                 or (i["vendor"] or "").lower().find(needle_q) >= 0]
+
+    total = len(items)
+    page = items[offset:offset + limit]
+    return {
+        "items": page, "total": total, "has_more": offset + len(page) < total,
+        "counts": _counts(topo, live), "facets": facets,
+        **_analysis_block(t), **provenance,
+    }
+
+
+def _tally(values) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for v in values:
+        out[v] = out.get(v, 0) + 1
+    return dict(sorted(out.items()))
+
+
+@app.get("/api/topology")
+def topology(snapshot: str | None = None, lane_cap: int = Query(40, ge=5, le=400)):
+    """The layered picture, lane by lane.
+
+    A lane with no observed node is returned with `observed: false`, its reason,
+    and the console API that would fill it. It is NOT omitted, and it does not
+    carry placeholder nodes. Both of those are ways of answering "what does the
+    access layer look like" with something other than "nothing we can read
+    enumerates access switches", which is the only true answer available.
+    """
+    t = view_sid(snapshot)
+    live = engine()
+    topo, provenance = _topology_of(t)
+
+    finding_by_entity: dict[str, list[str]] = {}
+    for f in live.findings:
+        for name in f.involved:
+            finding_by_entity.setdefault(name, []).append(f.id)
+
+    vlans_by_dev: dict[str, set[int]] = {}
+    for i in topo.interfaces:
+        if i.vlan_id is not None:
+            vlans_by_dev.setdefault(i.device_key, set()).add(i.vlan_id)
+    # Interfaces travel WITH the node rather than behind a second request. The
+    # explorer's node drawer is the screen that answers "what is this box", and
+    # its ports are most of the answer -- a drawer that has to round-trip before
+    # it can say anything is a drawer nobody opens twice. `admin_up` is carried
+    # as the three-valued thing it is: null means the source did not report link
+    # state, and a UI that renders that as "down" invents an outage.
+    ifaces_by_dev: dict[str, list[dict]] = {}
+    for i in topo.interfaces:
+        ifaces_by_dev.setdefault(i.device_key, []).append({
+            "name": i.name, "addresses": list(i.addresses), "vlan_id": i.vlan_id,
+            "zone": i.zone, "admin_up": i.admin_up, "oper_up": i.oper_up,
+            "speed_mbps": i.speed_mbps, "lag_group": i.lag_group,
+            "description": i.description,
+            "neighbor_device": i.neighbor_device, "neighbor_interface": i.neighbor_interface,
+            "networks_behind": list(i.networks_behind),
+        })
+    addrs_by_dev: dict[str, set[str]] = {}
+    for i in topo.interfaces:
+        addrs_by_dev.setdefault(i.device_key, set()).update(i.addresses)
+
+    unlinked = {u["device_key"]: u for u in topo.unlinked_devices}
+
+    def node(d) -> dict:
+        gap = unlinked.get(d.device_key)
+        return {
+            "key": d.device_key, "name": d.name, "kind": d.role, "role": d.role,
+            "vendor": d.vendor, "model": d.model,
+            "addresses": sorted(addrs_by_dev.get(d.device_key, ())),
+            "vlan_ids": sorted(vlans_by_dev.get(d.device_key, ())),
+            "interfaces": sorted(ifaces_by_dev.get(d.device_key, []),
+                                 key=lambda x: x["name"]),
+            "ha_group": d.ha_group, "ha_role": d.ha_role,
+            "role_source": d.role_source, "role_reason": d.role_reason,
+            "os_version": d.os_version, "serial": d.serial, "site": d.site,
+            "mgmt_ip": d.mgmt_ip, "tags": list(d.tags),
+            "conflicts": list(d.conflicts),
+            "layer_reason": d.layer_reason,
+            "observed_by": list(d.observed_by) or [{
+                "tool": d.provenance.source_tool, "tier": d.provenance.source_tier,
+                "raw_ref": d.provenance.raw_ref}],
+            "finding_ids": sorted(finding_by_entity.get(d.device_key, [])),
+            "unlinked_reason": gap["reason"] if gap else None,
+            "would_be_filled_by": gap["would_be_filled_by"] if gap else None,
+        }
+
+    by_lane: dict[str, list] = {}
+    for d in topo.devices:
+        by_lane.setdefault(d.layer or "unplaced", []).append(d)
+
+    # PRESENTATIONAL redundancy grouping, computed here and deliberately NOT on
+    # the model.
+    #
+    # The UI needs to tint the criss-cross together. No console reports such a
+    # grouping, so it has to be derived -- and an earlier version derived it onto
+    # `NetLink.redundant_group`, which the resilience analyzer reads to decide
+    # whether a link has a live sibling. That immediately deleted real findings:
+    # every access->core uplink landed in one group, so `asw-acc-03`'s SINGLE
+    # uplink looked redundant and stopped being reported.
+    #
+    # The deeper reason it cannot live on the model is that redundancy is
+    # DIRECTIONAL. `rtr-edge-01` has two modems, so the pair of links is
+    # redundancy FOR THE ROUTER; each modem has one router, so the same links are
+    # a single point of failure FOR EACH MODEM. One field cannot hold both, and
+    # the analyzer is right to compute it per-direction itself.
+    #
+    # So this is display only: a link is grouped for the endpoint DEEPER in the
+    # network (the one that would be stranded), and only when that endpoint has
+    # two or more links to the tier above it. `redundant_group` set by a source
+    # always wins -- an observation outranks a presentation choice.
+    lane_ix = {layer: i for i, layer in enumerate(LANE_ORDER)}
+    lane_of = {d.device_key: d.layer for d in topo.devices}
+    upstream: dict[tuple, list] = {}
+    for l in topo.links:
+        la, lb = lane_of.get(l.a_device), lane_of.get(l.b_device)
+        if la is None or lb is None or lane_ix.get(la) == lane_ix.get(lb):
+            continue
+        deep, shallow = ((l.a_device, lb) if lane_ix[la] > lane_ix[lb]
+                         else (l.b_device, la))
+        upstream.setdefault((deep, shallow), []).append(l)
+    display_groups: dict[str, str] = {}
+    for (deep, shallow_lane), group in sorted(upstream.items()):
+        peers = {l.b_device if l.a_device == deep else l.a_device for l in group}
+        if len(peers) < 2:
+            continue                      # one way up is not redundancy
+        for l in group:
+            display_groups[l.link_key] = f"{deep}-{shallow_lane}"
+
+    unobserved = {u["layer"]: u for u in topo.unobserved_layers}
+    lanes, shown, capped, total_nodes = [], 0, [], 0
+    for layer in LANE_ORDER:
+        members = sorted(by_lane.get(layer, []), key=lambda d: d.device_key)
+        # Three lanes are NOT made of devices, and rendering only devices left
+        # them reading "not observed" while the data sat in the payload:
+        #   internet  the boundary itself -- never our equipment, drawn as the
+        #             conventional OUTLINE cloud
+        #   circuit   the carrier services
+        #   endpoint  the policy layer's hosts and workloads
+        # An unobserved lane and an unrendered one look identical on screen, so
+        # this is a correctness bug, not a cosmetic one.
+        if layer == "internet" and topo.circuits:
+            nodes = [{
+                "key": "0.0.0.0/0", "name": "Internet", "kind": "cloud", "role": None,
+                "vendor": None, "model": None, "addresses": ["0.0.0.0/0"],
+                "vlan_ids": [], "ha_group": None, "ha_role": None,
+                "layer_reason": "the boundary this estate's circuits terminate against",
+                "observed_by": sorted(
+                    ({"tool": c.provenance.source_tool, "tier": c.provenance.source_tier,
+                      "raw_ref": c.circuit_id} for c in topo.circuits),
+                    key=lambda o: o["raw_ref"]),
+                "finding_ids": [], "unlinked_reason": None, "would_be_filled_by": None,
+            }]
+        elif layer == "circuit" and topo.circuits:
+            nodes = [{
+                "key": c.circuit_id,
+                "name": f"{c.circuit_id} · {c.technology.upper()}",
+                "kind": "wan_circuit", "role": None,
+                "vendor": c.provider, "model": c.technology,
+                "addresses": list(c.public_ips), "vlan_ids": [],
+                "ha_group": None, "ha_role": None,
+                "layer_reason": (f"{c.bandwidth_mbps} Mbps from "
+                                 f"{c.provider or 'an undeclared carrier'}"
+                                 if c.bandwidth_mbps else
+                                 f"from {c.provider or 'an undeclared carrier'}"),
+                "observed_by": [{"tool": c.provenance.source_tool,
+                                 "tier": c.provenance.source_tier,
+                                 "raw_ref": c.provenance.raw_ref}],
+                "finding_ids": sorted(finding_by_entity.get(c.circuit_id, [])),
+                "unlinked_reason": None, "would_be_filled_by": None,
+            } for c in topo.circuits]
+        elif layer == "endpoint" and live.assets:
+            # The hosts the POLICY layer knows. They have no cable and no lane of
+            # their own otherwise, and leaving them out would draw a network with
+            # nothing on it -- the findings all terminate here.
+            dev_keys = {d.device_key for d in topo.devices}
+            nodes = [{
+                "key": a.asset_key, "name": a.display_name or a.asset_key,
+                "kind": "server" if a.kind == "concrete" else "subnet", "role": None,
+                "vendor": None, "model": None, "addresses": list(a.ip_set),
+                "vlan_ids": sorted({vid for vid, _n, _s in
+                                    [_vlan_of(list(a.ip_set), topo)] if vid is not None}),
+                "ha_group": None, "ha_role": None,
+                "layer_reason": "a host from the policy layer, placed by address, not by cable",
+                "observed_by": [{"tool": tool, "tier": tier_of(tool), "raw_ref": a.asset_key}
+                                for tool in sorted(a.source_tools)],
+                "finding_ids": sorted(finding_by_entity.get(a.asset_key, [])),
+                "unlinked_reason": None, "would_be_filled_by": None,
+            } for a in sorted(live.assets, key=lambda a: a.asset_key)
+                if a.kind == "concrete" and a.asset_key not in dev_keys]
+        elif layer == "segment" and (topo.vlans or topo.subnets):
+            nodes = [{
+                "key": f"vlan-{v.vlan_id}", "name": v.name or f"VLAN {v.vlan_id}",
+                "kind": "vlan", "role": None, "vendor": None, "model": None,
+                "addresses": list(v.subnets), "vlan_ids": [v.vlan_id],
+                "ha_group": None, "ha_role": None,
+                "layer_reason": "a VLAN is a segment by definition",
+                "observed_by": [{"tool": v.provenance.source_tool,
+                                 "tier": v.provenance.source_tier,
+                                 "raw_ref": v.provenance.raw_ref}],
+                "finding_ids": [], "unlinked_reason": None, "would_be_filled_by": None,
+            } for v in topo.vlans]
+        else:
+            nodes = [node(d) for d in members]
+        total_nodes += len(nodes)
+        if len(nodes) > lane_cap:
+            capped.append(layer)
+            nodes = nodes[:lane_cap]
+        shown += len(nodes)
+        gap = unobserved.get(layer)
+        lanes.append({
+            "layer": layer, "label": _LANE_LABEL[layer], "nodes": nodes,
+            "observed": bool(nodes),
+            "reason": (gap or {}).get("reason") if not nodes else None,
+            "would_be_filled_by": ((gap or {}).get("would_be_filled_by")
+                                   or LANE_SOURCE_HINT.get(layer)) if not nodes else None,
+        })
+
+    # ── STRUCTURAL RELATIONS, which are NOT links ──────────────────────────
+    #
+    # The canvas drew eighteen cables and nothing else, so the top three lanes
+    # and the bottom three floated unconnected: a circuit sat above the modem
+    # that terminates it with no line between them, and every VLAN and host hung
+    # off nothing at all. The relationships ARE in the data -- a Circuit names
+    # its CPE, a Vlan names the devices carrying it, a host's address sits inside
+    # a VLAN's subnet -- they are simply not cables, so no NetLink exists for
+    # them and none should.
+    #
+    # THEY MUST NOT BECOME LINKS. `topology_links` is what the resilience
+    # analyzer runs articulation points and bridges over. Adding "vlan 30 is
+    # carried by both cores" to that set would make the two cores mutually
+    # reachable through a broadcast domain and dissolve every cut vertex in the
+    # estate -- the identical failure the management-VLAN mesh caused, arrived at
+    # from a different direction.
+    #
+    # So they are computed here, for display only, and travel in their own field
+    # so the UI can draw them differently from a cable and never confuse the two.
+    relations: list[dict] = []
+    circuits_by_dev: dict[str, list] = {}
+    for c in topo.circuits:
+        if c.device_key:
+            circuits_by_dev.setdefault(c.device_key, []).append(c)
+        # The internet is what a WAN circuit terminates against. That is what the
+        # word means; it is not an inference about this estate.
+        relations.append({
+            "a": "0.0.0.0/0", "b": c.circuit_id, "kind": "reaches",
+            "detail": f"{c.circuit_id} is a path to the internet"
+            + (f" via {c.provider}" if c.provider else ""),
+        })
+        if c.device_key:
+            relations.append({
+                "a": c.circuit_id, "b": c.device_key, "kind": "terminates",
+                "detail": f"{c.device_key} is the CPE terminating {c.circuit_id}"
+                + (f" ({c.interface})" if c.interface else ""),
+            })
+    for v in topo.vlans:
+        for dev in v.device_keys:
+            relations.append({
+                "a": dev, "b": f"vlan-{v.vlan_id}", "kind": "carries",
+                "detail": f"{dev} carries VLAN {v.vlan_id}"
+                + (f" ({v.name})" if v.name else ""),
+            })
+    # Hosts to the segment their address provably sits in. Containment, the same
+    # arithmetic the inventory's VLAN column already performs.
+    vlan_of_key = {f"vlan-{v.vlan_id}": v for v in topo.vlans}
+    for lane in lanes:
+        if lane["layer"] != "endpoint":
+            continue
+        for node in lane["nodes"]:
+            vid, _vname, _sub = _vlan_of(node.get("addresses") or [], topo)
+            if vid is not None and f"vlan-{vid}" in vlan_of_key:
+                relations.append({
+                    "a": f"vlan-{vid}", "b": node["key"], "kind": "contains",
+                    "detail": f"{node['key']}'s address sits inside VLAN {vid}",
+                })
+    relations.sort(key=lambda r: (r["kind"], r["a"], r["b"]))
+
+    return {
+        "lanes": lanes,
+        "relations": relations,
+        "links": [{
+            "id": l.link_key, "a": l.a_device, "b": l.b_device,
+            "a_iface": l.a_interface, "b_iface": l.b_interface,
+            "evidence": l.evidence, "evidence_detail": l.evidence_detail,
+            "redundant_group": l.redundant_group or display_groups.get(l.link_key),
+            "aggregated": l.aggregated,
+            "member_count": l.member_count, "observed_by": list(l.observed_by),
+        } for l in topo.links],
+        "vlans": [{"vlan_id": v.vlan_id, "name": v.name, "subnets": list(v.subnets),
+                   "gateways": list(v.gateways)} for v in topo.vlans],
+        "counts": _counts(topo, live),
+        "source_conflicts": list(topo.source_conflicts),
+        "unlinked_devices": list(topo.unlinked_devices),
+        # On the payload from the first commit rather than added when it grows:
+        # a silently truncated lane reads exactly like a complete one.
+        # `nodes_total` must count the same population `nodes_shown` does, or the
+        # ratio is meaningless: every lane contributes, not just the device ones.
+        "caps": {"nodes_shown": shown, "nodes_total": total_nodes,
+                 "capped_lanes": capped},
+        **_analysis_block(t), **provenance,
+    }
+
+
+@app.get("/api/ip")
+def ip_lookup(address: str = Query(..., min_length=1, max_length=64),
+              mode: str = Query("intersects",
+                                pattern="^(intersects|contains|contained_by|exact)$"),
+              snapshot: str | None = None):
+    """What is at this address, and every policy that touches it.
+
+    THE GROUPING IS THE ANSWER. `covering` -- rules that permit this address
+    without ever naming it -- is the group a reviewer cannot get from a console's
+    own search box, and it is usually where the risk is. Returning one flat list
+    would bury it among the exact matches.
+    """
+    needle = parse_net(address)
+    if needle is None:
+        raise HTTPException(400, f"{address!r} is not an address or a CIDR block")
+    t = view_sid(snapshot)
+    live = engine()
+    topo, provenance = _topology_of(t)
+
+    def relation(raw_cidrs: list[str]) -> tuple[str | None, str]:
+        for raw in raw_cidrs:
+            net = parse_net(raw)
+            if net is None:
+                continue
+            if net == needle:
+                return "exact", "the rule names this address"
+            if needle.subnet_of(net):
+                return "covering", f"{needle} sits inside the rule's {net}"
+            if net.subnet_of(needle):
+                return "contained", f"the rule's {net} sits inside {needle}"
+        return None, ""
+
+    grouped: dict[str, list[dict]] = {"exact": [], "covering": [], "contained": []}
+    # Rules where this address is the DESTINATION, kept apart from rules where it
+    # is the source. Conflating them made every address in the estate "reachable
+    # from the internet": an any->internal rule has source 0.0.0.0/0, which
+    # contains every address, so 192.0.2.77 matched as a COVERING source and the
+    # reachability check then saw an internet source on a matched rule and said
+    # yes. Reachability is a claim about traffic ARRIVING here.
+    inbound: list[dict] = []
+    finding_refs: dict[str, list[str]] = {}
+    for f in live.findings:
+        for ref in f.raw_refs:
+            finding_refs.setdefault(ref, []).append(f.id)
+
+    for rec in live.records:
+        for side, cidrs, token in (("source", rec.source_cidrs, rec.source),
+                                   ("destination", rec.dest_cidrs, rec.destination)):
+            rel, why = relation(cidrs)
+            if rel is None:
+                continue
+            row = {
+                "rule_ref": rec.raw_ref, "source_tool": rec.source_tool,
+                "source": rec.source, "destination": rec.destination,
+                "service": rec.service, "action": rec.action,
+                "relation": rel,
+                "matched_via": f"containment on the {side} ({why})",
+                "matched_side": side,
+                "finding_ids": sorted(finding_refs.get(rec.raw_ref, [])),
+            }
+            grouped[rel].append(row)
+            if side == "destination" and rec.action == "allow":
+                inbound.append(row)
+            break
+
+    matched_assets = [a for a in live.assets
+                      if any((n := parse_net(x)) is not None
+                             and (n.subnet_of(needle) or needle.subnet_of(n))
+                             for x in a.ip_set)]
+    matched_ifaces = [i for i in topo.interfaces
+                      if any((n := parse_net(x)) is not None
+                             and (n.subnet_of(needle) or needle.subnet_of(n))
+                             for x in i.addresses)]
+    dev_keys = {i.device_key for i in matched_ifaces}
+    vlan_id, vlan_name, subnet = _vlan_of([str(needle)], topo)
+
+    return {
+        "address": str(needle), "mode": mode,
+        "matches": {k: sorted(v, key=lambda r: (r["source_tool"], r["rule_ref"]))
+                    for k, v in grouped.items()},
+        "assets": [{"asset_key": a.asset_key, "kind": a.kind, "tags": list(a.tags),
+                    "source_tools": list(a.source_tools)} for a in matched_assets],
+        "devices": [{"key": d.device_key, "name": d.name, "kind": d.role, "role": d.role,
+                     "vendor": d.vendor, "model": d.model,
+                     "addresses": [], "vlan_ids": [], "ha_group": d.ha_group,
+                     "ha_role": d.ha_role, "layer_reason": d.layer_reason,
+                     "observed_by": list(d.observed_by), "finding_ids": [],
+                     "unlinked_reason": None, "would_be_filled_by": None}
+                    for d in topo.devices if d.device_key in dev_keys],
+        "interfaces": [{"interface_key": i.interface_key, "device_key": i.device_key,
+                        "name": i.name, "addresses": list(i.addresses),
+                        "vlan_id": i.vlan_id} for i in matched_ifaces],
+        "vlan": {"vlan_id": vlan_id, "name": vlan_name} if vlan_id is not None else None,
+        "subnet": subnet,
+        "finding_ids": sorted({fid for group in grouped.values()
+                               for row in group for fid in row["finding_ids"]}),
+        "effective": {
+            # `null`, not False, when nothing matched: "no rule mentions this
+            # address" is not the same claim as "this address is unreachable",
+            # and only the first is supported by what we read.
+            # Only rules where this address is the DESTINATION, and only ALLOW
+            # rules, and only when the source denotes public space -- tested with
+            # the same `is_public` classifier the severity engine and the zone
+            # layer use, rather than a list of spellings, so `ANY-EXTERNAL`,
+            # `0.0.0.0/1` and `any` all answer the same way here as they do there.
+            "reachable_from_internet": (
+                any(is_public(r["source"]) or any(is_public(c) for c in _cidrs_of(live, r))
+                    for r in inbound)
+                if inbound else None),
+            "caveat": ("The engine models the union of ALLOW edges and does not implement "
+                       "deny precedence (ENGINE.md §10.1), so “not reachable” here "
+                       "means “no allow path was found”, not “provably "
+                       "blocked”. A deny rule that would stop this traffic is reported "
+                       "separately as a shadowed rule rather than subtracted from this "
+                       "answer."),
+        },
+        **provenance,
+    }
+
+
+@app.get("/api/resilience")
+def resilience(snapshot: str | None = None):
+    """Single points of failure, and what each one takes down with it.
+
+    `analysed: false` with a reason is returned when there was nothing to analyse.
+    An empty `findings` list must never be readable as a clean bill of health,
+    which is exactly how "no topology onboarded" would otherwise render.
+    """
+    t = view_sid(snapshot)
+    topo, provenance = _topology_of(t)
+    if not topo.devices:
+        return {
+            "analysed": False,
+            "reason": ("no infrastructure was ingested for this snapshot, so there is no "
+                       "topology to analyse. This is not a finding that the network is "
+                       "resilient -- nothing was examined. Onboard a management console "
+                       "(Catalyst Center, FortiManager, Meraki) or a carrier portal."),
+            "caveats": [],
+            "findings": [], "blast_radius": [], "blast_basis": "",
+            "adjacency_count": 0, "device_count": 0,
+            "excluded_adjacencies": [], "suppressed": [],
+            **provenance,
+        }
+    # Named `assessment`, not `report`: `report` is also the name of the
+    # /api/report route function at module scope, and the authz check resolves
+    # every name a handler references against main's namespace. A local called
+    # `report` therefore made this read look like it reached
+    # `persist_ranked_actions` -- a GET that writes, which is exactly what that
+    # check exists to catch. The check is right to be conservative; the variable
+    # was wrong to shadow.
+    assessment = assess_resilience(topo)
+    return {
+        # The analyzer's own word, not a re-derivation. It distinguishes "we
+        # examined this network and it has no single points of failure" from "we
+        # could not examine it", and the second one dressed as the first is the
+        # most damaging sentence this product could produce.
+        "analysed": assessment.analysable,
+        "reason": "; ".join(assessment.not_analysable_reasons) or None,
+        # What was examined but deliberately NOT flagged, and what the analysis
+        # could not see. Carried to the client because an empty findings list is
+        # only readable alongside them.
+        "caveats": list(assessment.caveats),
+        "findings": [{
+            "id": f.id, "kind": f.kind, "title": f.title, "detail": f.detail,
+            "severity": f.severity, "severity_band": f.severity_band,
+            "severity_vector": dict(f.vector),
+            # `failing` is the element whose loss causes the damage; `devices` is
+            # everything the finding turns on. The UI highlights the first and
+            # dims to the second, so both travel.
+            "involved": sorted({*f.devices, *f.failing, *f.circuits, *f.links}),
+            "failing": list(f.failing),
+            "devices": list(f.devices),
+            "circuits": list(f.circuits),
+            "source_tools": list(f.source_tools),
+            "raw_refs": list(f.raw_refs),
+        } for f in assessment.findings],
+        "blast_radius": [{
+            "device_key": b.device_key, "paths_lost": b.paths_lost,
+            "paths_before": b.paths_before, "fraction": b.fraction,
+            "circuits_stranded": list(b.circuits_stranded),
+            "devices_isolated": list(b.devices_isolated),
+            "devices_degraded": b.devices_degraded,
+            "components_after": b.components_after,
+        } for b in assessment.blast_radius],
+        "blast_basis": assessment.blast_basis,
+        "adjacency_count": assessment.adjacency_count,
+        "device_count": assessment.device_count,
+        "excluded_adjacencies": list(assessment.excluded_adjacencies),
+        "suppressed": list(assessment.suppressed),
+        **provenance,
+    }

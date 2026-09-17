@@ -532,11 +532,14 @@ Its two hard limits are §10.2 (a chain that pivots *through* a subnet or group
 object is not reported) and §10.3 plus the scale table in §10 (enumeration is
 worst-case exponential and the cap bounds yields, not work).
 
-> **On the shipped fixture this detector reports zero findings**, because the
-> seeded chain's only pivot is a `/16` network object and §10.2 forbids that hop.
-> That is the correct answer to the question asked, and it is also the reason the
-> headline count is 0 — see §10.2 for both halves, and `DEMO.md` §2 for what to
-> show instead.
+> **On the shipped fixture this detector reports two findings**, and §10.2 is
+> still in force: the chains it reports pivot through concrete hosts that a
+> second tool independently observes, while the all-ranges chain
+> `0.0.0.0/0 → 10.0.0.0/8 → app-segment → db-prod-01` exists as real edges and is
+> declined in full. The count moved because the FIXTURE gained those hosts, not
+> because the traversal rule was loosened — `verify_engine` asserts both
+> directions. See §10.2 for the limitation that remains, and `docs/DEMO.md`
+> beat 6 for how the two are presented together.
 
 ### 6.5 Transport-/application-layer exposure (`transport_exposure.py`)
 The fifth detector, and the one the formula reference used to omit. It reasons

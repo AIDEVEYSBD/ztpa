@@ -1,0 +1,218 @@
+{
+  "fw-perim-01": {
+    "cmdb/system/interface": {
+      "http_method": "GET",
+      "status": "success",
+      "http_status": 200,
+      "serial": "FG200F1234567890",
+      "version": "v7.4.3",
+      "vdom": "root",
+      "path": "system",
+      "name": "interface",
+      "results": [
+        {
+          "name": "mgmt",
+          "ip": "10.255.0.21 255.255.255.0",
+          "vlanid": 10,
+          "interface": "",
+          "role": "undefined",
+          "alias": "",
+          "description": "out-of-band management",
+          "status": "up"
+        },
+        {
+          "name": "port1",
+          "ip": "10.254.1.2 255.255.255.252",
+          "vlanid": 0,
+          "interface": "",
+          "role": "undefined",
+          "alias": "",
+          "description": "to rtr-edge-01 edge-fw-1",
+          "status": "up",
+          "speed": "1000full"
+        },
+        {
+          "name": "port2",
+          "ip": "10.254.1.10 255.255.255.252",
+          "vlanid": 0,
+          "interface": "",
+          "role": "undefined",
+          "alias": "",
+          "description": "to rtr-edge-02 edge-fw-1",
+          "status": "up",
+          "speed": "1000full"
+        },
+        {
+          "name": "port3",
+          "ip": "10.254.2.1 255.255.255.252",
+          "vlanid": 0,
+          "interface": "",
+          "role": "undefined",
+          "alias": "",
+          "description": "to csw-core-01 Te1/1/1",
+          "status": "up",
+          "speed": "1000full"
+        },
+        {
+          "name": "port4",
+          "ip": "10.254.2.5 255.255.255.252",
+          "vlanid": 0,
+          "interface": "",
+          "role": "undefined",
+          "alias": "",
+          "description": "to csw-core-02 Te1/1/1",
+          "status": "up",
+          "speed": "1000full"
+        }
+      ]
+    },
+    "cmdb/system/sdwan": {
+      "http_method": "GET",
+      "status": "success",
+      "http_status": 200,
+      "serial": "FG200F1234567890",
+      "version": "v7.4.3",
+      "vdom": "root",
+      "path": "system",
+      "name": "sdwan",
+      "results": {
+        "status": "disable",
+        "members": [],
+        "health-check": []
+      }
+    },
+    "cmdb/system/ha": {
+      "http_method": "GET",
+      "status": "success",
+      "http_status": 200,
+      "serial": "FG200F1234567890",
+      "version": "v7.4.3",
+      "vdom": "root",
+      "path": "system",
+      "name": "ha",
+      "results": {
+        "group-name": "perim-ha",
+        "mode": "a-p"
+      }
+    },
+    "monitor/system/csf": {
+      "http_method": "GET",
+      "status": "success",
+      "http_status": 200,
+      "serial": "FG200F1234567890",
+      "version": "v7.4.3",
+      "vdom": "root",
+      "path": "system",
+      "name": "csf",
+      "results": {
+        "name": "fw-perim-01",
+        "serial": "FG200F1234567890",
+        "ip": "10.255.0.21",
+        "authorized": true,
+        "is_root": true,
+        "ha_members": [
+          "FG200F1234567890",
+          "FG200F0987654321"
+        ],
+        "children": []
+      }
+    }
+  },
+  "fw-perim-02": {
+    "cmdb/system/interface": {
+      "http_method": "GET",
+      "status": "success",
+      "http_status": 200,
+      "serial": "FG200F0987654321",
+      "version": "v7.4.3",
+      "vdom": "root",
+      "path": "system",
+      "name": "interface",
+      "results": [
+        {
+          "name": "mgmt",
+          "ip": "10.255.0.22 255.255.255.0",
+          "vlanid": 10,
+          "interface": "",
+          "role": "undefined",
+          "alias": "",
+          "description": "out-of-band management",
+          "status": "up"
+        },
+        {
+          "name": "port1",
+          "ip": "10.254.1.6 255.255.255.252",
+          "vlanid": 0,
+          "interface": "",
+          "role": "undefined",
+          "alias": "",
+          "description": "to rtr-edge-01 edge-fw-2",
+          "status": "up",
+          "speed": "1000full"
+        },
+        {
+          "name": "port2",
+          "ip": "10.254.1.14 255.255.255.252",
+          "vlanid": 0,
+          "interface": "",
+          "role": "undefined",
+          "alias": "",
+          "description": "to rtr-edge-02 edge-fw-2",
+          "status": "up",
+          "speed": "1000full"
+        },
+        {
+          "name": "port3",
+          "ip": "10.254.2.9 255.255.255.252",
+          "vlanid": 0,
+          "interface": "",
+          "role": "undefined",
+          "alias": "",
+          "description": "to csw-core-01 Te1/1/2",
+          "status": "up",
+          "speed": "1000full"
+        },
+        {
+          "name": "port4",
+          "ip": "10.254.2.13 255.255.255.252",
+          "vlanid": 0,
+          "interface": "",
+          "role": "undefined",
+          "alias": "",
+          "description": "to csw-core-02 Te1/1/2",
+          "status": "up",
+          "speed": "1000full"
+        }
+      ]
+    },
+    "cmdb/system/sdwan": {
+      "http_method": "GET",
+      "status": "success",
+      "http_status": 200,
+      "serial": "FG200F0987654321",
+      "version": "v7.4.3",
+      "vdom": "root",
+      "path": "system",
+      "name": "sdwan",
+      "results": {
+        "status": "disable",
+        "members": [],
+        "health-check": []
+      }
+    },
+    "cmdb/system/ha": {
+      "http_method": "GET",
+      "status": "success",
+      "http_status": 200,
+      "serial": "FG200F0987654321",
+      "version": "v7.4.3",
+      "vdom": "root",
+      "path": "system",
+      "name": "ha",
+      "results": {
+        "group-name": "perim-ha",
+        "mode": "a-p"
+      }
+    }
+  }
+}

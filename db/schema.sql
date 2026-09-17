@@ -57,8 +57,20 @@ CREATE TABLE IF NOT EXISTS snapshots (
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS sources (
     source_id    text PRIMARY KEY,
-    tool         text NOT NULL
-                   CHECK (tool IN ('algosec', 'guardicore', 'wiz', 'sd_wan', 'sd_lan')),
+    -- OPEN vocabulary, deliberately: an operator can bring their own source via
+    -- a declarative SourceProfile, and that profile is the registration. This
+    -- used to be CHECKed against a fixed five, and the constraint was satisfied
+    -- by relabelling every other tool as 'algosec' -- so a custom connector
+    -- ingested cleanly under a different vendor's name. See 0006.
+    tool         text NOT NULL CHECK (btrim(tool) <> ''),
+    -- Which rung of the collection ladder this source sits on. An aggregator
+    -- reports what the devices it manages told it; a device read is
+    -- first-hand. The inventory says which it has, per row.
+    tier         text NOT NULL DEFAULT 'aggregator'
+                   CHECK (tier IN ('aggregator', 'management_console', 'device')),
+    -- False for a bring-your-own profile: the name is the operator's, not one
+    -- this build ships a normalizer for.
+    registered   boolean NOT NULL DEFAULT true,
     device       text,
     config       jsonb NOT NULL DEFAULT '{}'::jsonb,
     last_sync    timestamptz
@@ -184,6 +196,198 @@ CREATE TABLE IF NOT EXISTS graph_edges (
     enforcement_point  text,                       -- node_id of the device that enforces it
     PRIMARY KEY (snapshot_id, edge_id)
 );
+
+
+-- ============================================================================
+-- THE INFRASTRUCTURE LAYER -- the network the policy runs on
+--
+-- Six snapshot-scoped tables that CASCADE with their snapshot, exactly like
+-- graph_nodes/graph_edges: a derived view of one ingest, not governance.
+--
+-- The CHECK constraints below are load-bearing, not hygiene. A layered network
+-- diagram is the largest fabrication risk in this product -- it draws boxes and
+-- lines that look like a photograph of a building, and a reader cannot tell by
+-- looking whether a modem was observed or assumed. So:
+--   * topology_links.evidence has NO 'inferred' member. An unevidenced line
+--     cannot be stored and therefore cannot be drawn.
+--   * (layer IS NULL) = (layer_source = 'unknown'): unplaced is one state,
+--     stated on both columns or neither.
+--   * a named device role implies a role_source, so the inventory can always
+--     show its working.
+--   * admin_up / oper_up are nullable and NULL means NOT REPORTED -- never
+--     DEFAULT false, or the diagram invents an outage.
+-- Identical definitions in db/migrations/0007_infrastructure.sql; the two must
+-- agree (see backend/tests/test_infrastructure_schema.py).
+-- ============================================================================
+
+-- ── Devices ────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS devices (
+    snapshot_id   text NOT NULL REFERENCES snapshots(snapshot_id) ON DELETE CASCADE,
+    device_key    text NOT NULL,
+    name          text NOT NULL,
+    role          text NOT NULL DEFAULT 'unknown'
+                    CHECK (role IN ('modem','router','firewall','l3_switch','l2_switch',
+                                    'hub','bridge','load_balancer','wireless_ap','server',
+                                    'workstation','virtual_appliance','unknown')),
+    role_source   text NOT NULL DEFAULT 'unknown'
+                    CHECK (role_source IN ('declared','derived','unknown')),
+    role_reason   text NOT NULL DEFAULT '',
+    vendor        text,
+    model         text,
+    os_version    text,
+    serial        text,
+    mgmt_ip       text,
+    site          text,
+    ha_group      text,
+    ha_role       text,
+    -- Assigned by topology.reconstruct from graph POSITION, never by a source.
+    layer         text CHECK (layer IN ('internet','circuit','modem','edge','perimeter',
+                                        'core','access','segment','endpoint')),
+    layer_source  text NOT NULL DEFAULT 'unknown'
+                    CHECK (layer_source IN ('declared','derived','unknown')),
+    layer_reason  text NOT NULL DEFAULT '',
+    tags          text[] NOT NULL DEFAULT '{}',
+    source_tool   text NOT NULL,
+    source_tier   text NOT NULL CHECK (source_tier IN ('aggregator','management_console','device')),
+    raw_ref       text NOT NULL,
+    simulated     boolean NOT NULL DEFAULT false,
+    PRIMARY KEY (snapshot_id, device_key),
+
+    -- A named role always has a story behind it.
+    CONSTRAINT devices_role_is_sourced
+        CHECK (role = 'unknown' OR role_source IN ('declared','derived')),
+    -- Unplaced is a single state, stated on both columns or neither.
+    CONSTRAINT devices_layer_matches_source
+        CHECK ((layer IS NULL) = (layer_source = 'unknown'))
+);
+
+-- ── Interfaces ─────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS device_interfaces (
+    snapshot_id     text NOT NULL REFERENCES snapshots(snapshot_id) ON DELETE CASCADE,
+    interface_key   text NOT NULL,
+    device_key      text NOT NULL,
+    name            text NOT NULL,
+    description     text,
+    addresses       text[] NOT NULL DEFAULT '{}',
+    -- Everything reachable THROUGH this interface, when the source says so.
+    -- AlgoSec's "IPs behind interface" is the richest instance and is what lets
+    -- a policy product contribute to a topology at all.
+    networks_behind text[] NOT NULL DEFAULT '{}',
+    vlan_id         int CHECK (vlan_id IS NULL OR vlan_id BETWEEN 1 AND 4094),
+    zone            text,
+    -- NULL = NOT REPORTED. See the header: never DEFAULT false.
+    admin_up        boolean,
+    oper_up         boolean,
+    speed_mbps      int,
+    lag_group       text,
+    mac             text,
+    neighbor_device    text,
+    neighbor_interface text,
+    source_tool     text NOT NULL,
+    source_tier     text NOT NULL CHECK (source_tier IN ('aggregator','management_console','device')),
+    raw_ref         text NOT NULL,
+    simulated       boolean NOT NULL DEFAULT false,
+    PRIMARY KEY (snapshot_id, interface_key)
+);
+
+-- ── Links ──────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS topology_links (
+    snapshot_id     text NOT NULL REFERENCES snapshots(snapshot_id) ON DELETE CASCADE,
+    link_key        text NOT NULL,
+    a_device        text NOT NULL,
+    a_interface     text,
+    b_device        text NOT NULL,
+    b_interface     text,
+    -- NO 'inferred' MEMBER, AND THERE MUST NEVER BE ONE. Each value names an
+    -- observation: a neighbour protocol, a console's topology API, a config
+    -- stanza (HA pair, LAG), a next hop that resolves, an outright declaration,
+    -- or provable address containment. `containment` is the weakest and is
+    -- labelled rather than blended in with a cable.
+    evidence        text NOT NULL
+                      CHECK (evidence IN ('lldp','cdp','api_topology','config',
+                                          'routing','declared','containment')),
+    evidence_detail text NOT NULL DEFAULT '',
+    -- Alternate paths for one purpose (the criss-cross). Read by the resilience
+    -- analyzer, which must not report a bridge that has a live sibling.
+    redundant_group text,
+    aggregated      boolean NOT NULL DEFAULT false,
+    member_count    int NOT NULL DEFAULT 1 CHECK (member_count >= 1),
+    source_tool     text NOT NULL,
+    source_tier     text NOT NULL CHECK (source_tier IN ('aggregator','management_console','device')),
+    simulated       boolean NOT NULL DEFAULT false,
+    PRIMARY KEY (snapshot_id, link_key),
+    -- A device is not adjacent to itself; a self-link would make every
+    -- articulation-point result wrong.
+    CONSTRAINT topology_links_not_self CHECK (a_device <> b_device)
+);
+
+-- ── VLANs ──────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS vlans (
+    snapshot_id text NOT NULL REFERENCES snapshots(snapshot_id) ON DELETE CASCADE,
+    vlan_id     int NOT NULL CHECK (vlan_id BETWEEN 1 AND 4094),
+    name        text,
+    subnets     text[] NOT NULL DEFAULT '{}',
+    gateways    text[] NOT NULL DEFAULT '{}',
+    device_keys text[] NOT NULL DEFAULT '{}',
+    tags        text[] NOT NULL DEFAULT '{}',
+    source_tool text NOT NULL,
+    source_tier text NOT NULL CHECK (source_tier IN ('aggregator','management_console','device')),
+    raw_ref     text NOT NULL,
+    simulated   boolean NOT NULL DEFAULT false,
+    PRIMARY KEY (snapshot_id, vlan_id)
+);
+
+-- ── Subnets ────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS subnets (
+    snapshot_id text NOT NULL REFERENCES snapshots(snapshot_id) ON DELETE CASCADE,
+    cidr        text NOT NULL,
+    name        text,
+    vlan_id     int CHECK (vlan_id IS NULL OR vlan_id BETWEEN 1 AND 4094),
+    gateways    text[] NOT NULL DEFAULT '{}',
+    device_keys text[] NOT NULL DEFAULT '{}',
+    zone        text,
+    tags        text[] NOT NULL DEFAULT '{}',
+    source_tool text NOT NULL,
+    source_tier text NOT NULL CHECK (source_tier IN ('aggregator','management_console','device')),
+    raw_ref     text NOT NULL,
+    simulated   boolean NOT NULL DEFAULT false,
+    PRIMARY KEY (snapshot_id, cidr)
+);
+
+-- ── Circuits ───────────────────────────────────────────────────────────────
+-- Modelled separately from the interface that terminates one, because the whole
+-- redundancy question is that two circuits can share a modem, a router, a
+-- building entry or -- most expensively -- a CARRIER, and each is a different
+-- single point of failure. A circuit that is merely an attribute of an interface
+-- cannot express any of them, and "two diverse links from one carrier" is
+-- redundancy that looks real on a diagram and is not.
+CREATE TABLE IF NOT EXISTS circuits (
+    snapshot_id    text NOT NULL REFERENCES snapshots(snapshot_id) ON DELETE CASCADE,
+    circuit_id     text NOT NULL,
+    provider       text,
+    technology     text NOT NULL DEFAULT 'unknown'
+                     CHECK (technology IN ('mpls','p2p','isdn','broadband','fiber',
+                                           'lte','satellite','unknown')),
+    bandwidth_mbps int,
+    public_ips     text[] NOT NULL DEFAULT '{}',
+    device_key     text,
+    interface      text,
+    state          text NOT NULL DEFAULT 'unknown'
+                     CHECK (state IN ('up','down','standby','unknown')),
+    source_tool    text NOT NULL,
+    source_tier    text NOT NULL CHECK (source_tier IN ('aggregator','management_console','device')),
+    raw_ref        text NOT NULL,
+    simulated      boolean NOT NULL DEFAULT false,
+    PRIMARY KEY (snapshot_id, circuit_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_devices_layer     ON devices (snapshot_id, layer);
+CREATE INDEX IF NOT EXISTS idx_devices_role      ON devices (snapshot_id, role);
+CREATE INDEX IF NOT EXISTS idx_ifaces_device     ON device_interfaces (snapshot_id, device_key);
+CREATE INDEX IF NOT EXISTS idx_ifaces_vlan       ON device_interfaces (snapshot_id, vlan_id);
+CREATE INDEX IF NOT EXISTS idx_links_a           ON topology_links (snapshot_id, a_device);
+CREATE INDEX IF NOT EXISTS idx_links_b           ON topology_links (snapshot_id, b_device);
+CREATE INDEX IF NOT EXISTS idx_circuits_device   ON circuits (snapshot_id, device_key);
 
 -- ============================================================================
 -- findings -- deterministic risk findings (+ cached LLM explanation)

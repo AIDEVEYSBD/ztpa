@@ -246,11 +246,17 @@ Every one of the four new findings, and the one retitle:
 from __future__ import annotations
 
 import importlib.util
+import json
+import sys
 from collections import Counter
 from pathlib import Path
 
 import pytest
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+import seed_topology  # noqa: E402
+
+from src import estate  # noqa: E402
 from src.graph.reachability import _valid_traversal
 
 _SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "verify_engine.py"
@@ -273,7 +279,40 @@ def _load_verify_engine():
 
 
 @pytest.fixture(scope="module")
-def verify():
+def _mock_dir_holds_the_demo_dataset():
+    """Fail with the CAUSE, not with a hash mismatch.
+
+    Every golden below is built from `backend/data/mock`, which is not a fixture
+    -- it is the engine's live input, and `scenarios.write_scenario` overwrites
+    it whenever an admin picks a different dataset in the console. Switch to
+    "Partial onboarding" and leave it there, and this module reports
+    `assert 'a1b2...' == 'c3d4...'`: a baselined snapshot id that moved, which
+    reads as an engine regression and sends the reader into the analyzers.
+
+    Compared byte-for-byte against a freshly built demo dataset rather than by
+    counting files, because `clean` and `scale` write the same ten filenames
+    with different contents.
+    """
+    import src.scenarios as scenarios          # local: costs nothing when unused
+    expected = dict(scenarios._policy())
+    expected.update(seed_topology.build_exports(estate.build()))
+    wrong = sorted(
+        name for name, doc in expected.items()
+        if not (scenarios.MOCK_DIR / name).exists()
+        or (scenarios.MOCK_DIR / name).read_text() != json.dumps(doc, indent=2) + "\n")
+    missing = sorted(set(scenarios.INFRA) - set(expected))
+    assert not wrong and not missing, (
+        "backend/data/mock is not the demo dataset, so every golden in this "
+        "module is being measured against the wrong estate.\n"
+        f"  differs: {', '.join(wrong) or 'none'}\n"
+        "  restore it with:  python -c \"import sys; sys.path.insert(0, 'scripts'); "
+        "import src.scenarios as s; s.write_scenario('demo')\"\n"
+        "If you MEANT to change the demo dataset, re-baseline per the module "
+        "docstring -- do not silence this.")
+
+
+@pytest.fixture(scope="module")
+def verify(_mock_dir_holds_the_demo_dataset):
     return _load_verify_engine()
 
 
@@ -305,17 +344,28 @@ EXPECTED_CHECKS = [
     "P3 overlap present + low",
     "P4 shadowed-deny present + low",
     "P4 the shadower is the broad rule at the top of the rulebase",
-    "P5 exactly one cross-tool path is reported",
-    "P5 it is the internet -> LB -> app -> internal-app-01 -> PCI-db chain",
-    "P5 every hop on it is a real edge in the graph",
+    # P5 grew from 15 checks to 19. The flagship carries TWO cross-tool paths now
+    # (the retired `multi_path` scenario advertised two and reported one), so the
+    # walk runs over both -- and three checks are genuinely new rather than
+    # doubled: the two paths must share no grant, every cited grant must be the
+    # SOLE grant for its hop, and the scope-strip counterfactual now asserts in
+    # BOTH directions (path A dies without the declared tenancy, path B does not,
+    # because its merges are hostname agreements).
+    "P5 exactly two cross-tool paths are reported",
+    "P5 path A (db-prod-01) is the expected internet -> LB -> app -> pivot -> PCI-db chain",
+    "P5 path B (db-prod-02) is the expected internet -> LB -> app -> pivot -> PCI-db chain",
+    "P5 every hop on both is a real edge in the graph",
     "P5 each hop is granted by the expected rule from the expected tool",
-    "P5 no node on it is abstract -- every pivot is a concrete host",
-    "P5 _valid_traversal accepts it",
-    "P5 it traverses at least 3 distinct source tools",
-    "P5 it reaches a regulated asset and is scored critical",
+    "P5 no node on either is abstract -- every pivot is a concrete host",
+    "P5 _valid_traversal accepts both",
+    "P5 each traverses at least 3 distinct source tools",
+    "P5 each reaches a regulated asset and is scored critical",
+    "P5 the two paths share no grant, so cutting one leaves the other",
+    "P5 cutting a cited grant cuts the ACCESS, not just the finding",
     "P5 the app-server-07/appsrv-07 merge happened on a SHARED DECLARED scope",
     "P5 ...so nothing is withheld for review any more",
-    "P5 strip the declared scopes and the path DISAPPEARS (it needs the merge)",
+    "P5 strip the declared scopes and the path that needs the merge DISAPPEARS",
+    "P5 ...while the path built on hostname agreement survives it",
     "P5 the legacy chain through the /16 is still a real edge sequence",
     "P5 ...and _valid_traversal STILL rejects it (a /16 is never a pivot)",
     "P5 internal-app is still abstract (a /16 is an endpoint, never a pivot)",
@@ -356,43 +406,153 @@ def test_the_standalone_script_still_exits_zero(verify, capsys):
 # to the INPUT: the three exports now declare the `vpcId` their cloud workloads
 # live in, and AlgoSec/Guardicore carry a new concrete host plus the two rules
 # that reach it. See "THE CROSS-TOOL PATH RE-BASELINE" in the module docstring.
-DEMO_SNAPSHOT_ID = "snap_7aa6db6c2ddb"
+# THE INFRASTRUCTURE RE-BASELINE (this change), in two steps.
+#
+#   snap_7aa6db6c2ddb -> snap_f95d00f824ab   the six infrastructure exports
+#   snap_f95d00f824ab -> snap_830fc44e6089   Catalyst Center's IP pool endpoint
+#
+# The second step is a SECOND ingest of the same estate, not a second change to
+# the engine. `/dna/intent/api/v1/global-pool` was added to the Catalyst
+# projection because `vlan-names` returns ids and nothing else, so without it a
+# VLAN had no subnet and no name -- and "which VLAN is this host in", which the
+# inventory and the address drill-down both answer by containment, was empty for
+# every row in the estate. The pool now supplies VLAN 30 = 10.30.0.0/16 =
+# "app-tier", and 10.30.7.7 resolves into it.
+#
+# It is NOT back-formed from the SVI mask, which is the available shortcut and
+# would place app-server-07 outside its own VLAN (the SVI reads 10.30.0.1/24
+# while the VLAN carries a /16). `test_a_vlan_subnet_comes_from_the_pool_and_
+# never_from_the_gateway_mask` pins that.
+#
+# In both steps: the snapshot id, and NOTHING ELSE.
+#
+# Diffed in full against the previous baseline, per the procedure at the top of
+# this file. Every other assertion in this file passes UNCHANGED: 35 findings,
+# the same 3/1/5/16/10 by type, the same 4/1/10/20 by band, 4 forced critical,
+# the byte-identical per-finding table below, 26 graph nodes and 25 edges, 26
+# assets, and the five-hop cross-tool path intact.
+#
+# THE CAUSE, attributed: `run_all._fingerprint` grew a sixth blob covering the
+# infrastructure layer, and seven console exports are now present in data/mock,
+# so the hash has more content to cover. It is not that the analysis changed --
+# the seven topology normalizers emit ZERO PolicyRecords and zero
+# ObservedEntities by construction, asserted at runtime in
+# test_two_graphs_stay_separate.py and by grep in the verify pass.
+#
+# WHY THE ID SHOULD MOVE HERE rather than be excluded from the hash: the id keys
+# every snapshot-scoped table, `devices`/`topology_links`/`vlans` among them. Two
+# ingests differing only in topology sharing one id would mean the rows a reader
+# gets back depend on which run wrote last. An id that does not cover the content
+# it keys is not a content hash. An estate with NO infrastructure exports still
+# produces the old id -- the sixth blob is appended only when non-empty, and
+# `test_an_estate_with_no_topology_keeps_the_id_it_always_had` pins that.
+# THE VLAN 45 STEP  (snap_5b671e7fc071 -> snap_173ab466881a)
+#
+# A THIRD ingest of the same estate, and the id and NOTHING ELSE moved: 38
+# findings, the same 2/5/10/3/18 by type, the same 5/1/10/22 by band, 5 forced
+# critical, the byte-identical per-finding table below, and every structural
+# count unchanged. Re-run and diffed in full per the procedure at the top of this
+# file before the number here was touched.
+#
+# THE CAUSE: `estate.py` gained VLAN 45 `data-svc` (10.45.0.0/24), so the
+# infrastructure blob inside `run_all._fingerprint` has one more VLAN and three
+# more SVIs in it. Path B's pivot `data-node-01` lives at 10.45.0.9, and without
+# a VLAN containing that address the second cross-tool path's middle hop was a
+# host floating in the endpoint lane with no subnet, no gateway and no access
+# switch under it -- so "where does this finding live", which the Inventory and
+# the address drill-down both answer by containment, had no answer for it. The
+# two halves of a scenario have to be ONE estate; this is that rule applied to
+# the path the flagship was just given.
+#
+# It cannot move a policy finding, and did not: the seven topology normalizers
+# emit zero PolicyRecords and zero ObservedEntities by construction
+# (test_two_graphs_stay_separate.py).
+DEMO_SNAPSHOT_ID = "snap_173ab466881a"
 
-# 31 before this re-baseline. +4, every one attributed in the module docstring:
-# +1 cross_tool_path, +1 cidr_overlap (ALGO-029/ALGO-030), +1 shadowed_rule
-# (ALGO-029 under ALGO-001), +1 transport_exposure (ALGO-020+WIZ-021, which only
-# lands once the two views of that host are one asset). Nothing was removed.
-DEMO_FINDING_COUNT = 35
+# ---------------------------------------------------------------------------
+# THE PATH-B RE-BASELINE, IN FULL  (35 -> 38)
+#
+# Cause: `scripts/seed_demo.py` gained planted problem 6 -- a SECOND cross-tool
+# path to a second regulated database -- and re-sourced ALGO-030 to close an
+# anti-cheat. No engine code changed. Measured by diffing the full per-finding
+# table below, not the total. Every difference, and why the new value is the
+# more correct one:
+#
+#   -1  cidr_overlap (ALGO-029, ALGO-030) 30/low. GONE, AND THAT IS THE POINT.
+#       ALGO-030 used to source from `internal-app` (10.40.0.0/16), which
+#       CONTAINS ALGO-029's source 10.40.0.5 -- so the two overlapped, and
+#       ALGO-030 was a covering twin for the last hop of path A. The engine does
+#       not model CIDR-membership expansion (docs/ENGINE.md 10.2), so "remove
+#       ALGO-029" resolved the cross-tool finding while leaving the flow open
+#       through ALGO-030. ALGO-030 now sources from `app-segment`
+#       (10.30.0.0/16), which does not contain 10.40.0.5. Losing this overlap is
+#       the anti-cheat landing: `verify_engine`'s "P5 cutting a cited grant cuts
+#       the ACCESS, not just the finding" is the check that now passes because
+#       of it.
+#
+#   -1/+1  transport_exposure (ALGO-070, ALGO-080) -> (ALGO-062, ALGO-070,
+#       ALGO-080), 40/medium either way. Not a finding lost and another gained:
+#       the SAME finding, with a third rule joining the group. ALGO-062 grants
+#       the same service to the same destination, so it belongs in it.
+#
+#   +1  cidr_overlap (ALGO-062, ALGO-070) 10/low. ALGO-062 (10.30.0.0/16 ->
+#       app-server-09, tcp/443) was added to keep a third overlap in the fixture
+#       after the ALGO-029/ALGO-030 one correctly disappeared. 10/low rather
+#       than the 30/low it replaces because app-server-09 carries no regulated
+#       tag, where db-prod-01 does -- the score followed the destination, which
+#       is what it is supposed to do. Aimed at a LEAF host that grants nothing
+#       onward, so it opens no third path.
+#
+#   +1  cross_tool_path (ALGO-031, GC-030, WIZ-010, WIZ-011) 100/critical,
+#       forced. PATH B. internet -> lb-public-02 -> app-server-08 ->
+#       data-node-01 -> db-prod-02, three tools, four grants, every pivot a
+#       concrete host, and DISJOINT from path A -- no shared hop and no shared
+#       endpoint, asserted by `verify_engine`. Both of its middle grants are
+#       sole grants by construction, so it carries no covering twin.
+#
+#   +2  shadowed_rule (ALGO-001, ALGO-031) and (ALGO-001, ALGO-062), 10/low
+#       each. The two new AlgoSec rules fall under the order-1 "temporary broad
+#       allow (TODO remove)" on exactly the same terms as the sixteen already
+#       here: same tool, lower order, source inside 0.0.0.0/0, destination
+#       inside 10.0.0.0/8, service inside any. A new AlgoSec rule that did NOT
+#       produce one of these would be the anomaly.
+# ---------------------------------------------------------------------------
+DEMO_FINDING_COUNT = 38
 
 DEMO_BY_TYPE = {
-    "cidr_overlap": 3,          # 2 + 1: ALGO-029's /32 source sits inside ALGO-030's /16
-    "over_permissive": 5,       # unchanged -- ALGO-029's source is one host (E 0.1),
-                                # below sensitive_dest_min_E 0.3, so it is not over-permissive
-    "shadowed_rule": 16,        # 15 + 1: ALGO-029 is dead under ALGO-001 like the other 14
-    "transport_exposure": 10,   # 9 + 1: ALGO-020 (tcp/443) + WIZ-021 (udp/443) on ONE asset
-    "cross_tool_path": 1,       # 0 -> 1: the real chain, pivoting through a concrete host
+    "cidr_overlap": 3,          # 3 - 1 (ALGO-029/030 stopped overlapping) + 1 (ALGO-062/070)
+    "over_permissive": 5,       # unchanged. ALGO-030 still scores 70/high on the /16 it
+                                # now resolves to; ALGO-031's source is one host (E 0.1),
+                                # below sensitive_dest_min_E 0.3, so it is not reported
+    "shadowed_rule": 18,        # 16 + 2: ALGO-031 and ALGO-062, both dead under ALGO-001
+    "transport_exposure": 10,   # unchanged -- ALGO-062 joined a group, it did not make one
+    "cross_tool_path": 2,       # 1 + 1: path B
 }
 
 DEMO_BY_BAND = {
-    "critical": 4,   # 3 + 1 (the cross-tool path, forced)
-    "high": 1,       # unchanged (ALGO-030)
-    "medium": 10,    # 9 + 1 (the restored ALGO-020/WIZ-021 pair)
-    "low": 20,       # 18 + 2 (the new cidr_overlap and shadowed_rule)
+    "critical": 5,   # 4 + 1 (path B, forced)
+    "high": 1,       # unchanged (ALGO-030, still 70/high on its resolved /16)
+    "medium": 10,    # unchanged
+    "low": 22,       # 20 - 1 (the ALGO-029/030 overlap) + 3 (ALGO-062/070 overlap
+                     # and the two new shadowed rules)
 }
 
-DEMO_FORCED_CRITICAL = 4        # 3 + 1, same cause as the critical band
+DEMO_FORCED_CRITICAL = 5        # 4 + 1, same cause as the critical band
 
 # The full per-finding table: (type, sorted raw_refs, severity, band, forced).
 # This is what a re-baseline must be diffed against -- a total alone would hide a
 # severity that moved while another moved the opposite way.
 DEMO_FINDINGS = [
     ("cidr_overlap", ("ALGO-010", "ALGO-011"), 30, "low", False),
-    # NEW: ALGO-029 (10.40.0.5/32 -> db-prod-01) and ALGO-030 (10.40.0.0/16 ->
-    # db-prod-01) grant the same service to the same destination and the /32 is
-    # inside the /16. Genuine redundancy, and the point of the pair: the host
-    # rule is the original least-privilege grant, ALGO-030 the later widening.
-    ("cidr_overlap", ("ALGO-029", "ALGO-030"), 30, "low", False),
+    # There is deliberately NO ("cidr_overlap", ("ALGO-029", "ALGO-030")) row any
+    # more. It was the covering twin that made "remove ALGO-029" resolve the
+    # cross-tool finding without closing the flow; ALGO-030 now sources from
+    # app-segment, which does not contain 10.40.0.5. See the re-baseline note.
     ("cidr_overlap", ("ALGO-060", "ALGO-061"), 10, "low", False),
+    # Its replacement, so the fixture keeps three overlaps. Aimed at a LEAF host
+    # (app-server-09 grants nothing onward) so it opens no path, and 10/low
+    # rather than 30/low because that destination carries no regulated tag.
+    ("cidr_overlap", ("ALGO-062", "ALGO-070"), 10, "low", False),
     # THE DIFFERENTIATOR, back and REAL this time:
     #   0.0.0.0/0 --wiz--> lb-public-01 --wiz--> app-server-07
     #             --guardicore--> internal-app-01 --algosec--> db-prod-01
@@ -402,6 +562,12 @@ DEMO_FINDINGS = [
     # than the /16 internal-app -- NOT because any engine rule was relaxed.
     # `verify_engine._check_p5` walks it hop by hop and proves both dependencies.
     ("cross_tool_path", ("ALGO-029", "GC-002", "WIZ-001", "WIZ-002"), 100, "critical", True),
+    # PATH B, and the reason the demo has a remediation QUEUE rather than a
+    # single trick: 0.0.0.0/0 -> lb-public-02 -> app-server-08 -> data-node-01
+    # -> db-prod-02. It shares no hop and no endpoint with path A, so cutting
+    # one leaves the other standing -- asserted in `verify_engine._check_p5`,
+    # which also proves neither cited grant has a broader twin.
+    ("cross_tool_path", ("ALGO-031", "GC-030", "WIZ-010", "WIZ-011"), 100, "critical", True),
     ("over_permissive", ("ALGO-001",), 60, "critical", True),
     ("over_permissive", ("ALGO-002",), 100, "critical", True),
     # NEW: the audit's headline blocker, fixed. E went 0.1 -> 0.7.
@@ -419,6 +585,12 @@ DEMO_FINDINGS = [
     # other 14 -- same tool, lower order, source inside 0.0.0.0/0, destination
     # inside 10.0.0.0/8, service inside any.
     ("shadowed_rule", ("ALGO-001", "ALGO-029"), 10, "low", False),
+    # ALGO-031 and ALGO-062, the two rules planted problem 6 added. They fall
+    # under the order-1 broad allow on the same terms as every other AlgoSec
+    # rule here; a new rule that did NOT produce one of these would be the
+    # anomaly worth investigating.
+    ("shadowed_rule", ("ALGO-001", "ALGO-031"), 10, "low", False),
+    ("shadowed_rule", ("ALGO-001", "ALGO-062"), 10, "low", False),
     ("shadowed_rule", ("ALGO-001", "ALGO-030"), 10, "low", False),
     ("shadowed_rule", ("ALGO-001", "ALGO-046"), 10, "low", False),
     ("shadowed_rule", ("ALGO-001", "ALGO-050"), 10, "low", False),
@@ -442,7 +614,9 @@ DEMO_FINDINGS = [
     # merge restores exactly this finding and nothing else") -- and it is back.
     ("transport_exposure", ("ALGO-020", "WIZ-021"), 40, "medium", False),
     ("transport_exposure", ("ALGO-060", "ALGO-061", "ALGO-082", "WIZ-011"), 40, "medium", False),
-    ("transport_exposure", ("ALGO-070", "ALGO-080"), 40, "medium", False),
+    # ALGO-062 joined this group: same destination, same service, so it is the
+    # same finding with a third rule in it rather than a new one.
+    ("transport_exposure", ("ALGO-062", "ALGO-070", "ALGO-080"), 40, "medium", False),
     ("transport_exposure", ("ALGO-080",), 78, "critical", True),
     ("transport_exposure", ("ALGO-082",), 54, "medium", False),
     ("transport_exposure", ("GC-020",), 34, "low", False),
@@ -453,21 +627,27 @@ DEMO_FINDINGS = [
     ("transport_exposure", ("WIZ-021",), 39, "medium", False),
 ]
 
-# Structural counts. records / resolved / edges are UNCHANGED by Phase 1, which
-# is itself the point: no rule and no dereference was lost, only how they score.
-DEMO_RECORD_COUNT = 29      # 27 + 2: ALGO-029 and GC-002
-DEMO_RESOLVED_COUNT = 22    # 20 + 2: the internal-app-01 catalog row, from each tool
-DEMO_ASSET_COUNT = 26       # 26 + 1 (internal-app-01) - 1 (appsrv-07 folds into
-                            # app-server-07 again, now on declared tenancy)
-DEMO_ALIAS_COUNT = 27       # 26 + 1: internal-app-01; appsrv-07 re-points at app-server-07
-DEMO_CORRELATION_COUNT = 4  # 3 - 1 (the manual_review row: nothing is withheld now)
-                            #   + 1 (context_ip 0.95, evidence = ip AND the shared vpcId)
-                            #   + 1 (hostname, internal-app-01 seen by algosec + guardicore)
-DEMO_NODE_COUNT = 26        # tracks the asset count
-DEMO_EDGE_COUNT = 25        # 23 + 2: app-server-07->internal-app-01 (GC-002) and
-                            # internal-app-01->db-prod-01 (ALGO-029). The Wiz edge
-                            # lb-public-01->appsrv-07 is RENAMED to ->app-server-07
-                            # by the merge, not added.
+# Structural counts. Every move below is path B's three new rules and two new
+# objects arriving -- no rule and no dereference was LOST, which is the thing
+# these numbers exist to catch.
+DEMO_RECORD_COUNT = 32      # 29 + 3: ALGO-031, ALGO-062, GC-030
+DEMO_RESOLVED_COUNT = 25    # 22 + 3: db-prod-02 (algosec) and data-node-01, once
+                            # from each of the two tools that name it
+DEMO_ASSET_COUNT = 28       # 26 + 2: data-node-01 and db-prod-02. ALGO-062's source
+                            # is written as a raw 10.30.0.0/16, which is the address
+                            # space `app-segment` already denotes, so it adds no node
+DEMO_ALIAS_COUNT = 29       # tracks the asset count
+DEMO_CORRELATION_COUNT = 5  # 4 + 1: a `hostname` row for data-node-01, which AlgoSec
+                            # and Guardicore name identically. Path B needs NO
+                            # context_ip merge -- that asymmetry with path A is
+                            # asserted by verify_engine's scope-strip counterfactual
+DEMO_NODE_COUNT = 28        # tracks the asset count
+DEMO_EDGE_COUNT = 28        # 25 + 3: app-server-08->data-node-01 (GC-030),
+                            # data-node-01->db-prod-02 (ALGO-031) and
+                            # 10.30.0.0/16->app-server-09 (ALGO-062). Note what is
+                            # NOT here: internal-app->db-prod-01 is GONE, because
+                            # ALGO-030 was re-sourced -- and app-segment->db-prod-01
+                            # takes its place, so the count nets out level
 
 
 @pytest.fixture(scope="module")
@@ -510,36 +690,101 @@ def test_the_full_finding_table(demo):
     assert actual == sorted(DEMO_FINDINGS)
 
 
-def test_the_cross_tool_path_is_real(demo):
-    """Called out on its own because it is the single most consequential entry in
-    the table: the product's differentiator, and the one finding a reader of a
-    green suite should be able to check without trusting a count.
+#: The two chains, the grants that make each hop, and which kind of identity
+#: evidence each one rests on. Kept here rather than inlined so the asymmetry is
+#: readable at a glance: A needs a SCOPED merge (Wiz calls the host `appsrv-07`),
+#: B needs only that three tools spell the same hostname the same way.
+DEMO_PATHS = [
+    (["0.0.0.0/0", "lb-public-01", "app-server-07", "internal-app-01", "db-prod-01"],
+     [("wiz", "WIZ-001"), ("wiz", "WIZ-002"),
+      ("guardicore", "GC-002"), ("algosec", "ALGO-029")]),
+    (["0.0.0.0/0", "lb-public-02", "app-server-08", "data-node-01", "db-prod-02"],
+     [("wiz", "WIZ-010"), ("wiz", "WIZ-011"),
+      ("guardicore", "GC-030"), ("algosec", "ALGO-031")]),
+]
 
-    So this does not assert the finding EXISTS -- it walks it. Every hop is a
-    real edge, no pivot is abstract, and it spans three tools. A path the engine
-    merely prints is not evidence of anything.
+
+def test_both_cross_tool_paths_are_real(demo):
+    """Called out on its own because these are the single most consequential
+    entries in the table: the product's differentiator, and the findings a reader
+    of a green suite should be able to check without trusting a count.
+
+    So this does not assert the findings EXIST -- it walks them. Every hop is a
+    real edge, no pivot is abstract, and each spans three tools. A path the
+    engine merely prints is not evidence of anything.
     """
     paths = [f for f in demo.findings if f.type == "cross_tool_path"]
-    assert len(paths) == 1
-    path = paths[0].signals["path"]
-    assert path == ["0.0.0.0/0", "lb-public-01", "app-server-07",
-                    "internal-app-01", "db-prod-01"]
+    assert len(paths) == 2
+    by_chain = {tuple(f.signals["path"]): f for f in paths}
+    assert sorted(by_chain) == sorted(tuple(chain) for chain, _hops in DEMO_PATHS)
 
     g = demo.graph
-    assert all(g.has_edge(a, b) for a, b in zip(path, path[1:]))
-    # No pivot may be a range. The endpoints may be (the internet is one).
-    assert [g.nodes[n]["kind"] for n in path[1:-1]] == ["concrete"] * 3
-    assert _valid_traversal(g, path)
-    assert sorted(paths[0].signals["tools"]) == ["algosec", "guardicore", "wiz"]
-    assert [(h["tool"], h["ref"]) for h in paths[0].signals["hops"]] == [
-        ("wiz", "WIZ-001"), ("wiz", "WIZ-002"),
-        ("guardicore", "GC-002"), ("algosec", "ALGO-029")]
+    for chain, hops in DEMO_PATHS:
+        f = by_chain[tuple(chain)]
+        assert all(g.has_edge(a, b) for a, b in zip(chain, chain[1:])), chain
+        # No pivot may be a range. The endpoints may be (the internet is one).
+        assert [g.nodes[n]["kind"] for n in chain[1:-1]] == ["concrete"] * 3, chain
+        assert _valid_traversal(g, chain), chain
+        assert sorted(f.signals["tools"]) == ["algosec", "guardicore", "wiz"], chain
+        assert [(h["tool"], h["ref"]) for h in f.signals["hops"]] == hops, chain
 
     # ...and the rule that deleted the OLD path is untouched: `internal-app` is
-    # still a /16, still abstract, and still refused as a pivot.
+    # still a /16, still abstract, and still refused as a pivot. It is refused on
+    # the chain that still exists, too -- ALGO-030 was re-sourced, so the old last
+    # hop `internal-app -> db-prod-01` is gone, and what remains is a complete
+    # internet-to-PCI chain in which EVERY pivot is a range.
     assert g.nodes["internal-app"]["kind"] == "abstract"
-    assert not _valid_traversal(g, ["0.0.0.0/0", "lb-public-01", "app-server-07",
-                                    "internal-app", "db-prod-01"])
+    legacy = ["0.0.0.0/0", "10.0.0.0/8", "app-segment", "db-prod-01"]
+    assert all(g.has_edge(a, b) for a, b in zip(legacy, legacy[1:]))
+    assert not _valid_traversal(g, legacy)
+
+
+def test_the_two_paths_are_disjoint_so_cutting_one_leaves_the_other(demo):
+    """Two entries are only worth two entries if they are genuinely separate.
+
+    The retired `multi_path` scenario is the cautionary tale: it advertised two
+    paths and reported one, because its second pivot was a /16 that
+    `_valid_traversal` correctly refused, and nothing asserted otherwise. If a
+    future fixture edit let these two share a grant or a terminal, "you cut the
+    first one and the second is still there" -- the beat the pair exists for --
+    would quietly stop being true.
+    """
+    paths = [f for f in demo.findings if f.type == "cross_tool_path"]
+    grants = [{h["ref"] for h in f.signals["hops"]} for f in paths]
+    assert not grants[0] & grants[1]
+    assert len({tuple(f.signals["path"])[-1] for f in paths}) == 2
+
+
+def test_no_cited_grant_has_a_broader_twin_that_keeps_the_access_open(demo):
+    """The anti-cheat, asserted where a reader of this file will find it.
+
+    `advisory/remediation` proposes "remove <rule>" and the gate re-simulates --
+    but the engine does not model CIDR-membership expansion (docs/ENGINE.md
+    10.2), so a rule granting `10.40.0.0/16 -> db-prod-01` covers a rule granting
+    `10.40.0.5 -> db-prod-01` without the engine knowing. Both of path A's inner
+    hops used to have exactly such a twin (GC-001 on 8443, ALGO-030 from the
+    /16), so the demo's own remediation beat would have deleted the FINDING and
+    left the FLOW -- on the one screen whose entire pitch is that it does not.
+
+    Cut each cited grant out of the record set and re-derive the graph: the hop's
+    edge has to go with it. `verify_engine` runs the same check; it is repeated
+    here because it is the one a re-baseline is most likely to break silently.
+    """
+    from src.graph.build import build_graph
+
+    cosmetic = []
+    for f in (p for p in demo.findings if p.type == "cross_tool_path"):
+        # The two INNER hops: the ones a fix would target. The internet ingress
+        # is deliberately excluded -- WIZ-001 has a udp/443 twin (WIZ-020) and
+        # that is a real alternative grant the engine reports on its own, not an
+        # expansion it cannot see.
+        for hop in f.signals["hops"][2:]:
+            kept = [r for r in demo.records if r.raw_ref != hop["ref"]]
+            if build_graph(kept, demo.assets, demo.alias_map).has_edge(hop["src"], hop["dst"]):
+                cosmetic.append((hop["ref"], hop["src"], hop["dst"]))
+    assert not cosmetic, (
+        "removing these rules would resolve the finding and leave the access: "
+        f"{cosmetic}")
 
 
 def test_structural_counts(demo):

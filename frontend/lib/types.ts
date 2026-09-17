@@ -10,7 +10,64 @@ export interface Finding {
   involved: string[];
   raw_refs: string[];
   source_tools: string[];
+  /** The ANALYZER's own deterministic one-liner — "RDP open from the internet to
+   *  db-prod-01". Specific to this finding, and the right heading for it.
+   *
+   *  Optional only because it is derived on the way out rather than stored, so a
+   *  frontend running against an older backend must not throw. When it is
+   *  absent the caller should fall back to the type — but note that is exactly
+   *  the fallback that made all five over-permissive findings render under one
+   *  identical heading, so treat it as a degraded state, not a normal one. */
+  title?: string;
+  /** MODEL PROSE, and null until somebody asks for it. Not the only explanation
+   *  available — see `engine_explanation`. */
   explanation?: string | null;
+  /** The ENGINE's own explanation. Always present, deterministic, no model and
+   *  no network: it is written from the finding's own signals by the same code
+   *  that computed them.
+   *
+   *  These two are separate fields and must stay separately attributed. The
+   *  console used to render "No explanation has been written for this finding
+   *  yet" whenever `explanation` was null, which was false — the engine can
+   *  always say what a finding means, because it computed it. What it cannot do
+   *  without a model is write prose, and collapsing those two claims into one
+   *  empty panel is what made a fully-explained finding look unexamined. */
+  engine_explanation?: string;
+}
+
+/** One spot where path enumeration hit its scan cap, as `_record_truncations`
+ *  reports it: the function that cut, the pair it was walking, and the cap. */
+export interface Truncation {
+  fn: string;
+  src: string;
+  dst: string;
+  cap: number;
+}
+
+/**
+ * How complete the analysis behind a payload's numbers was.
+ *
+ * The backend attaches this (`_analysis_block` in backend/app/main.py) to every
+ * read that makes a claim about the estate as a whole — /api/findings,
+ * /api/snapshot, /api/report — and the frontend types declared none of it, so a
+ * run with a dead analyzer or a truncated path scan rendered byte-identically
+ * to a complete one. A count is only worth as much as the analysis behind it.
+ *
+ * THREE-VALUED, AND `null` IS NOT `[]`. `null` means "this process cannot say"
+ * — the in-memory result describes the ACTIVE snapshot only, so a read of a
+ * historical one gets null rather than a positive claim that a run nobody
+ * analyzed here was clean. A screen must render null as unknown, never as none.
+ */
+export interface AnalysisCompleteness {
+  /** Did every analyzer finish? `null` = not knowable for this snapshot. */
+  analysis_complete: boolean | null;
+  /** Analyzers that failed, sorted. Non-empty = findings are MISSING. */
+  degraded_analyzers: string[] | null;
+  /** Path scans that hit their cap, sorted. Non-empty = paths are missing. */
+  truncations: Truncation[] | null;
+  /** Present only when a later rebuild was REFUSED: this payload is complete
+   *  and also not the newest analysis, and both halves have to be said. */
+  last_build_rejected?: string;
 }
 
 export interface ActionItem {
@@ -127,6 +184,32 @@ export interface RemediationAttempt {
   note?: string;
 }
 
+/**
+ * One step of the advisory layer's work, as the API reports it.
+ *
+ * `model_call` carries BOTH sides of the exchange so a reader can see what was
+ * sent and what came back. A step with `ok: false` is a real step -- a failed
+ * call followed by a deterministic fallback is the most useful thing this
+ * record shows, and it is what was invisible while the deployment ran against
+ * a placeholder API key.
+ */
+export interface AgentStep {
+  kind: "model_call" | "tool" | "deduction" | "fallback" | "note";
+  label: string;
+  detail?: string | null;
+  ok?: boolean;
+  ms?: number | null;
+  provider?: string | null;
+  model?: string | null;
+  system?: string | null;
+  user?: string | null;
+  response?: string | null;
+  error?: string | null;
+  prompt_tokens?: number | null;
+  completion_tokens?: number | null;
+  truncated?: boolean;
+}
+
 export interface Remediation {
   finding_id: string;
   fix_text: string;
@@ -135,6 +218,12 @@ export interface Remediation {
   by: string;
   attempts?: number;
   trace?: RemediationAttempt[];
+  /** The step-by-step record: model calls with both sides of each exchange,
+   *  tool runs, and any fallback taken. Rendered by `AgentTerminal`. */
+  agent_trace?: AgentStep[];
+  /** Whether a model call actually succeeded. Deliberately separate from `by`,
+   *  which can still mention an llm on a path that fell back. */
+  used_a_model?: boolean;
   thread_id?: string;
   seq?: number;
   revision_id?: string;
@@ -520,4 +609,324 @@ export interface AzureDiscovery<T> {
    *  them nothing to read. Carried on `x-npr-result-truncated` response headers.
    */
   incomplete_reason?: string | null;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// THE INFRASTRUCTURE LAYER — sources, inventory, topology
+//
+// These mirror backend/src/models.py. Three things in here are load-bearing and
+// a screen that drops them is lying by omission:
+//
+//   `tier`          where a fact came from on the collection ladder. A device
+//                   read from a cross-vendor aggregator and one read off the box
+//                   are not the same quality of fact.
+//   `simulated`     whether a source is a live connector or a seeded export.
+//                   This deployment's exports are ALL seeded, and a client-
+//                   facing screen has to say so.
+//   `observedBy`    every console that saw a row, not just the winning one.
+//                   "Where did we find it" has three answers for a firewall
+//                   FortiManager, the FortiGate itself and AlgoSec all describe.
+// ───────────────────────────────────────────────────────────────────────────
+
+export type SourceTier = "aggregator" | "management_console" | "device";
+
+export type DeviceRole =
+  | "modem" | "router" | "firewall" | "l3_switch" | "l2_switch" | "hub" | "bridge"
+  | "load_balancer" | "wireless_ap" | "server" | "workstation" | "virtual_appliance"
+  | "unknown";
+
+export type TopologyLayer =
+  | "internet" | "circuit" | "modem" | "edge" | "perimeter"
+  | "core" | "access" | "segment" | "endpoint";
+
+/** How we know a link exists. There is deliberately no "inferred" member — see
+ *  the DB CHECK in db/migrations/0007. `containment` is the weakest: two
+ *  interfaces provably in one block, which is a real L3 observation and is not a
+ *  cable, so the UI must render it differently rather than blending it in. */
+export type LinkEvidence =
+  | "lldp" | "cdp" | "api_topology" | "config" | "routing" | "declared" | "containment";
+
+export interface Observation {
+  tool: string;
+  tier: SourceTier;
+  raw_ref?: string;
+  evidence?: LinkEvidence;
+}
+
+/** One field two consoles stated differently. NOT an error: it is a fact about
+ *  the estate's own record-keeping — a stale entry, or a box replaced without
+ *  the aggregator being told — and it is what a review is for. */
+export interface SourceConflict {
+  entity: string;
+  field: string;
+  claims: { tool: string; tier: SourceTier; value: unknown }[];
+}
+
+export interface SourceCard {
+  tool: string;
+  label: string;
+  vendor: string;
+  tier: SourceTier;
+  api: string;
+  auth: string;
+  /** What it yields, in inventory vocabulary. */
+  yields: string[];
+  /** What it will NOT give you. The most useful field on the card: it is what
+   *  stops an operator reading an empty access lane as an empty access layer. */
+  blind_to: string[];
+  notes?: string | null;
+  connected: boolean;
+  /** True for a seeded export rather than a live connector. Rendered, always. */
+  simulated: boolean;
+  device?: string | null;
+  last_sync?: string | null;
+  /** What this source actually put into the current snapshot. Absent when it is
+   *  not connected — never rendered as zero, which would read as "connected and
+   *  found nothing". */
+  contributed?: {
+    records: number; entities: number; devices: number; interfaces: number;
+    links: number; vlans: number; subnets: number; circuits: number;
+  } | null;
+}
+
+export interface InventoryItem {
+  key: string;
+  name: string;
+  /** The inventory vocabulary: a device role, or an entity kind (vlan, subnet,
+   *  public_ip, wan_circuit, asset). */
+  kind: string;
+  role?: DeviceRole;
+  role_source?: "declared" | "derived" | "unknown";
+  role_reason?: string;
+  vendor?: string | null;
+  model?: string | null;
+  os_version?: string | null;
+  addresses: string[];
+  vlan_id?: number | null;
+  vlan_name?: string | null;
+  subnet?: string | null;
+  zone?: string | null;
+  tags: string[];
+  layer?: TopologyLayer | null;
+  layer_source?: "declared" | "derived" | "unknown";
+  layer_reason?: string;
+  observed_by: Observation[];
+  conflicts: SourceConflict[];
+  finding_ids: string[];
+}
+
+/** Counts the header reads out. A count no source declared is `null`, NEVER 0 —
+ *  "we don't know" must not render as "we checked, and it's none". */
+export interface InventoryCounts {
+  devices: number | null;
+  interfaces: number | null;
+  vlans: number | null;
+  subnets: number | null;
+  public_ips: number | null;
+  circuits: number | null;
+  assets: number | null;
+}
+
+export interface InventoryResponse {
+  items: InventoryItem[];
+  total: number;
+  has_more: boolean;
+  counts: InventoryCounts;
+  facets: {
+    kinds: Record<string, number>;
+    sources: Record<string, number>;
+    vlans: Record<string, number>;
+    zones: Record<string, number>;
+  };
+}
+
+/** One port, SVI or logical interface, as the explorer's node drawer needs it.
+ *  `admin_up`/`oper_up` are THREE-VALUED: null means the source did not report
+ *  link state, and rendering that as "down" invents an outage. */
+export interface TopoInterface {
+  name: string;
+  addresses: string[];
+  vlan_id?: number | null;
+  zone?: string | null;
+  admin_up?: boolean | null;
+  oper_up?: boolean | null;
+  speed_mbps?: number | null;
+  lag_group?: string | null;
+  description?: string | null;
+  neighbor_device?: string | null;
+  neighbor_interface?: string | null;
+  networks_behind: string[];
+}
+
+export interface TopoNode {
+  key: string;
+  name: string;
+  kind: string;
+  role?: DeviceRole;
+  /** Whether the ROLE was stated by a console or worked out by the engine, and
+   *  why. The explorer must be able to show its working for "why do you call
+   *  this an L3 switch". */
+  role_source?: "declared" | "derived" | "unknown";
+  role_reason?: string;
+  vendor?: string | null;
+  model?: string | null;
+  os_version?: string | null;
+  serial?: string | null;
+  site?: string | null;
+  mgmt_ip?: string | null;
+  tags?: string[];
+  /** Ports, carried with the node so the drawer needs no second request. */
+  interfaces?: TopoInterface[];
+  /** Fields two consoles stated differently. Not an error — a fact about the
+   *  estate's own record-keeping, and what a review is for. */
+  conflicts?: SourceConflict[];
+  addresses: string[];
+  vlan_ids: number[];
+  ha_group?: string | null;
+  ha_role?: string | null;
+  layer_reason?: string;
+  observed_by: Observation[];
+  finding_ids: string[];
+  /** Set when this device is inventoried but nothing reported a cable for it. A
+   *  box with no line to anything reads as a rendering bug; it is a coverage gap
+   *  and the UI must say which console would close it. */
+  unlinked_reason?: string | null;
+  would_be_filled_by?: string | null;
+}
+
+export interface TopoLink {
+  id: string;
+  a: string;
+  b: string;
+  a_iface?: string | null;
+  b_iface?: string | null;
+  evidence: LinkEvidence;
+  evidence_detail: string;
+  redundant_group?: string | null;
+  aggregated: boolean;
+  member_count: number;
+  observed_by: Observation[];
+}
+
+export interface TopoLane {
+  layer: TopologyLayer;
+  label: string;
+  nodes: TopoNode[];
+  /** False when nothing was observed at this layer. `reason` and
+   *  `would_be_filled_by` are then both present, and the lane renders as a NAMED
+   *  ABSENCE — never as a ghost device, and never silently omitted. */
+  observed: boolean;
+  reason?: string | null;
+  would_be_filled_by?: string | null;
+}
+
+/** A structural fact that connects two lanes, and is NOT a cable.
+ *
+ *  A circuit names the CPE that terminates it, a VLAN names the devices carrying
+ *  it, a host's address provably sits inside a subnet. All true, none of them an
+ *  observed adjacency — so no `TopoLink` exists for them and none should. They
+ *  are kept in their own field, and drawn in their own line family, because the
+ *  moment one is mistaken for a cable the resilience analysis reads a broadcast
+ *  domain as a path and every single point of failure in the estate dissolves. */
+export interface TopoRelation {
+  a: string;
+  b: string;
+  kind: "reaches" | "terminates" | "carries" | "contains";
+  detail: string;
+}
+
+export interface TopologyResponse {
+  lanes: TopoLane[];
+  /** Structural relations, drawn subordinate to `links`. Optional so a frontend
+   *  running against a backend that predates the field degrades to the old
+   *  four-island canvas rather than throwing. */
+  relations?: TopoRelation[];
+  links: TopoLink[];
+  vlans: { vlan_id: number; name?: string | null; subnets: string[]; gateways: string[] }[];
+  counts: InventoryCounts;
+  source_conflicts: SourceConflict[];
+  unlinked_devices: { device_key: string; reason: string; would_be_filled_by: string }[];
+  /** Bounds this response applied. Present from the first commit rather than
+   *  added when payloads grow: silent truncation reads as "covered everything". */
+  caps: { nodes_shown: number; nodes_total: number; capped_lanes: string[] };
+}
+
+/** What the engine could and could not compute. On every payload today and read
+ *  by nothing — a picture drawn over a partial analysis looks complete. */
+export interface AnalysisState {
+  analysis_complete?: boolean | null;
+  degraded_analyzers?: string[] | null;
+  truncations?: Record<string, unknown>[] | null;
+}
+
+export type IpMatchRelation = "exact" | "covering" | "contained";
+
+export interface IpPolicyMatch {
+  rule_ref: string;
+  source_tool: string;
+  source: string;
+  destination: string;
+  service: string;
+  action: string;
+  relation: IpMatchRelation;
+  /** How the address reached this rule: address containment, the identity
+   *  layer's alias map, an interface, or NAT. Shown per row so the set
+   *  arithmetic is visible rather than asserted. */
+  matched_via: string;
+  finding_ids: string[];
+}
+
+export interface IpLookupResponse {
+  address: string;
+  mode: string;
+  /** Grouped exactly as the drawer renders them. `covering` is the group people
+   *  forget: the rules that permit this address without naming it. */
+  matches: { exact: IpPolicyMatch[]; covering: IpPolicyMatch[]; contained: IpPolicyMatch[] };
+  assets: { asset_key: string; kind: string; tags: string[]; source_tools: string[] }[];
+  devices: TopoNode[];
+  interfaces: { interface_key: string; device_key: string; name: string; addresses: string[]; vlan_id?: number | null }[];
+  vlan?: { vlan_id: number; name?: string | null } | null;
+  subnet?: string | null;
+  finding_ids: string[];
+  /** The reachability claim, with the caveat printed NEXT TO IT rather than
+   *  buried in a doc: the engine models the union of allow edges and does not
+   *  implement deny precedence (ENGINE.md §10.1), so "not reachable" is
+   *  "no allow path found", not "provably blocked". */
+  effective: { reachable_from_internet: boolean | null; caveat: string };
+}
+
+export interface ResilienceFinding {
+  id: string;
+  kind: string;
+  title: string;
+  detail: string;
+  severity: number;
+  severity_band: Band;
+  severity_vector: Record<string, number>;
+  involved: string[];
+  remediation: string;
+}
+
+export interface BlastRadius {
+  device_key: string;
+  paths_lost: number;
+  paths_before: number;
+  fraction: number;
+  circuits_stranded: string[];
+  devices_isolated: string[];
+  devices_degraded: number;
+  components_after: number;
+}
+
+export interface ResilienceResponse {
+  /** False when there was nothing to analyse. It must be impossible to read an
+   *  empty `findings` as a clean bill of health. */
+  analysed: boolean;
+  reason?: string | null;
+  findings: ResilienceFinding[];
+  blast_radius: BlastRadius[];
+  blast_basis: string;
+  adjacency_count: number;
+  excluded_adjacencies: { reason: string; detail: string }[];
+  suppressed: { kind: string; candidate: string; detail: string }[];
 }

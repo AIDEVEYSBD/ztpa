@@ -18,11 +18,19 @@ finding (or honestly reports it cannot)."""
 from __future__ import annotations
 
 import json
+import logging
 
 from ..analyzers.run_all import reanalyze
 from ..change.apply import apply_remediation as _apply
+from ..graph.build import build_graph
+from ..graph.reachability import find_paths
 from ..models import Finding
 from .client import complete, parse_json
+from . import trace as _trace
+from .walk import walk
+
+# Child of the API logger; see advisory/client.py for the convention.
+log = logging.getLogger("npr.api.remediation")
 
 # How many propose->simulate->observe->revise rounds the agent gets before it
 # degrades to the deterministic fallback. Each round is one model call + one
@@ -107,6 +115,46 @@ def _coerce_change(data, f: Finding) -> dict | None:
     return ch
 
 
+def _walk_for(ctx, finding: Finding, change: dict) -> dict | None:
+    """The hop-by-hop before/after for this finding's flow, or None.
+
+    Two kinds of finding name a flow this can replay:
+
+      * a `cross_tool_path`, which carries the chain in `signals["path"]`; and
+      * any finding whose `involved` is exactly an origin and a destination that
+        are both nodes in the graph -- a single over-permissive grant is a
+        one-hop flow, and replaying it is how the reader sees that removing it
+        leaves the destination reachable by the FOUR-hop chain instead.
+
+    Anything else returns None and the console renders no walk. A walk invented
+    for a finding that names no flow would be the failure mode this whole screen
+    exists to avoid: a picture asserting a path nobody observed.
+    """
+    path = list(finding.signals.get("path") or [])
+    if not path:
+        inv = list(finding.involved or [])
+        if len(inv) != 2 or any(n not in ctx.graph for n in inv):
+            return None
+        found = find_paths(ctx.graph, inv[0], inv[1], cutoff=8)
+        if not found:
+            return None
+        first = found[0]
+        path = first["path"] if isinstance(first, dict) else list(first)
+    if len(path) < 2 or any(n not in ctx.graph for n in path):
+        return None
+    try:
+        g_after = build_graph(_apply(ctx.records, change), ctx.assets, ctx.alias_map)
+        return walk(ctx.graph, g_after, path)
+    except Exception:  # noqa: BLE001
+        # A walk is evidence ON TOP of the band comparison, never a gate on it.
+        # If it cannot be produced the validation still stands; the console
+        # simply shows no walk rather than a broken one.
+        log.warning("packet walk could not be produced for this finding",
+                    exc_info=True, extra={"event": "packet_walk_failed",
+                                          "finding": finding.id})
+        return None
+
+
 def _validate(ctx, finding: Finding, change: dict) -> dict:
     target = _sig(finding)
     before = ctx.findings
@@ -114,10 +162,66 @@ def _validate(ctx, finding: Finding, change: dict) -> dict:
         after = reanalyze(_apply(ctx.records, change), ctx.assets, ctx.alias_map)
         before_crit = {_sig(x) for x in before if x.severity_band == "critical"}
         after_crit = {_sig(x) for x in after if x.severity_band == "critical"}
+        # THE EVIDENCE, not just the verdict.
+        #
+        # This returned four numbers and a boolean, and the console reduced all
+        # of it to a greyed-out button. A reviewer being asked to approve a
+        # change to a production firewall needs to see what was actually
+        # checked: which findings went away, which stayed, what appeared, and
+        # against what. The proof already existed; nothing rendered it.
+        #
+        # This is stronger than an emulator for the question being asked. GNS3
+        # boots device images and tells you a config forwards packets. It cannot
+        # tell you whether removing one AlgoSec rule closes a chain that runs
+        # through Wiz and Guardicore, because no single device sees that chain.
+        # Re-running every analyzer over the full record set does, exactly, and
+        # in milliseconds.
+        before_by = {_sig(x): x for x in before}
+        after_by = {_sig(x): x for x in after}
+        cleared = [before_by[k] for k in before_by.keys() - after_by.keys()]
+        introduced = [after_by[k] for k in after_by.keys() - before_by.keys()]
+
+        def bands(fs) -> dict:
+            out = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+            for f in fs:
+                out[f.severity_band] = out.get(f.severity_band, 0) + 1
+            return out
+
+        def brief(fs) -> list[dict]:
+            return sorted(
+                ({"type": f.type, "title": f.title, "band": f.severity_band,
+                  "severity": f.severity, "refs": sorted(f.raw_refs),
+                  "tools": sorted(f.source_tools)} for f in fs),
+                key=lambda d: (-d["severity"], d["type"], d["title"]),
+            )
+
         return {
-            "resolves": target not in {_sig(x) for x in after},
+            "resolves": target not in after_by,
             "introduces_new_criticals": sorted(f"{t}:{sorted(inv)}" for (t, inv) in (after_crit - before_crit)),
             "findings_before": len(before), "findings_after": len(after),
+            # --- the record a reviewer reads -------------------------------
+            "evidence": {
+                # What proved it. Named, because "simulated" without a method is
+                # a word, not a warrant.
+                "method": "re-analysis",
+                "method_detail": (
+                    "every analyzer re-run over the full record set with the change applied, "
+                    "then the two finding sets compared. Deterministic and exact: no sampling, "
+                    "no emulation, no model."),
+                "bands_before": bands(before),
+                "bands_after": bands(after),
+                "cleared": brief(cleared),
+                "introduced": brief(introduced),
+                "analyzers": sorted({f.type for f in before} | {f.type for f in after}),
+                # THE PACKET WALK. Band counts say a fix works; this says WHERE
+                # it works and, just as importantly, where it does not. The
+                # graph is rebuilt rather than plumbed out of `reanalyze`
+                # because the build is single-digit milliseconds and a second
+                # return value on a function four callers share is a worse
+                # trade. `None` when the finding names no walkable flow -- see
+                # `_walk_for`, which refuses to invent one.
+                "walk": _walk_for(ctx, finding, change),
+            },
         }
     except Exception as e:  # noqa: BLE001
         return {"resolves": False, "error": str(e)}
@@ -157,11 +261,21 @@ def _build_user(finding: Finding, prior_change: dict | None, feedback: str | Non
 
 
 def _result(finding: Finding, fix_text, change: dict, validation: dict, by: str,
-            trace: list[dict]) -> dict:
+            trace: list[dict], agent_trace: list[dict] | None = None,
+            used_a_model: bool = False) -> dict:
     return {"finding_id": finding.id,
             "fix_text": str(fix_text or _fallback_text(finding, change))[:500],
             "change": change, "validation": validation, "by": by,
-            "attempts": sum(1 for t in trace if t.get("change")), "trace": trace}
+            "attempts": sum(1 for t in trace if t.get("change")), "trace": trace,
+            # The step-by-step record: every model call with what was sent and
+            # what came back, every tool run, every fallback taken. `by` above
+            # says who authored the answer; this says how it was arrived at.
+            "agent_trace": agent_trace or [],
+            # NOT derived from `by` in the console. A model call that failed
+            # still leaves `by` mentioning llm on some paths, and a badge
+            # claiming model-authored output for a deterministic answer is the
+            # one thing this record exists to prevent.
+            "used_a_model": used_a_model}
 
 
 def draft(finding: Finding, ctx, comment: str | None = None, prior: dict | None = None,
@@ -173,6 +287,15 @@ def draft(finding: Finding, ctx, comment: str | None = None, prior: dict | None 
     first round from a reviewer's feedback (Risk-To-Do thread); subsequent rounds are
     seeded from the engine's own verdict."""
     max_attempts = MAX_ATTEMPTS if max_attempts is None else max_attempts
+    with _trace.capture() as tr:
+        return _draft(finding, ctx, comment, prior, max_attempts, tr)
+
+
+def _draft(finding: Finding, ctx, comment: str | None, prior: dict | None,
+           max_attempts: int, tr) -> dict:
+    """The loop itself. Split out only so `draft` can own the capture scope --
+    every `return` below needs the trace attached, and wrapping the body is how
+    that happens once rather than at six exit points."""
     trace: list[dict] = []
     best: tuple[dict, object, dict] | None = None  # an AI fix that at least resolves
     tried_llm = False
@@ -182,6 +305,10 @@ def draft(finding: Finding, ctx, comment: str | None = None, prior: dict | None 
         r = complete(system=_PROMPT, user=_build_user(finding, prior_change, feedback),
                      role="judge", capability="remediate", temperature=0.2,
                      expect_json=True, timeout=120.0, subject=finding.id)
+        if not r.ok:
+            tr.note("fallback", "model call did not answer",
+                    "this round will be abandoned and the deterministic fix used",
+                    ok=False)
         data = parse_json(r.text, None) if r.ok else None
         change = _coerce_change(data, finding)
         text = data.get("fix_text") if isinstance(data, dict) else None
@@ -192,21 +319,32 @@ def draft(finding: Finding, ctx, comment: str | None = None, prior: dict | None 
             break
 
         tried_llm = True
-        validation = _validate(ctx, finding, change)
+        tr.note("deduction",
+                f"proposed: {change.get('op', '?')} {change.get('target_ref', '?')}",
+                (str(reasoning)[:300] if reasoning else None))
+        with tr.step("tool", "re-analyse the estate with the change applied",
+                     "every analyzer re-run over the full record set, then the two "
+                     "finding sets compared"):
+            validation = _validate(ctx, finding, change)
         trace.append({"attempt": i + 1, "by": "llm", "change": change,
                       "fix_text": (str(text)[:500] if text else None),
                       "reasoning": (str(reasoning)[:300] if reasoning else None),
                       "validation": validation})
         if _is_clean(validation):
-            return _result(finding, text, change, validation, "llm", trace)
+            return _result(finding, text, change, validation, "llm", trace,
+                           tr.as_list(), tr.used_a_model)
         if validation.get("resolves") and best is None:
             best = (change, text, validation)  # keep the first resolving fix as a floor
         prior_change, feedback = change, _verdict_feedback(validation)
 
     # The loop never certified a clean fix. Fall back to the deterministic surgical
     # fix (guaranteed for every finding type) and re-validate it.
+    tr.note("fallback", "the attempt budget is spent",
+            "falling back to the engine's deterministic surgical fix, which exists "
+            "for every finding type")
     fallback = _fallback_change(finding, ctx.records)
-    fb_validation = _validate(ctx, finding, fallback)
+    with tr.step("tool", "re-analyse the estate with the fallback applied"):
+        fb_validation = _validate(ctx, finding, fallback)
     trace.append({"attempt": len(trace) + 1, "by": "engine_fallback",
                   "change": fallback, "validation": fb_validation})
 
@@ -215,6 +353,8 @@ def draft(finding: Finding, ctx, comment: str | None = None, prior: dict | None 
     if _is_clean(fb_validation) or best is None:
         by = "llm+engine_fallback" if tried_llm else "engine_fallback"
         v = {**fb_validation, "engine_corrected_ai": True} if tried_llm else fb_validation
-        return _result(finding, _fallback_text(finding, fallback), fallback, v, by, trace)
+        return _result(finding, _fallback_text(finding, fallback), fallback, v, by, trace,
+                       tr.as_list(), tr.used_a_model)
     change, text, validation = best
-    return _result(finding, text, change, validation, "llm", trace)
+    return _result(finding, text, change, validation, "llm", trace,
+                           tr.as_list(), tr.used_a_model)

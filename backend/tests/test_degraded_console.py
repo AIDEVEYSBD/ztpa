@@ -264,9 +264,28 @@ def test_findings_are_ordered_the_way_the_sql_orders_them(blind_client) -> None:
 
 def test_the_memory_rows_are_the_columns_the_query_selects(blind_client) -> None:
     """A wider dict from the fallback is a contract drift that only the degraded
-    path would ever show, so the projection is narrowed to the SELECT list."""
+    path would ever show, so the projection is narrowed to the SELECT list.
+
+    Plus exactly one DERIVED field. `engine_explanation` is not a column and
+    never will be: it is computed from the row's own signals, identically on
+    both paths, by `_attach_engine_explanations` after they converge. It is
+    asserted here rather than exempted, so a SECOND derived field cannot be
+    added without this test being read and updated -- which is the whole point
+    of pinning the shape.
+    """
     rows = blind_client.get("/api/findings").json()["findings"]
-    assert all(tuple(r) == main._FINDING_COLS for r in rows)
+    expected = main._FINDING_COLS + ("title", "engine_explanation")
+
+    assert all(tuple(r) == expected for r in rows)
+    # ...and it is always populated. An empty one would put the console back to
+    # rendering "no explanation has been written", which is what it is for.
+    assert all(r["engine_explanation"] for r in rows)
+    # ...and so is the title. Without it the console title-cased the TYPE, so
+    # all five over-permissive findings shared one heading.
+    assert all(r["title"] for r in rows)
+    assert not any(r["title"] == r["type"] for r in rows), (
+        "a title equal to the type means the analyzer's own one-liner was lost"
+    )
 
 
 def test_nothing_is_persisted_while_the_database_is_unreachable(blind_client) -> None:

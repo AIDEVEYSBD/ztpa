@@ -203,7 +203,16 @@ def _report_probe(ok: bool, models: list[str], error: str | None) -> None:
     of the configured tags (`ollama pull <tag>` -- the case that reads as
     "everything is local" while every capability is on fallback), and healthy.
     """
-    missing = tuple(m for m in _configured_ollama_models() if m not in models)
+    # Ollama reports an untagged pull as `name:latest` and takes a bare `name`
+    # as a request for it, so a plain string comparison called
+    # `nomic-embed-text` missing while it was pulled and serving. The warning
+    # that produced says every capability is on deterministic fallback, which
+    # was false -- and a false degradation notice is worse than none, because it
+    # is the notice an operator acts on.
+    def _tags(m: str) -> set[str]:
+        return {m, f"{m}:latest"} if ":" not in m else {m}
+    have = set(models)
+    missing = tuple(m for m in _configured_ollama_models() if not (_tags(m) & have))
     state = (ok, missing, error)
     if _OLLAMA_PROBE["reported"] == state:
         return

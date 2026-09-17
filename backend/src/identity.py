@@ -108,6 +108,7 @@ from dataclasses import dataclass, field
 from .models import Asset, AssetCorrelation
 from .netaddr import parse_net
 from .normalizers.common import INTERNET_CIDR, ObservedEntity
+from .sources import HOST_DESCRIBING_TOOLS, TOOL_KEYS as _ALL_TOOL_KEYS
 
 # A child of the API's logger, so an identity decision comes out as one JSON line
 # with the request id already attached (app/main.py configures "npr.api"). In the
@@ -145,16 +146,63 @@ _SENTINEL_NETS = tuple(ipaddress.ip_network(b) for b in SENTINEL_BLOCKS)
 # Largest number of DISTINCT NAMES on one address, inside one declared scope,
 # that we will still fuse automatically.
 #
-# Why 3: the union links *names*, and one host produces at most one name per
-# tool that observes it. Of the five ingestible source tools (models.SourceTool)
-# three describe hosts — AlgoSec, Guardicore, Wiz — and two describe links
-# (sd_wan, sd_lan). So three distinct names on one address inside one scope is
-# the widest fan-out a single genuine host can generate; a fourth name means the
-# address is being SHARED (a cluster VIP, a NAT/SNAT pool, an unresolved-DNS
-# default) rather than identifying anything. Counting names, not entities, is
-# deliberate: the same name seen by five tools is one node and must not count
-# as fan-out.
-MAX_IP_FANOUT = 3
+# The union links *names*, and one host produces at most one name per tool that
+# observes it. So the bound is "how many tools could each contribute one name",
+# which is the count of HOST-DESCRIBING sources: a fabric controller that only
+# describes links (sd_wan, sd_lan) cannot name a host and must not widen it.
+# More names than that on one address means the address is being SHARED — a
+# cluster VIP, a NAT/SNAT pool, an unresolved-DNS default — rather than
+# identifying anything. Counting names, not entities, is deliberate: the same
+# name seen by every tool is one node and must not count as fan-out.
+#
+# DERIVED PER ADDRESS, not a global constant — see `fanout_cap`.
+#
+# The literal 3 this replaces was correct for exactly the three host-describing
+# tools that existed when it was written, and it was the easiest thing in this
+# codebase to leave behind when a fourth was added: no error, and the worst
+# available symptom. A legitimate four-tool merge is withheld as `ip_fanout`,
+# the asset silently splits in two, and a cross-tool path through it vanishes
+# from the findings with nothing anywhere reporting a problem.
+#
+# Replacing it with `len(HOST_DESCRIBING_TOOLS)` would fix that and introduce a
+# worse one in the other direction: registering a connector nobody has onboarded
+# would WEAKEN the guard on every estate, because the ceiling would count tools
+# that never observed anything. A guard whose strength depends on the catalogue
+# rather than on the evidence is not a guard.
+#
+# So the bound is computed from what actually named this address. It is stricter
+# than the old constant in the case that matters (six names from ONE tool now
+# caps at 1, not 3) and looser in exactly the case that was a bug (four names
+# from four tools). This constant remains only as the registry-wide CEILING, for
+# documentation and for tests that need a value no real address can exceed.
+MAX_IP_FANOUT = len(HOST_DESCRIBING_TOOLS)
+
+
+def fanout_cap(tools: set[str]) -> int:
+    """How many distinct names one genuine host could produce at this address.
+
+    The union links NAMES, and a single host yields at most one name per tool
+    that observes it. So the ceiling is the number of distinct host-describing
+    tools that actually named this address in this scope — never the size of the
+    catalogue, and never a constant fixed when the catalogue was smaller.
+
+    Tools that describe only links (an SD-WAN or SD-LAN fabric) cannot name a
+    host and so do not raise the cap. A tool outside the registry is counted:
+    it named something, and refusing to count it would make an unrecognised
+    source silently tighten the guard.
+
+    Floors at 1 — an address named by no host-describing tool at all can still
+    legitimately carry one name.
+    """
+    naming = {t for t in tools if t not in _LINK_ONLY_TOOLS}
+    return max(len(naming), 1)
+
+
+# Tools that describe LINKS rather than hosts. Read off the registry so a new
+# fabric controller cannot quietly widen the merge guard.
+_LINK_ONLY_TOOLS: frozenset[str] = frozenset(
+    set(_ALL_TOOL_KEYS) - set(HOST_DESCRIBING_TOOLS)
+)
 
 # Identifier keys that name a NAMESPACE — something inside which an IP is unique.
 # Ordered: the first non-empty one wins, so the answer cannot depend on dict
@@ -395,6 +443,10 @@ def resolve_identities(entities: list[ObservedEntity],
     # Sets here are internal scratch only; every one of them is `sorted()` before
     # it is read, so no iteration order can reach the output.
     scoped: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
+    # Which tools named each (ip, scope). The fan-out cap is computed from this
+    # rather than from a constant: six names on one address from ONE tool is not
+    # a host no matter how many tools exist in the catalogue.
+    scoped_tools: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
     unscoped: dict[str, set[str]] = defaultdict(set)
     ip_names: dict[str, set[str]] = defaultdict(set)
     sentinel_names: dict[str, set[str]] = defaultdict(set)
@@ -411,6 +463,7 @@ def resolve_identities(entities: list[ObservedEntity],
             unscoped[ip].add(e.name)
         else:
             scoped[ip][ctx].add(e.name)
+            scoped_tools[ip][ctx].add(e.tool)
 
     merged_groups: list[tuple[str, str, list[str]]] = []       # (ip, context, names)
     withheld: list[tuple[str, str, str | None, list[str]]] = []  # (ip, reason, context, names)
@@ -421,9 +474,11 @@ def resolve_identities(entities: list[ObservedEntity],
             group = sorted(by_ctx[ctx])
             if len(group) < 2:
                 continue                                  # nothing to link in this scope
-            if len(group) > MAX_IP_FANOUT:
-                # A shared address, not an identity: withhold the WHOLE group
-                # rather than fusing an arbitrary prefix of it.
+            if len(group) > fanout_cap(scoped_tools[ip][ctx]):
+                # More names than the tools that named them could each have
+                # contributed one of: a shared address (a cluster VIP, a NAT
+                # pool, an unresolved-DNS default), not an identity. Withhold
+                # the WHOLE group rather than fusing an arbitrary prefix of it.
                 withheld.append((ip, "ip_fanout", ctx, group))
                 continue
             linked, refused = [], []

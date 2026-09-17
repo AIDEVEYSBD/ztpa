@@ -1,0 +1,36 @@
+{
+  "/organizations/{orgId}/devices": [
+    {
+      "serial": null,
+      "name": "ap-wifi-01",
+      "model": "MR46",
+      "mac": null,
+      "networkId": null,
+      "firmware": "wireless-29-7-1",
+      "productType": "wireless",
+      "lanIp": "10.255.0.51"
+    }
+  ],
+  "/organizations/{orgId}/devices/uplinks/addresses/byDevice": [
+    {
+      "serial": null,
+      "name": "ap-wifi-01",
+      "networkId": null,
+      "uplinks": [
+        {
+          "interface": "wan1",
+          "addresses": [
+            {
+              "protocol": "ipv4",
+              "assignmentMode": null,
+              "address": "10.255.0.51/24",
+              "gateway": "10.255.0.1",
+              "nameservers": null
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "/networks/{netId}/appliance/vlans": []
+}

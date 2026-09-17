@@ -1,9 +1,15 @@
 import type {
-  ActionItem, AdminMetrics, AiActiveConfig, AiConfigResponse, AiConfigSave, AiTestResult, AskResult,
+  ActionItem, AdminMetrics, AiActiveConfig, AiConfigResponse, AiConfigSave, AiTestResult,
+  AnalysisCompleteness, AskResult,
   AzureAiAccount, AzureDeployment, AzureDiscovery, AzureResourceGroup, AzureSubscription, CampaignPlan,
-  CampaignSubmitResult, ChangeResult, Finding, GraphData, Health, MergeSuggestion, Remediation,
-  RemediationRevision, StagedChange, ToolInfo,
+  CampaignSubmitResult, ChangeResult, Finding, GraphData, Health, IpLookupResponse, MergeSuggestion, Remediation,
+  InventoryResponse, RemediationRevision, SourceCard, StagedChange, ToolInfo,
 } from "./types";
+
+// The topology canvas's two reads. A second import statement rather than five
+// more names in the block above, so this addition cannot collide with an edit
+// to the original list.
+import type { AnalysisState, ResilienceFinding, ResilienceResponse, TopologyResponse } from "./types";
 
 /**
  * A failed API call, carrying the two facts a UI needs in order to tell the
@@ -211,7 +217,7 @@ export function asApiError(e: unknown): ApiError {
  * plausible-looking empty payload, which is what made a dead database and a
  * clean estate render identically.
  */
-async function j<T>(url: string, init?: RequestInit): Promise<T> {
+async function j<T>(url: string, init?: RequestInit, attempt = 0): Promise<T> {
   let r: Response;
   try {
     r = await fetch(url, { cache: "no-store", ...init });
@@ -224,10 +230,35 @@ async function j<T>(url: string, init?: RequestInit): Promise<T> {
   try {
     return (await r.json()) as T;
   } catch {
-    // A 2xx whose body is not JSON means the proxy answered, not the API.
-    throw new ApiError(r.status, "The API returned a success status with a body that is not JSON.", url);
+    // A 2xx whose body is not JSON means the PROXY answered, not the API.
+    //
+    // On a scale-to-zero deployment this is the cold-start signature: the
+    // backend has no running replica, the platform's ingress answers the
+    // proxied request itself while it activates one, and its holding page is
+    // HTML with a 200. Reported as a parse failure this reads as "the API is
+    // broken" when the truth is "the API is not up yet", so it is retried a
+    // few times before it is believed -- and if it still will not parse, the
+    // message names the likely cause instead of only the symptom.
+    if (attempt < COLD_START_RETRIES) {
+      await sleep(COLD_START_BACKOFF_MS * 2 ** attempt);
+      return j<T>(url, init, attempt + 1);
+    }
+    throw new ApiError(
+      r.status,
+      "The API answered 200 with a body that is not JSON, " +
+        `${COLD_START_RETRIES + 1} times. On a scale-to-zero deployment this is what a cold ` +
+        "backend looks like: the platform's ingress is answering while it starts a replica. " +
+        "If it persists, the backend is not starting — check its logs.",
+      url,
+    );
   }
 }
+
+/** A cold backend takes seconds, not minutes; four tries over ~7s covers it
+ *  without making a genuinely broken API feel like a hang. */
+const COLD_START_RETRIES = 3;
+const COLD_START_BACKOFF_MS = 600;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
  * `/api/health` with its degraded fields. The backend's payload is additive, and
@@ -306,7 +337,32 @@ export type SnapshotSummary = {
   counts: Record<string, number>;
   viewing: string;
   active: string;
-} & Provenance;
+} & AnalysisCompleteness & Provenance;
+
+/**
+ * ONE PAGE of /api/findings — never the estate.
+ *
+ * `findings` was typed as the whole set, so every band counter on the console is
+ * computed over at most `limit` rows and reports a number smaller than the truth
+ * with nothing on screen saying so. The endpoint has always sent the fields that
+ * make that visible; the types dropped them on the floor.
+ *
+ * `total` is the count for the WHOLE snapshot and `has_more` says this page is
+ * not all of it — `has_more` comes from an overshoot row the server actually
+ * fetched, so it is exact even when `total` was counted by a separate statement.
+ * `next_cursor` is non-null exactly when `has_more` is true and must be passed
+ * back verbatim; it is a keyset token, not an offset.
+ */
+export type FindingsPage = {
+  findings: Finding[];
+  /** Findings in the snapshot, not on this page. */
+  total: number;
+  /** The page size the server applied (it clamps what was asked for). */
+  limit: number;
+  /** Opaque continuation token, or null when this page is the last one. */
+  next_cursor: string | null;
+  has_more: boolean;
+} & AnalysisCompleteness & Provenance;
 
 export type SnapshotList = { snapshots: any[]; active: string } & Provenance;
 
@@ -537,6 +593,136 @@ const post = (body?: unknown): RequestInit =>
 
 const qs = (snap?: string) => (snap ? `?snapshot=${encodeURIComponent(snap)}` : "");
 
+/**
+ * How `/api/inventory`'s `ip` filter is interpreted. This is SET ARITHMETIC over
+ * address blocks, not a substring match, and the four members are four different
+ * questions — which is why the mode travels on the wire beside the address
+ * instead of being a default the user cannot see:
+ *
+ *   intersects    — any overlap at all between the entity's addresses and the
+ *                   block asked about. The forgiving one, and the default.
+ *   contains      — entities whose own block CONTAINS what was typed (the
+ *                   supernet: "which subnet is this host in?").
+ *   contained_by  — entities whose addresses fall INSIDE what was typed
+ *                   ("10.30.0.0/16" -> every host in it).
+ *   exact         — the address or block exactly as written, and nothing else.
+ */
+export type IpFilterMode = "intersects" | "contains" | "contained_by" | "exact";
+
+/** The inventory screen's filter state, as query params. Every field is
+ *  server-side on purpose: the table is paged, so a filter applied in the
+ *  browser would narrow one page and report its `total` as the estate's. */
+export interface InventoryQuery {
+  snapshot?: string;
+  /** Free text over name / address / tag. */
+  q?: string;
+  /** An address or CIDR block, read under `ip_mode`. */
+  ip?: string;
+  ip_mode?: IpFilterMode;
+  /** One source tool key, as `facets.sources` spells it. */
+  source?: string;
+  /** Facet selections, passed as repeated params. The values are echoed back
+   *  from `facets` verbatim — they are the backend's spelling, not ours. */
+  kind?: string[];
+  vlan?: string[];
+  zone?: string[];
+  limit?: number;
+  offset?: number;
+}
+
+const inventoryQs = (p: InventoryQuery): string => {
+  const u = new URLSearchParams();
+  const put = (k: string, v: string | number | undefined) => {
+    if (v !== undefined && v !== "") u.append(k, String(v));
+  };
+  put("snapshot", p.snapshot);
+  put("q", p.q?.trim() || undefined);
+  // `ip` and `ip_mode` are sent as a pair or not at all: an address with no mode
+  // beside it is a containment question with an invisible answer.
+  if (p.ip?.trim()) {
+    u.append("ip", p.ip.trim());
+    u.append("ip_mode", p.ip_mode ?? "intersects");
+  }
+  put("source", p.source);
+  for (const v of p.kind ?? []) put("kind", v);
+  for (const v of p.vlan ?? []) put("vlan", v);
+  for (const v of p.zone ?? []) put("zone", v);
+  put("limit", p.limit);
+  put("offset", p.offset);
+  const s = u.toString();
+  return s ? `?${s}` : "";
+};
+
+/**
+ * `GET /api/topology` — the lanes, outside-in, and the links between them.
+ *
+ * Two fields on it are the whole reason the canvas can be trusted, and a caller
+ * that reads past either is drawing a picture that claims more than the payload
+ * does. `TopoLane.observed: false` means NOTHING was seen at that layer: the
+ * lane renders as a named absence carrying its reason and the console API that
+ * would fill it, never as a faded device. `caps` says what this response left
+ * out — it is present from the first commit rather than added when payloads
+ * grew, because silent truncation reads as "covered everything".
+ */
+export type TopologyPayload = TopologyResponse & AnalysisState & Provenance;
+
+/**
+ * `GET /api/resilience` — single points of failure, and what each one takes
+ * with it.
+ *
+ * `analysed: false` is the field that stops an empty `findings` from reading as
+ * a clean bill of health, and `blast_radius` is measured by the engine over the
+ * whole adjacency. The canvas ANIMATES the blast radius; it never recomputes
+ * one in the browser, because a number derived from the lanes that happen to be
+ * on screen would disagree with the report for a reason nobody could find.
+ */
+/**
+ * One resilience finding as the API actually serves it.
+ *
+ * Wider than `ResilienceFinding` in lib/types.ts (owned elsewhere) in three
+ * ways that the canvas depends on, and narrower in one:
+ *
+ *   `failing`      THE ELEMENT WHOSE LOSS CAUSES THE DAMAGE, which is not the
+ *                  same as the element the finding is named after: a
+ *                  single-homed modem is scored on its PARENT's blast radius,
+ *                  because the parent is what fails. A UI that animated the
+ *                  named device would print a severity computed from one
+ *                  device's cut beside a picture of a different one's.
+ *   `devices` /
+ *   `circuits`     the rest of what the finding turns on, already unioned into
+ *                  `involved` alongside the link keys.
+ *   `raw_refs`     device keys and circuit ids, NOT rule references. They are
+ *                  rendered as plain identifiers; handing them to RuleRef would
+ *                  send a rule lookup after a router.
+ *   `remediation`  OPTIONAL here, because this API build does not send one.
+ *                  Typed as required elsewhere, which would have let a screen
+ *                  render `undefined` into a remediation box.
+ */
+export type ResilienceFindingRow = Omit<ResilienceFinding, "remediation"> & {
+  remediation?: string;
+  failing?: string[];
+  devices?: string[];
+  circuits?: string[];
+  source_tools?: string[];
+  raw_refs?: string[];
+};
+
+export type ResiliencePayload = Omit<ResilienceResponse, "findings"> & Provenance & {
+  findings: ResilienceFindingRow[];
+  /**
+   * What the analyzer examined and deliberately did not flag, and what it could
+   * not see at all — the backend's own words. Declared here rather than in
+   * lib/types.ts (owned elsewhere) so nothing in that file has to move for a
+   * screen to read them.
+   *
+   * They are not decoration: an empty `findings` list is only readable
+   * ALONGSIDE them, because "found nothing" and "could not look at half of it"
+   * produce the same empty array.
+   */
+  caveats?: string[];
+  device_count?: number;
+};
+
 export const api = {
   health: readHealth,
   recompute: () => j<{ ok: boolean; summary: Record<string, any> }>("/api/recompute", post()),
@@ -547,9 +733,26 @@ export const api = {
   ingest: (snap?: string) => j<{ active_scenario: string; sources: any[]; resolved_objects: any[]; canonical_rules: any[] }>(`/api/ingest${qs(snap)}`),
   snapshot: (snap?: string) => j<SnapshotSummary>(`/api/snapshot${qs(snap)}`),
   graph: (snap?: string) => j<GraphData & Provenance>(`/api/graph${qs(snap)}`),
-  findings: (snap?: string) => j<{ findings: Finding[] } & Provenance>(`/api/findings${qs(snap)}`),
+  findings: (snap?: string) => j<FindingsPage>(`/api/findings${qs(snap)}`),
   actions: (snap?: string) => j<{ actions: ActionItem[]; ranked_by: string } & Provenance>(`/api/actions${qs(snap)}`),
-  explain: (id: string) => j<{ explanation: string; by: string; cached?: boolean; pending?: boolean }>(`/api/findings/${id}/explain`, post()),
+  /** Ask the advisory layer for MODEL PROSE about a finding.
+   *
+   *  `explanation` is null until a model has actually written one. It is
+   *  deliberately NOT the engine's deterministic text: every finding already
+   *  carries `engine_explanation`, and echoing that back here under a header
+   *  saying a language model wrote it made the two blocks identical while
+   *  claiming different authors.
+   *
+   *  Three terminal-ish states, and they are different sentences:
+   *    explanation set          a model wrote it (`by` names which)
+   *    pending: true            a model is being asked; ask again shortly
+   *    unavailable_reason set   a model WAS asked and produced nothing. This is
+   *                             an answer, not a reason to keep retrying. */
+  explain: (id: string) => j<{
+    explanation: string | null; by: string | null;
+    cached?: boolean; pending?: boolean; provider?: string;
+    unavailable_reason?: string; note?: string;
+  }>(`/api/findings/${id}/explain`, post()),
   remediate: (id: string) => j<Remediation>(`/api/findings/${id}/remediate`, post()),
   remediateRefine: (id: string, comment: string, prior_change?: Record<string, any>) =>
     j<Remediation>(`/api/findings/${id}/remediate/refine`, post({ comment, prior_change })),
@@ -628,4 +831,200 @@ export const api = {
       )}`,
       "deployments",
     ),
+
+  // ── The infrastructure layer ─────────────────────────────────────────
+  /**
+   * Every source this deployment collects from, as cards.
+   *
+   * Read by the address drawer for one reason beyond the Connectors screen:
+   * `simulated` and `tier`. A tool badge that does not say a source is a seeded
+   * export is a badge that implies a live connector, and this build's exports
+   * are all seeded. A caller that cannot load this map must therefore render
+   * provenance as UNKNOWN rather than falling back to the flattering reading.
+   */
+  sources: (snap?: string) => j<{ sources: SourceCard[] }>(`/api/sources${qs(snap)}`),
+
+  /**
+   * Everything one address is involved in — what holds it, which rules reach it,
+   * which findings name it, and whether an allow path from the internet exists.
+   *
+   * `mode` is the inventory filter's containment vocabulary
+   * (`intersects` | `exact` | `contains` | `contained_by`) and is sent
+   * explicitly on every call: the group the drawer exists to show — rules that
+   * COVER this address without naming it — only appears under a mode that looks
+   * outward from the query, so which mode ran has to be a stated fact on both
+   * the request and the rendered answer, never a default nobody can see.
+   */
+  ipLookup: (address: string, mode: string, snap?: string) =>
+    j<IpLookupResponse>(
+      `/api/ip${joinQ(
+        `address=${encodeURIComponent(address)}`,
+        `mode=${encodeURIComponent(mode)}`,
+        snap ? `snapshot=${encodeURIComponent(snap)}` : undefined,
+      )}`,
+    ),
+
+  /**
+   * ONE PAGE of the estate inventory, plus the estate's own counts and the
+   * facet counts the filters are drawn from.
+   *
+   * THREE THINGS ON THE PAYLOAD ARE NOT INTERCHANGEABLE and a caller that
+   * collapses them is back to the empty-vs-failed lie in a new place:
+   *
+   *   `counts`  is the ESTATE readout ("I have these many subnets"), and a
+   *             member of it is `number | null` — `null` meaning no onboarded
+   *             source declares that figure. It renders as an em-dash, never 0.
+   *   `total`   is how many entities match the CURRENT filter, which is not the
+   *             number of rows in `items`: `items` is one `limit`-sized window.
+   *   `has_more`says this page is not the whole match set. A table that hides it
+   *             reads as a complete one.
+   *
+   * Filtering is entirely server-side (see `InventoryQuery`) so `total` and the
+   * rows on screen are answers to the same question.
+   */
+  inventory: (params: InventoryQuery = {}) =>
+    j<InventoryResponse>(`/api/inventory${inventoryQs(params)}`),
+
+  /** The reconstructed topology the canvas draws: lanes, links, VLANs, counts,
+   *  the unlinked devices nothing reported a cable for, and the caps. */
+  topology: (snap?: string) => j<TopologyPayload>(`/api/topology${qs(snap)}`),
+
+  /** Single points of failure, with the blast radius behind each one. */
+  resilience: (snap?: string) => j<ResiliencePayload>(`/api/resilience${qs(snap)}`),
+};
+
+/**
+ * `GET /api/graph` — the policy graph, and the cross-tool paths through it.
+ *
+ * Named here because the Explorer needs it as a TYPE, not only as a return
+ * value: the cross-tool chain is now drawn as an overlay on the topology canvas
+ * (components/topology/paths.ts), so the payload is threaded through several
+ * components rather than consumed where it is fetched.
+ *
+ * `cross_tool_paths` stays `Record<string, any>[]` — that is genuinely what the
+ * endpoint serves, and pretending otherwise with a hand-written interface would
+ * let a field disappear from the API without a single call site noticing.
+ * `normalisePaths` reads it defensively instead, and a hop with no service
+ * renders as a hop with no service rather than as "any".
+ */
+export type GraphPayload = GraphData & Provenance;
+
+// ───────────────────────────────────────────────────────────────────────────
+// Risk To-Do — the rule behind a reference, and un-applying an applied change.
+//
+// Appended as its own block rather than folded into `api` above: these two
+// reads are what turned the Risk To-Do screen from a list of bare tokens
+// ("WIZ-001 GC-002 ALGO-029") into a screen that can show the grant itself, and
+// they are the only calls on it that the rest of the console does not make.
+// ───────────────────────────────────────────────────────────────────────────
+
+/** Which way a grant points, relative to the estate's trust boundary. Computed
+ *  by the engine from the same `is_public` classifier the severity scorer uses,
+ *  so a named object that resolves to 0.0.0.0/0 reads here exactly as the
+ *  literal CIDR does. */
+export type RuleFlow = "inbound" | "outbound" | "internal" | "transit";
+
+/** The asset behind one side of a rule. `null` on a `RuleEndpoint` means no
+ *  asset in this snapshot resolves that token — which is a fact about our
+ *  correlation, not a licence to render the token as if it were an asset. */
+export interface RuleAsset {
+  key: string;
+  display: string;
+  kind: string;
+  tags: string[];
+  addresses: string[];
+  /** The consoles that saw this asset. Named on screen, because "who would
+   *  notice if this access disappeared" is the reviewer's next question. */
+  seen_by: string[];
+}
+
+export interface RuleEndpoint {
+  /** The token exactly as the rule spells it. */
+  token: string;
+  /** The canonical key an alias resolved to, or null when the token IS canonical. */
+  resolved_to: string | null;
+  kind: string;
+  cidrs: string[];
+  public: boolean;
+  asset: RuleAsset | null;
+}
+
+export interface RuleDirection {
+  flow: RuleFlow;
+  detail: string;
+  /** True when a reverse grant of the same service exists. Rendered as its own
+   *  visual state, never as a fifth flow colour: removing one direction and
+   *  leaving the other is the mistake `reverse_ref` exists to prevent. */
+  bidirectional: boolean;
+  reverse_ref: string | null;
+}
+
+export interface RuleContext {
+  raw_ref: string;
+  tool: string;
+  action: string;
+  service: string;
+  protocol: string;
+  l7_app?: string | null;
+  source: RuleEndpoint;
+  destination: RuleEndpoint;
+  direction: RuleDirection;
+}
+
+export interface RulePort { proto: string; port_start: number; port_end: number }
+
+export interface RuleRow {
+  source_tool: string;
+  source_device?: string | null;
+  raw_rule_id: string;
+  rule_order?: number | null;
+  action: string;
+  src_kind?: string;
+  src_value?: Record<string, any> | null;
+  dst_kind?: string;
+  dst_value?: Record<string, any> | null;
+  protocol?: string;
+  ports?: RulePort[];
+  tags?: string[];
+}
+
+/**
+ * `GET /api/rule/{ref}` — the canonical rows AND the reviewer's context.
+ *
+ * `context` is three-valued and the three are different sentences:
+ *   RuleContext[]  the engine resolved this reference;
+ *   null           the reference is not in this snapshot;
+ *   undefined      this build of the API does not compute context at all.
+ * A screen that collapses the last two prints "not in this snapshot" out of a
+ * response that never looked.
+ */
+export interface RuleDetail extends Partial<Provenance> {
+  ref: string;
+  rules: RuleRow[];
+  context?: RuleContext[] | null;
+}
+
+/**
+ * `POST /api/staging/{id}/rollback` — take a PUSHED change back out of the
+ * applied overlay.
+ *
+ * `recompute_required` is not decoration. The engine reads the applied overlay
+ * at build time, so the running result still holds the change until it is
+ * rebuilt; a UI that reports "rolled back" without it claims the estate has
+ * already moved when it has not.
+ */
+export interface RollbackResult {
+  ok: boolean;
+  staged_id: string;
+  status: string;
+  recompute_required: boolean;
+  detail: string;
+}
+
+export const riskApi = {
+  rule: (ref: string, snap?: string) => j<RuleDetail>(`/api/rule/${encodeURIComponent(ref)}${qs(snap)}`),
+  /** Approver-only. 409 when the change is not 'pushed' — there is nothing in
+   *  the overlay to withdraw, and that refusal is rendered rather than retried. */
+  rollback: (stagedId: string, reason?: string) =>
+    j<RollbackResult>(`/api/staging/${encodeURIComponent(stagedId)}/rollback`, post(reason ? { reason } : {})),
 };

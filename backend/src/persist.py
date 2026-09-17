@@ -42,12 +42,21 @@ from .db import audit, delete_snapshot_children, upsert, upsert_many
 from .graph.build import node_db_kind
 from .ids import det_id
 from .models import ChangeDecision, ChangeRequest, RankedActions
+from .sources import BY_KEY, device_of, tier_of
+from .topology.project import (
+    circuit_rows, device_rows, interface_rows, link_rows, subnet_rows, vlan_rows,
+)
 
 # Child of the API's logger (app/main.py configures "npr.api"), so a degraded
 # write comes out as one JSON line carrying the request id and the actor.
 log = logging.getLogger("npr.api.persist")
 
-_DEVICE = {"algosec": "afa-edge-fw-01", "guardicore": "guardicore-mgmt", "wiz": "wiz-cloud-connector"}
+# Which console/device a tool's records are attributed to now lives in the
+# source registry (`sources.device_of`). It was a three-entry dict here, read
+# with a bare `.get()`, so every tool outside it persisted NULL -- and
+# `resolved_objects` is UNIQUE on (snapshot_id, source_device, object_name,
+# object_kind), so two unlisted tools exporting a same-named object collided on
+# insert. `device_of` falls back to the tool key rather than to None.
 
 
 def _asset_id(sid: str, key: str) -> str:
@@ -113,10 +122,39 @@ def snapshot_row(r: EngineResult) -> dict:
 
 
 def source_rows(r: EngineResult) -> list[dict]:
+    """Every tool that contributed to this snapshot.
+
+    Derived from the RECORDS ALONE until the infrastructure layer landed, which
+    silently excluded every console that contributes topology and no policy --
+    Catalyst Center, Meraki, the carrier portal, Junos Space, FortiGate. Six of
+    the nine onboarded sources would have been absent from the Sources screen
+    while visibly supplying the devices on the Topology screen, which is a worse
+    failure than not having the screen: the product would have been unable to
+    say where its own picture came from.
+    """
+    tools = {rec.source_tool for rec in r.records}
+    t = r.topology
+    for group in (t.devices, t.interfaces, t.links, t.vlans, t.subnets, t.circuits):
+        for item in group:
+            tools.add(item.provenance.source_tool)
+            # `provenance` is the WINNING view after the merge, and reading only
+            # that drops any console whose facts were superseded by a higher
+            # tier. FortiManager is the worked example: it supplies the model and
+            # HA role for both firewalls, loses the tie-break to the device-tier
+            # FortiGate read, and would then be absent from the Sources screen
+            # while its data was visibly on the Inventory screen.
+            tools.update(o["tool"] for o in getattr(item, "observed_by", ()) if o.get("tool"))
     return [{
         "source_id": det_id("src", tool), "tool": tool,   # global connector, not per-snapshot
-        "device": _DEVICE.get(tool, tool), "config": {"mode": "simulated_export"},
-    } for tool in sorted({rec.source_tool for rec in r.records})]
+        "device": device_of(tool),
+        # Which rung of the collection ladder. Stored rather than derived at read
+        # time so a row keeps meaning what it meant when it was written.
+        "tier": tier_of(tool),
+        # False for a bring-your-own profile: the name is the operator's, not one
+        # this build ships a normalizer for.
+        "registered": tool in BY_KEY,
+        "config": {"mode": "simulated_export"},
+    } for tool in sorted(tools)]
 
 
 def resolved_object_rows(r: EngineResult) -> list[dict]:
@@ -151,7 +189,7 @@ def canonical_rule_rows(r: EngineResult) -> list[dict]:
     sid = r.snapshot_id
     return [{
         "rule_uid": _rule_uid(sid, rec.source_tool, rec.raw_ref), "snapshot_id": sid,
-        "source_tool": rec.source_tool, "source_device": _DEVICE.get(rec.source_tool),
+        "source_tool": rec.source_tool, "source_device": device_of(rec.source_tool),
         "raw_rule_id": rec.raw_ref, "policy_id": None, "rule_order": rec.order, "action": rec.action,
         "src_kind": rec.source_kind, "src_value": _value(rec.source, rec.source_kind), "src_context": None,
         "dst_kind": rec.destination_kind, "dst_value": _value(rec.destination, rec.destination_kind), "dst_context": None,
@@ -182,7 +220,7 @@ def graph_edge_rows(r: EngineResult) -> list[dict]:
         "src_node": _canon(r, rec.source), "dst_node": _canon(r, rec.destination), "action": rec.action,
         "ports": _ports(rec.protocol, rec.port, rec.port_end),
         "l7_app": rec.l7_app, "rule_uid": _rule_uid(sid, rec.source_tool, rec.raw_ref),
-        "source_tool": rec.source_tool, "enforcement_point": _DEVICE.get(rec.source_tool),
+        "source_tool": rec.source_tool, "enforcement_point": device_of(rec.source_tool),
     } for rec in r.records if rec.action == "allow"]
 
 
@@ -266,6 +304,24 @@ def persist_engine_result(cur: psycopg.Cursor, r: EngineResult) -> dict:
     upsert_many(cur, "graph_nodes", graph_node_rows(r), ["snapshot_id", "node_id"])
     upsert_many(cur, "graph_edges", graph_edge_rows(r), ["snapshot_id", "edge_id"])
     upsert_many(cur, "findings", finding_rows(r), ["finding_id"])
+
+    # The infrastructure layer. Written through `topology.project` rather than
+    # shaped here, so the persisted rows and the API's degraded projection are
+    # the same code -- the reason main._graph_payload gives for the policy graph,
+    # and the drift it prevents only ever shows on the fallback path, which is by
+    # definition the one nobody exercises until something is already wrong.
+    #
+    # An estate with no console onboarded writes nothing here, which is correct:
+    # `delete_snapshot_children` above already cleared the snapshot's rows, so
+    # "no infrastructure" persists as absence rather than as stale rows from a
+    # previous ingest.
+    upsert_many(cur, "devices", device_rows(sid, r.topology), ["snapshot_id", "device_key"])
+    upsert_many(cur, "device_interfaces", interface_rows(sid, r.topology),
+                ["snapshot_id", "interface_key"])
+    upsert_many(cur, "topology_links", link_rows(sid, r.topology), ["snapshot_id", "link_key"])
+    upsert_many(cur, "vlans", vlan_rows(sid, r.topology), ["snapshot_id", "vlan_id"])
+    upsert_many(cur, "subnets", subnet_rows(sid, r.topology), ["snapshot_id", "cidr"])
+    upsert_many(cur, "circuits", circuit_rows(sid, r.topology), ["snapshot_id", "circuit_id"])
 
     # actor_kind='system': the engine derived this, and it also runs from the
     # warm-engine thread at boot where there is no request and no actor at all.

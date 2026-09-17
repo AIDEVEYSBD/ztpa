@@ -1,0 +1,213 @@
+{
+  "id": 1,
+  "result": [
+    {
+      "status": {
+        "code": 0,
+        "message": "OK"
+      },
+      "url": "/dvmdb/adom/root/device",
+      "data": [
+        {
+          "name": "fw-perim-01",
+          "sn": "FG200F1234567890",
+          "platform_str": "FortiGate-200F",
+          "ip": "10.255.0.21",
+          "ha_mode": "AP",
+          "ha_group_name": "perim-ha",
+          "ha_role": "master",
+          "conf_status": "unknown",
+          "conn_status": "unknown",
+          "adom": "root",
+          "vdom": [
+            {
+              "name": "root"
+            }
+          ],
+          "os_ver": "7.0",
+          "mr": 4,
+          "patch": 3
+        },
+        {
+          "name": "fw-perim-02",
+          "sn": "FG200F0987654321",
+          "platform_str": "FortiGate-200F",
+          "ip": "10.255.0.22",
+          "ha_mode": "AP",
+          "ha_group_name": "perim-ha",
+          "ha_role": "slave",
+          "conf_status": "unknown",
+          "conn_status": "unknown",
+          "adom": "root",
+          "vdom": [
+            {
+              "name": "root"
+            }
+          ],
+          "os_ver": "7.0",
+          "mr": 4,
+          "patch": 3
+        }
+      ]
+    },
+    {
+      "status": {
+        "code": 0,
+        "message": "OK"
+      },
+      "url": "/pm/config/adom/root/obj/dynamic/interface",
+      "data": [
+        {
+          "name": "mgmt",
+          "description": "",
+          "single-intf": 0,
+          "default-mapping": 0,
+          "dynamic_mapping": [
+            {
+              "_scope": [
+                {
+                  "name": "fw-perim-01",
+                  "vdom": "root"
+                }
+              ],
+              "local-intf": [
+                "mgmt"
+              ]
+            },
+            {
+              "_scope": [
+                {
+                  "name": "fw-perim-02",
+                  "vdom": "root"
+                }
+              ],
+              "local-intf": [
+                "mgmt"
+              ]
+            }
+          ]
+        },
+        {
+          "name": "port1",
+          "description": "",
+          "single-intf": 0,
+          "default-mapping": 0,
+          "dynamic_mapping": [
+            {
+              "_scope": [
+                {
+                  "name": "fw-perim-01",
+                  "vdom": "root"
+                }
+              ],
+              "local-intf": [
+                "port1"
+              ]
+            },
+            {
+              "_scope": [
+                {
+                  "name": "fw-perim-02",
+                  "vdom": "root"
+                }
+              ],
+              "local-intf": [
+                "port1"
+              ]
+            }
+          ]
+        },
+        {
+          "name": "port2",
+          "description": "",
+          "single-intf": 0,
+          "default-mapping": 0,
+          "dynamic_mapping": [
+            {
+              "_scope": [
+                {
+                  "name": "fw-perim-01",
+                  "vdom": "root"
+                }
+              ],
+              "local-intf": [
+                "port2"
+              ]
+            },
+            {
+              "_scope": [
+                {
+                  "name": "fw-perim-02",
+                  "vdom": "root"
+                }
+              ],
+              "local-intf": [
+                "port2"
+              ]
+            }
+          ]
+        },
+        {
+          "name": "port3",
+          "description": "",
+          "single-intf": 0,
+          "default-mapping": 0,
+          "dynamic_mapping": [
+            {
+              "_scope": [
+                {
+                  "name": "fw-perim-01",
+                  "vdom": "root"
+                }
+              ],
+              "local-intf": [
+                "port3"
+              ]
+            },
+            {
+              "_scope": [
+                {
+                  "name": "fw-perim-02",
+                  "vdom": "root"
+                }
+              ],
+              "local-intf": [
+                "port3"
+              ]
+            }
+          ]
+        },
+        {
+          "name": "port4",
+          "description": "",
+          "single-intf": 0,
+          "default-mapping": 0,
+          "dynamic_mapping": [
+            {
+              "_scope": [
+                {
+                  "name": "fw-perim-01",
+                  "vdom": "root"
+                }
+              ],
+              "local-intf": [
+                "port4"
+              ]
+            },
+            {
+              "_scope": [
+                {
+                  "name": "fw-perim-02",
+                  "vdom": "root"
+                }
+              ],
+              "local-intf": [
+                "port4"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

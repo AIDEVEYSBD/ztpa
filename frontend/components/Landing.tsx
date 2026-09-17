@@ -19,6 +19,7 @@ import {
   Layers, Fingerprint, Network, Route, Gauge,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
+import { TOOL_COLOUR } from "@/lib/toolColour";
 
 const EASE = [0.2, 0, 0, 1] as const;
 const NAV = [
@@ -29,7 +30,8 @@ const NAV = [
   { href: "#gate", label: "Change gate" },
 ];
 
-const TOOL: Record<string, string> = { algosec: "#3b82f6", guardicore: "#8b5cf6", wiz: "#06b6d4" };
+// These three hexes were a third copy of the map's edge palette, so a colour
+// change on the console silently stopped matching the page that sells it.
 
 const PROBLEMS = [
   { icon: Table2, label: "AlgoSec", title: "Firewall rules", desc: "Sees the perimeter. Blind to cloud and east-west." },
@@ -321,7 +323,7 @@ export function Landing() {
             {/* sources + normalize */}
             <div className="flex flex-col justify-center gap-3.5 border-b border-border pb-6 lg:border-b-0 lg:border-r lg:pb-0 lg:pr-9">
               <div className="mb-1 text-[11px] uppercase tracking-[0.05em] text-text3">Simulated exports</div>
-              {([["AlgoSec", TOOL.algosec], ["Guardicore", TOOL.guardicore], ["Wiz", TOOL.wiz]] as const).map(([name, color]) => (
+              {([["AlgoSec", TOOL_COLOUR.algosec], ["Guardicore", TOOL_COLOUR.guardicore], ["Wiz", TOOL_COLOUR.wiz]] as const).map(([name, color]) => (
                 <div key={name} className="flex items-center gap-2.5 border border-border px-3 py-2.5">
                   <span className="h-2 w-2 shrink-0" style={{ background: color }} />
                   <span className="text-[14px] font-bold">{name}</span>
@@ -350,7 +352,7 @@ export function Landing() {
                     strokeDasharray="3 13" strokeLinejoin="round" opacity="0.85" className="animate-npr-flow" />
                 </svg>
                 {/* edge labels */}
-                {([["18%", "algosec", "Wiz", TOOL.wiz], ["40%", "wiz", "Wiz", TOOL.wiz], ["62%", "gc", "Guardicore", TOOL.guardicore], ["83.5%", "as", "AlgoSec", TOOL.algosec]] as const).map(([left, k, label, color]) => (
+                {([["18%", "algosec", "Wiz", TOOL_COLOUR.wiz], ["40%", "wiz", "Wiz", TOOL_COLOUR.wiz], ["62%", "gc", "Guardicore", TOOL_COLOUR.guardicore], ["83.5%", "as", "AlgoSec", TOOL_COLOUR.algosec]] as const).map(([left, k, label, color]) => (
                   <span key={k} className="absolute top-[51%] -translate-x-1/2 -translate-y-1/2 border border-border bg-bg px-1.5 py-0.5 text-[11px] font-bold" style={{ left, color }}>{label}</span>
                 ))}
                 {/* nodes */}

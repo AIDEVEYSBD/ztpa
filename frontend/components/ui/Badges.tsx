@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { ShieldAlert, GitBranch } from "lucide-react";
 import type { Band } from "@/lib/types";
 import { cn } from "@/lib/cn";
+import { toolColour , toolLabel } from "@/lib/toolColour";
 import { SEV } from "./severity";
 
 /** Severity is always colour + icon + label. */
@@ -19,17 +20,18 @@ export function SeverityPill({ band, severity, forced }: { band: Band; severity?
   );
 }
 
-const TOOL_DOT: Record<string, string> = {
-  algosec: "bg-blue-400", guardicore: "bg-violet-400", wiz: "bg-cyan-400", sd_wan: "bg-emerald-400", sd_lan: "bg-teal-400",
-};
-
-/** Provenance chip: source tool (+ optional device/rule). */
+/** Provenance chip: source tool (+ optional device/rule).
+ *
+ *  The dot used to carry its own `TOOL_DOT` map of Tailwind classes covering
+ *  five of the twelve registered tools, so a badge could disagree with the edge
+ *  the same tool drew on the map, and the other seven all shared the unknown
+ *  grey — badging a tool the product ingests as one it cannot attribute. */
 export function ToolBadge({ tool, detail }: { tool: string; detail?: string }) {
   return (
     <span className="chip mono text-[10.5px]">
       <GitBranch size={10} className="text-text3" />
-      <span className={cn("h-1.5 w-1.5 shrink-0", TOOL_DOT[tool] ?? "bg-text3")} />
-      {tool}{detail ? ` · ${detail}` : ""}
+      <span className="h-1.5 w-1.5 shrink-0" style={{ background: toolColour(tool) }} />
+      {toolLabel(tool)}{detail ? ` · ${detail}` : ""}
     </span>
   );
 }

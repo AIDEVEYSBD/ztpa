@@ -720,6 +720,23 @@ build_frontend_env() { # $1 = backend url  $2 = app url
     "AUTH_TRUST_HOST=true"
     "BACKEND_URL=$1"
     "APP_URL=$2"
+    # AUTH_URL, NOT just APP_URL -- and this line is why SSO could not work on a
+    # deployment that had no custom domain bound.
+    #
+    # APP_URL is read by this product's own code (lib/baseurl). AUTH_URL is what
+    # Auth.js builds the OIDC `redirect_uri` from. Without it Auth.js falls back
+    # to deriving the origin from the incoming request, and behind Container Apps
+    # ingress that resolves to the container's BIND ADDRESS: the app sent
+    # `redirect_uri=https://0.0.0.0:3000/api/auth/callback/autox`, the IdP
+    # rejected it as unregistered, and the failure surfaced as
+    # INVALID_REDIRECT_URI -- which reads as "you registered the wrong URL"
+    # rather than "the app asked for the wrong one".
+    #
+    # AUTH_URL was only ever set by bind-domain.sh, so this worked on the one
+    # deployment with a custom domain and on no other. That also made the
+    # NEXT STEPS printed at the end of this script wrong: they tell you to
+    # register the azurecontainerapps.io callback, which could never match.
+    "AUTH_URL=$2"
   )
   local n v
   for n in SSO_CLIENT_ID SSO_ISSUER SSO_RESOURCE SSO_SCOPE SSO_SESSION_MAX_AGE \
@@ -728,6 +745,31 @@ build_frontend_env() { # $1 = backend url  $2 = app url
     v="${!n:-}"
     if [ -n "$v" ]; then FRONTEND_ENV+=("${n}=${v}"); fi
   done
+
+  # AUTH_LOCAL_LOGIN ARRIVES FROM THE DEPLOYING SHELL, AND A DEV MACHINE HAS IT SET.
+  #
+  # Break-glass needs three things to authenticate anyone: AUTH_LOCAL_LOGIN=true,
+  # BREAKGLASS_EMAIL, and a password or hash (frontend/lib/sso.breakGlassState).
+  # This loop forwards the first two and NOT the third, so a stray
+  # AUTH_LOCAL_LOGIN=true lands "armed but unusable" -- the provider is never
+  # registered and /api/auth/callback/breakglass does not exist. That is the
+  # safe half.
+  #
+  # The unsafe half is that it is SILENT. Running `make db` (or anything else
+  # that does `set -a; . ./.env`) in the same shell before deploying is enough
+  # to carry a local demo's AUTH_LOCAL_LOGIN=true into a cloud revision, where
+  # the sign-in page then renders a yellow "Break-glass is armed but unusable"
+  # notice to every visitor. The existing warning below only fires on
+  # BREAKGLASS_PASSWORD_HASH, which this loop does not forward -- so it cannot
+  # catch this case, and nobody would know until someone opened the login page.
+  case " ${FRONTEND_ENV[*]} " in
+    *" AUTH_LOCAL_LOGIN=true "*)
+      warn "AUTH_LOCAL_LOGIN=true is being deployed, from this shell's environment."
+      warn "  Break-glass will show as ARMED on the sign-in page. It cannot authenticate"
+      warn "  anyone (no password is forwarded), but it is visible to every visitor."
+      warn "  If this came from a local .env, unset it and re-run: unset AUTH_LOCAL_LOGIN"
+      warn "  To arm it deliberately, see docs/BREAKGLASS.md." ;;
+  esac
 
   # PRESERVE EVERY OPERATOR-SET VARIABLE THIS SCRIPT DOES NOT ITSELF MANAGE.
   #

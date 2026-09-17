@@ -91,7 +91,9 @@ from ..graph.build import build_graph
 from ..identity import resolve_identities
 from ..ids import content_fingerprint, det_id, snapshot_id as make_snapshot_id
 from ..models import Asset, AssetCorrelation, Finding, PolicyRecord
+from ..models import Topology
 from ..normalizers import normalize_all
+from ..topology import reconstruct
 from ..normalizers.common import ObservedEntity, ResolvedObject
 from . import cidr_overlap, over_permissive, path_trace, shadowing, transport_exposure
 
@@ -201,6 +203,16 @@ class EngineResult:
     # the findings that exist, so no count taken from this result is a total and
     # no absence in it is a proof.
     truncations: list[dict] = field(default_factory=list)
+    # The reconstructed infrastructure view -- devices, interfaces, links, VLANs,
+    # subnets, circuits, and the layers we observed nothing in.
+    #
+    # A SEPARATE GRAPH, deliberately. `graph` above is POLICY: who may reach what.
+    # This is cabling and adjacency, and nothing in `src.graph` may read it. A
+    # topology link is not a grant, and letting one become the other would let
+    # the engine report reachability that no rule permits -- the one error a
+    # security tool cannot ship. `verify_engine` asserts `cross_tool_paths` is
+    # byte-identical with and without this populated.
+    topology: Topology = field(default_factory=Topology)
 
     # --- what this result is allowed to claim about itself -----------------
     # Two distinct failure grades, because they have two different remedies and
@@ -512,22 +524,61 @@ def _resolved_digest(obj: ResolvedObject) -> str:
 def _fingerprint(records: list[PolicyRecord], entities: list[ObservedEntity],
                  resolved: list[ResolvedObject],
                  manual_merges: Iterable[tuple[str, str]],
-                 applied_changes: Iterable[dict]) -> str:
+                 applied_changes: Iterable[dict],
+                 nr: NormalizeResult | None = None) -> str:
     """The content hash behind `snapshot_id`: everything that determines the run.
 
-    Five blobs, in a fixed order. Records, entities and resolved rows are sorted
+    Six blobs, in a fixed order. Records, entities and resolved rows are sorted
     (their order in the export must not change the id); merges are sorted (the
     set is what matters). The overlay is NOT sorted -- `apply_overlay` folds
     changes in the caller's order and two orders can produce two different record
     sets, so its order is content.
+
+    THE INFRASTRUCTURE BLOB IS IN HERE EVEN THOUGH IT CHANGES NO FINDING.
+    It is tempting to leave it out: the topology is a separate graph, no analyzer
+    reads it, and excluding it would keep the golden snapshot id stable when a
+    console is onboarded. That reasoning is exactly backwards. The id keys every
+    snapshot-scoped table, `devices`/`topology_links`/`vlans` among them, so two
+    ingests that differ ONLY in their topology would share one id -- and the rows
+    a reader got back would depend on which run happened to write last. An id
+    that does not cover the content it keys is not a content hash.
+
+    So onboarding a console mints a new snapshot, which is the truth: more of the
+    estate was read than last time.
+
+    ...and an estate with NO infrastructure keeps the id it always had. The sixth
+    blob is appended only when there is something in it, rather than appended as
+    an empty string, because an empty blob is not absent content -- it would
+    still perturb the hash and re-baseline every existing snapshot for an ingest
+    that read nothing new. "No topology" and "the same policy inputs as before"
+    are the same content, and must produce the same id.
     """
-    return content_fingerprint(
+    blobs = [
         _RS.join(sorted(_record_digest(r) for r in records)),
         _RS.join(sorted(_entity_digest(e) for e in entities)),
         _RS.join(sorted(_resolved_digest(o) for o in resolved)),
         _RS.join(sorted(_merge_digest(m) for m in manual_merges)),
         _RS.join(_overlay_digest(c) for c in applied_changes),
-    )
+    ]
+    infra = sorted(_infra_digest(nr)) if nr is not None else []
+    if infra:
+        blobs.append(_RS.join(infra))
+    return content_fingerprint(*blobs)
+
+
+def _infra_digest(nr) -> list[str]:
+    """One stable line per infrastructure fact.
+
+    Model-dumped rather than hand-built so a field added to `NetDevice` or
+    `NetLink` cannot silently fall outside the fingerprint -- which would let two
+    materially different topologies share an id. Sorted by the caller.
+    """
+    out: list[str] = []
+    for kind, items in (("dev", nr.devices), ("if", nr.interfaces), ("ln", nr.links),
+                        ("vl", nr.vlans), ("sn", nr.subnets), ("ci", nr.circuits)):
+        for item in items:
+            out.append(f"{kind}{_FS}{item.model_dump_json()}")
+    return out
 
 
 def run(label: str = "seed-demo", manual_merges: list[tuple[str, str]] = (),
@@ -547,10 +598,17 @@ def run(label: str = "seed-demo", manual_merges: list[tuple[str, str]] = (),
     idr = resolve_identities(entities, manual_merges)
     t2 = perf_counter()
     graph = build_graph(records, idr.assets, idr.alias_map)
+    # The SECOND graph, built from the same ingest and kept entirely apart from
+    # the first. `reconstruct` derives each device's lane from its position in
+    # the link graph rather than from its name, and refuses to place one it
+    # cannot justify. Nothing below reads it: the analyzers take `graph`.
+    topology = reconstruct(nr.devices, nr.interfaces, nr.links,
+                           nr.vlans, nr.subnets, nr.circuits)
     t3 = perf_counter()
     # Hashed over the POST-overlay records and the POST-augmentation entities:
     # the id has to describe the state that was actually analyzed.
-    fingerprint = _fingerprint(records, entities, nr.resolved, manual_merges, applied_changes)
+    fingerprint = _fingerprint(records, entities, nr.resolved, manual_merges,
+                               applied_changes, nr)
 
     with _record_truncations() as truncated:
         findings, degraded = _run_analyzers(records, graph, idr.alias_map, isolate=True)
@@ -598,5 +656,5 @@ def run(label: str = "seed-demo", manual_merges: list[tuple[str, str]] = (),
         snapshot_id=sid, label=label, records=records, assets=idr.assets,
         correlations=idr.correlations, resolved=nr.resolved, alias_map=idr.alias_map,
         graph=graph, findings=findings, timings=timings, degraded_analyzers=degraded,
-        truncations=truncations,
+        truncations=truncations, topology=topology,
     )
