@@ -29,7 +29,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSession } from "next-auth/react";
 import { ChevronDown, ChevronRight, RotateCw, Undo2, Wand2 } from "lucide-react";
-import { api, asApiError, type ApiError } from "@/lib/api";
+import { api, asApiError, type ApiError, type ResilienceFindingRow } from "@/lib/api";
 import type { ActionItem, Band, Finding } from "@/lib/types";
 import { canApprove as canApproveChanges, type AppRole } from "@/lib/roles";
 import { SearchBox } from "@/lib/tableTools";
@@ -87,6 +87,17 @@ export function RiskTodo({ actions, findings, readOnly = false, loading = false,
   const [decisionsError, setDecisionsError] = useState<ApiError>();
   const [staged, setStaged] = useState<QueueRow[]>();
   const [stagingError, setStagingError] = useState<ApiError>();
+  // STRUCTURAL RISK, which this screen used to omit entirely.
+  //
+  // Risk To-Do reads `/api/findings`, and those come from the three POLICY
+  // exports -- so a reader with nine consoles connected saw badges for three of
+  // them and reasonably concluded the other six had contributed nothing. They
+  // had: six resilience findings, two of them critical, visible only in the
+  // Explorer. A page headed "what is wrong" that leaves out two criticals is
+  // not a to-do list.
+  const [structural, setStructural] = useState<ResilienceFindingRow[]>();
+  const [structuralError, setStructuralError] = useState<ApiError>();
+  const [structuralOpen, setStructuralOpen] = useState(false);
 
   const loadGovernance = useCallback(() => {
     // Never fall back to []: "this estate has no change history" is a claim a
@@ -98,6 +109,12 @@ export function RiskTodo({ actions, findings, readOnly = false, loading = false,
     api.staging()
       .then((r) => { setStaged(r.staged as QueueRow[]); setStagingError(undefined); })
       .catch((e) => { setStaged(undefined); setStagingError(asApiError(e)); });
+    // `analysed: false` is NOT an empty estate: it means the topology was too
+    // sparse to rate, which is the partial-onboarding case. Kept apart from a
+    // failed read and from a genuinely clean result.
+    api.resilience()
+      .then((r) => { setStructural(r.analysed ? r.findings : []); setStructuralError(undefined); })
+      .catch((e) => { setStructural(undefined); setStructuralError(asApiError(e)); });
   }, []);
   useEffect(() => { loadGovernance(); }, [loadGovernance]);
 
@@ -135,7 +152,12 @@ export function RiskTodo({ actions, findings, readOnly = false, loading = false,
   const [q, setQ] = useState("");
   const [band, setBand] = useState<Band | "all">("all");
   const [stage, setStage] = useState<Stage | "all">("all");
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  // OPEN or SHUT, per action, with the default computed rather than stored: an
+  // empty map used to mean "every group expanded", which put 36 findings and
+  // four headings on one screen and made the worst action one row among many.
+  // Now only the FIRST (worst-first) group is open, and a group the reader has
+  // touched keeps whatever they set.
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
   const [campaignOpen, setCampaignOpen] = useState(false);
   const [openId, setOpenId] = useState<string | null>(null);
 
@@ -264,10 +286,17 @@ export function RiskTodo({ actions, findings, readOnly = false, loading = false,
         ) : (
           <div>
             {shown.map(({ a, fs, worst }) => {
-              const shut = !!collapsed[a.action_id];
+              // `undefined` means untouched, so the default applies: the
+              // top-priority group is open and the rest are shut. An explicit
+              // entry always wins, so a reader's own choice is never overridden
+              // by a re-render or a filter change.
+              const shut = openGroups[a.action_id] === undefined
+                ? a.priority !== shown[0].a.priority
+                : !openGroups[a.action_id];
               return (
                 <section key={a.action_id} className="border-b border-hair last:border-0">
-                  <button onClick={() => setCollapsed((c) => ({ ...c, [a.action_id]: !shut }))}
+                  <button onClick={() => setOpenGroups((c) => ({ ...c, [a.action_id]: shut }))}
+                    aria-expanded={!shut}
                     className="flex w-full items-center gap-2.5 px-3.5 py-2 text-left hover:bg-surfaceHover">
                     <span className={cn("mono grid h-[22px] min-w-[26px] shrink-0 place-items-center border px-1 text-[11px] font-bold tabular-nums",
                       worst === "critical" ? "border-sev-critical-line bg-sev-critical-bg text-sev-critical"
@@ -308,6 +337,92 @@ export function RiskTodo({ actions, findings, readOnly = false, loading = false,
           <Undo2 size={13} className="shrink-0 text-text3" />
           <span className="eyebrow">Applied changes</span>
           <span className="text-[10.5px] text-text3">what this console has put into the engine&apos;s applied overlay</span>
+          {/* ── Structural risk ──────────────────────────────────────────────
+              Deliberately its OWN section, not folded into the groups above.
+              A resilience finding names no rule, so there is nothing to remove
+              and nothing for the change gate to rule on -- giving it a "draft a
+              fix" button would promise a workflow that cannot run. It is listed
+              here so the page is complete, and it hands off to the Explorer,
+              where the blast radius that produced the score is drawn.
+
+              Its counts are kept separate from the severity chips above for the
+              same reason: those chips filter policy findings, so folding two
+              structural criticals into "critical 4" would make the filter lie
+              about what it returns. */}
+          <section className="border-t border-border">
+            <button
+              type="button"
+              onClick={() => setStructuralOpen((v) => !v)}
+              aria-expanded={structuralOpen}
+              className="flex w-full items-center gap-2.5 px-3.5 py-2 text-left hover:bg-surfaceHover"
+            >
+              <span className="mono grid h-[22px] min-w-[26px] shrink-0 place-items-center border border-border bg-sunk px-1 text-[11px] font-bold text-text2">
+                S
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[12.5px] font-bold">
+                  Structural risk — from the topology, not the policy
+                </span>
+                <span className="block truncate text-[10.5px] text-text3">
+                  {structuralError
+                    ? "Could not be read, so this count is unknown rather than zero."
+                    : structural === undefined
+                      ? "Reading the topology…"
+                      : structural.length === 0
+                        ? "No single point of failure the onboarded consoles can see."
+                        : "No rule change fixes these. Each one is a cabling or carrier fact."}
+                </span>
+              </span>
+              {structural === undefined ? (
+                <span className="mono shrink-0 text-[10.5px] text-text3">—</span>
+              ) : (
+                <span className="mono shrink-0 text-[10.5px] tabular-nums text-text3">
+                  {structural.filter((f) => f.severity_band === "critical").length > 0 && (
+                    <span className="mr-1.5 border border-sev-critical-line bg-sev-critical-bg px-1 text-sev-critical">
+                      {structural.filter((f) => f.severity_band === "critical").length} critical
+                    </span>
+                  )}
+                  {structural.length}
+                </span>
+              )}
+              <ChevronRight size={13}
+                className={cn("shrink-0 text-text3 transition-transform", structuralOpen && "rotate-90")} />
+            </button>
+
+            {structuralOpen && (
+              structuralError ? (
+                <div className="px-3.5 pb-3">
+                  <InlineError resource="the resilience analysis" error={structuralError} onRetry={loadGovernance} />
+                </div>
+              ) : (
+                <ul>
+                  {(structural ?? []).map((f) => (
+                    <li key={f.id}>
+                      <button
+                        type="button"
+                        onClick={() => onNavigate?.("explorer")}
+                        className="flex w-full items-center gap-2.5 px-3.5 py-1.5 text-left hover:bg-surfaceHover"
+                        title="Open the Explorer, where the blast radius behind this score is drawn."
+                      >
+                        <SeverityPill band={f.severity_band} />
+                        <span className="min-w-0 flex-1 truncate text-[12px]">{f.title}</span>
+                        {/* Device keys and circuit ids, as PLAIN identifiers. They
+                            are not rule references, and a RuleToken here would
+                            fire a rule lookup after a router. */}
+                        {(f.raw_refs ?? []).slice(0, 3).map((r) => (
+                          <span key={r} className="mono hidden shrink-0 border border-border bg-sunk px-1 text-[10px] text-text3 lg:inline">
+                            {r}
+                          </span>
+                        ))}
+                        <ChevronRight size={12} className="shrink-0 text-text3" />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )
+            )}
+          </section>
+
           {onNavigate && (
             <button onClick={() => onNavigate("staging")} className="ml-auto text-[10.5px] font-bold underline">
               Open the Implementation Queue

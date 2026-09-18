@@ -243,12 +243,24 @@ async function j<T>(url: string, init?: RequestInit, attempt = 0): Promise<T> {
       await sleep(COLD_START_BACKOFF_MS * 2 ** attempt);
       return j<T>(url, init, attempt + 1);
     }
+    // TWO causes, and the message used to name only one of them.
+    //
+    // A cold scale-to-zero backend is the first. The second is DEPLOYMENT SKEW:
+    // a tab opened before a deploy is still running the old bundle, asks for a
+    // route or a server action the new revision no longer has, and Next answers
+    // its own HTML with a 200. That is what happened on the first production
+    // deploy of this build -- the frontend log said `Failed to find Server
+    // Action`, while this message sent the reader to check backend logs that
+    // were clean. Naming the wrong cause confidently is worse than naming the
+    // symptom, because it is where the reader spends their time.
     throw new ApiError(
       r.status,
       "The API answered 200 with a body that is not JSON, " +
-        `${COLD_START_RETRIES + 1} times. On a scale-to-zero deployment this is what a cold ` +
-        "backend looks like: the platform's ingress is answering while it starts a replica. " +
-        "If it persists, the backend is not starting — check its logs.",
+        `${COLD_START_RETRIES + 1} times. Two things look like this. If the page has been ` +
+        "open since before a deploy, it is running the previous build and asking for a route " +
+        "that no longer exists — reload it. Otherwise the backend has no running replica and " +
+        "the platform's ingress is answering while it starts one; if that persists, the " +
+        "backend is not starting, so check its logs.",
       url,
     );
   }
