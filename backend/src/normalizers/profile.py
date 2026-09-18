@@ -79,6 +79,10 @@ class NormalizeError(ValueError):
 _ACTION_ALIASES: dict[str, str] = {
     "allow": "allow", "permit": "allow", "accept": "allow", "pass": "allow",
     "deny": "deny", "drop": "deny", "reject": "deny", "block": "deny",
+    # Junos spells a silent drop `discard`. Missing here, it fell through to the
+    # unknown-action refusal -- correct behaviour, but the word is unambiguous
+    # and belongs in the table rather than in a normalizer's local workaround.
+    "discard": "deny",
 }
 
 # Declared object types that denote a RANGE of addresses rather than one host.
@@ -403,6 +407,22 @@ _TOKEN_NEGATION = "!"
 _DISABLED_KEYS = frozenset({"disabled", "inactive", "isdisabled", "ruledisabled"})
 _ENABLED_KEYS = frozenset({"enabled", "active", "isenabled", "ruleenabled"})
 
+# THE SPELLED-ENUM FORM, which the two boolean sets above cannot catch.
+#
+# FortiOS carries rule state as `status: "enable" | "disable"`. `_canon_key`
+# turns that into `status`, which is in neither set -- and `_is_falsy("disable")`
+# is False, because it is a non-empty string. So a rule an operator had
+# SWITCHED OFF ingested as a live grant, and the engine went on to score it.
+# A disabled any/any to a PCI database would have been reported at 100/critical
+# on the strength of config that does nothing, which is the same class of error
+# as inventing a rule.
+#
+# Refused rather than skipped, on the same grounds as the two sets above: rule
+# state is not modelled yet, and "normalize something else and say nothing" is
+# the one thing this module is never allowed to do.
+_STATE_KEYS = frozenset({"status", "state", "ruleestate", "rulestate", "enable"})
+_STATE_OFF = frozenset({"disable", "disabled", "off", "inactive", "no", "false"})
+
 
 def _canon_key(key: object) -> str:
     """A raw export key -> lowercase alphanumerics, for table comparison."""
@@ -452,6 +472,11 @@ def require_rule(row: object, *, tool: str, index: int) -> dict:
             raise NormalizeError(
                 f"{tool} {where}: field {key!r} marks the rule not enabled; rule "
                 "state is not modelled yet and a disabled rule grants nothing")
+        if canon in _STATE_KEYS and str(row[key]).strip().lower() in _STATE_OFF:
+            raise NormalizeError(
+                f"{tool} {where}: field {key!r} is {row[key]!r}, which switches the "
+                "rule off; rule state is not modelled yet and a disabled rule "
+                "grants nothing")
     return row
 
 

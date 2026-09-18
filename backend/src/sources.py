@@ -139,9 +139,8 @@ REGISTRY: tuple[SourceSpec, ...] = (
             "· /pm/config/.../firewall/address",
         auth="session-based JSON-RPC login, or API user token",
         describes_hosts=True,
-        yields=("managed devices", "model and firmware", "device interfaces",
-                "zones", "ADOMs"),
-        unread=("policy packages", "firewall policies", "address objects"),
+        yields=("managed devices", "model and firmware", "device interfaces", "ADOMs"),
+        unread=("policy packages", "firewall policies", "address objects", "zones"),
         blind_to=("non-Fortinet devices", "physical cabling outside the fabric"),
         device="fortimanager-01",
         notes="Returns HTTP 200 on failure — `result[].status.code` must be parsed "

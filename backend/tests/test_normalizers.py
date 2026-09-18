@@ -39,6 +39,7 @@ import pytest
 from src.analyzers.severity import exposure_score
 from src.config import E_IDENTITY, OVERPERMISSIVE_CONFIG
 from src.identity import context_of, resolve_identities
+from src.normalizers import profile
 from src.normalizers import algosec, guardicore, wiz
 from src.normalizers.common import SCOPE_KEYS, ObservedEntity, merge_entities, scope_identifiers
 from src.normalizers.profile import (
@@ -1092,3 +1093,41 @@ def test_a_guardicore_label_and_a_profile_object_can_declare_a_scope_too():
                             fields=FieldMap(src="s", dst="d"))
     obj = next(e for e in apply_profile(sample, profile).entities if e.name == "DC-DB")
     assert context_of(obj) == "tenant-9"
+
+def test_a_fortios_rule_switched_off_is_refused_not_ingested():
+    """THE SPELLED-ENUM GAP, which the boolean key sets could not catch.
+
+    FortiOS carries rule state as `status: "enable" | "disable"`. That canonical
+    key is in neither `_DISABLED_KEYS` nor `_ENABLED_KEYS`, and
+    `_is_falsy("disable")` is False because it is a non-empty string -- so a
+    rule an operator had SWITCHED OFF passed straight through and the engine
+    scored it. A disabled any/any to a PCI database would have been reported at
+    100/critical on the strength of config that does nothing, which is the same
+    class of error as inventing a rule outright.
+    """
+    with pytest.raises(profile.NormalizeError, match="switches the rule off"):
+        profile.require_rule({"policyid": 9, "status": "disable"},
+                             tool="fortigate", index=0)
+    # ...and the enabled spelling is untouched, because refusing that would
+    # reject every live Fortinet rule there is.
+    assert profile.require_rule({"policyid": 9, "status": "enable"},
+                                tool="fortigate", index=0)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("status", "disabled"), ("state", "inactive"), ("state", "off"),
+    ("enable", "false"), ("status", "no"),
+])
+def test_every_off_spelling_is_refused(field, value):
+    """One parametrised case per spelling actually seen in the wild. A set that
+    covers four of five spellings is the same defect with a smaller blast
+    radius."""
+    with pytest.raises(profile.NormalizeError):
+        profile.require_rule({"seq": 1, field: value}, tool="junos_space", index=0)
+
+
+def test_junos_discard_is_a_deny_not_an_unknown_action():
+    """Junos spells a silent drop `discard`. Absent from the alias table it hit
+    the unknown-action refusal -- safe, but the word is unambiguous and belongs
+    in the shared table rather than in each normalizer's local workaround."""
+    assert profile._ACTION_ALIASES["discard"] == "deny"

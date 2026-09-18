@@ -697,7 +697,13 @@ COVERAGE: dict[str, str] = {
     "carrier_portal": "circuits, the CPE terminating them, and the assigned public blocks",
     "catalyst_center": "the Cisco switching fabric, its VLANs and CDP/LLDP neighbours",
     "meraki": "the wireless AP and its uplink addressing",
-    "fortimanager": "the FortiGate HA pair: model, firmware, policy package, zones",
+    # NOT "policy package, zones". COVERAGE is read by the Sources screen to say
+    # what each source contributed, and this build contributes neither: every
+    # ingested Fortinet interface measures `zone=None` (the `obj/dynamic/interface`
+    # mapping carries no zone -- see connectors/fortinet.py), and no Fortinet
+    # policy is read at all. Both now sit in `SourceSpec.unread`, where a reader
+    # can see the gap is ours rather than the vendor's.
+    "fortimanager": "the FortiGate HA pair: model, firmware and interface addressing",
     "fortigate": "SD-WAN members, interface addressing and HA cluster state",
     "junos_space": "the Juniper edge router and its interfaces",
     "algosec": "enforcement points, their interfaces and the networks behind them",
