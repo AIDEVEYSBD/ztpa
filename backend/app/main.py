@@ -3275,6 +3275,12 @@ def sources(snapshot: str | None = None):
             "tool": spec.key, "label": spec.label, "vendor": spec.vendor,
             "tier": spec.tier, "api": spec.api, "auth": spec.auth,
             "yields": list(spec.yields), "blind_to": list(spec.blind_to),
+            # What the vendor's API exposes that this build does not read. A
+            # third category, distinct from `blind_to`: a FortiGate is not blind
+            # to its own firewall policy -- we simply do not read it yet. The
+            # card used to advertise those under `yields`, directly above a
+            # contributed count of zero records.
+            "unread": list(spec.unread),
             "notes": spec.notes or None,
             "connected": connected,
             # Every export in this build is seeded. Stated per card rather than
@@ -3291,7 +3297,7 @@ def sources(snapshot: str | None = None):
         cards.append({
             "tool": tool, "label": tool, "vendor": "(custom profile)",
             "tier": "device", "api": "operator-supplied SourceProfile", "auth": "n/a",
-            "yields": [], "blind_to": [], "notes": "Not a shipped integration: this "
+            "yields": [], "blind_to": [], "unread": [], "notes": "Not a shipped integration: this "
             "name comes from an operator's own connector profile.",
             "connected": True, "simulated": bool(simulated), "device": tool,
             "last_sync": None, "contributed": contributed[tool],

@@ -69,6 +69,20 @@ class SourceSpec:
     # card: it is what stops an operator concluding that an empty access lane
     # means an empty access layer.
     blind_to: tuple[str, ...] = ()
+    # DECLARED BY THE VENDOR'S API AND NOT READ BY THIS BUILD.
+    #
+    # The third category, and it existed as a lie before it existed as a field.
+    # `yields` was written from the API documentation, so FortiManager's card
+    # advertised "firewall policies" and "address objects" directly above
+    # "CONTRIBUTED: 0 RECORDS" -- because `normalizers/fortinet.py` reads the
+    # device and interface endpoints and deliberately emits no PolicyRecord.
+    # Both statements were on one card, on the one screen whose entire job is
+    # saying what a source gives you and what it cannot.
+    #
+    # `blind_to` could not hold these: a FortiGate is not blind to its own
+    # firewall policy. The gap is ours, not the vendor's, and a reader deciding
+    # whether to onboard a console needs to know which of the two it is.
+    unread: tuple[str, ...] = ()
     # The device/console identity a record from this tool is attributed to.
     # Replaces `persist._DEVICE`, whose three-entry `.get()` wrote NULL for
     # every other tool -- and `resolved_objects` is UNIQUE on
@@ -125,8 +139,9 @@ REGISTRY: tuple[SourceSpec, ...] = (
             "· /pm/config/.../firewall/address",
         auth="session-based JSON-RPC login, or API user token",
         describes_hosts=True,
-        yields=("managed devices", "model and firmware", "policy packages",
-                "firewall policies", "address objects", "zones", "ADOMs"),
+        yields=("managed devices", "model and firmware", "device interfaces",
+                "zones", "ADOMs"),
+        unread=("policy packages", "firewall policies", "address objects"),
         blind_to=("non-Fortinet devices", "physical cabling outside the fabric"),
         device="fortimanager-01",
         notes="Returns HTTP 200 on failure — `result[].status.code` must be parsed "
@@ -155,8 +170,8 @@ REGISTRY: tuple[SourceSpec, ...] = (
         api="/api/space/device-management/devices · /api/juniper/sd/policy-management/firewall/policies",
         auth="basic auth over HTTPS",
         describes_hosts=True,
-        yields=("managed devices", "platform and OS", "firewall policies",
-                "address objects", "zones"),
+        yields=("managed devices", "platform and OS", "device interfaces"),
+        unread=("firewall policies", "address objects", "zones"),
         blind_to=("non-Juniper devices", "campus access layer unless managed"),
         device="junos-space-01",
     ),
@@ -169,9 +184,9 @@ REGISTRY: tuple[SourceSpec, ...] = (
             "· /topology/vlan/vlan-names · /interface · /global-pool",
         auth="token from /dna/system/api/v1/auth/token",
         describes_hosts=True,
-        yields=("network devices", "platform, model and OS", "interfaces",
-                "VLANs", "IP pools", "physical topology", "CDP/LLDP neighbours",
-                "sites"),
+        yields=("network devices", "platform, model and OS", "interfaces", "VLANs",
+                "physical topology", "CDP/LLDP neighbours"),
+        unread=("IP pools", "sites"),
         blind_to=("non-Cisco devices", "cloud workloads", "firewall policy"),
         device="catalyst-center-01",
         notes="The only source here that returns physical topology and neighbour "
@@ -186,7 +201,8 @@ REGISTRY: tuple[SourceSpec, ...] = (
         auth="X-Cisco-Meraki-API-Key header",
         describes_hosts=True,
         yields=("devices", "model and firmware", "per-uplink private and public IP",
-                "gateway and DNS", "VLANs", "L3/L7 firewall rules", "clients"),
+                "VLANs"),
+        unread=("L3/L7 firewall rules", "clients", "gateway and DNS"),
         blind_to=("non-Meraki devices", "on-premise datacentre fabric"),
         device="meraki-dashboard",
         notes="`devices/uplinks/addresses/byDevice` returns the entire multi-WAN "
@@ -205,8 +221,8 @@ REGISTRY: tuple[SourceSpec, ...] = (
         auth="API token, or session with trusted-host restriction",
         describes_hosts=True,
         yields=("interfaces and VLAN subinterfaces", "SD-WAN members and health",
-                "routing table", "HA cluster state", "ARP table", "DHCP leases",
-                "fabric device tree"),
+                "HA cluster state", "fabric device tree"),
+        unread=("firewall policy", "routing table", "ARP table", "DHCP leases"),
         blind_to=("anything not behind this firewall"),
         device="fortigate-direct",
         notes="`monitor/system/csf` is what the Security Fabric control plane "

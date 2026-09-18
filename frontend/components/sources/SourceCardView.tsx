@@ -3,7 +3,7 @@
 import type { ReactNode } from "react";
 import {
   Boxes, Cable, ChevronDown, ChevronRight, Clock, Cpu, EyeOff, FileStack, FlaskConical,
-  KeyRound, Link2, ScanSearch, Server, Unplug,
+  CircleSlash, KeyRound, Link2, ScanSearch, Server, Unplug,
 } from "lucide-react";
 import type { SourceCard } from "@/lib/types";
 import { toolColour } from "@/lib/toolColour";
@@ -100,23 +100,29 @@ export function TierChip({ tier }: { tier: string }) {
  */
 function CapabilityList({
   items, tone, expanded, countHidden,
-}: { items: string[]; tone: "yields" | "blind"; expanded: boolean; countHidden: boolean }) {
+}: { items: string[]; tone: "yields" | "blind" | "unread"; expanded: boolean; countHidden: boolean }) {
   const blind = tone === "blind";
+  const unread = tone === "unread";
   const shown = expanded ? items : items.slice(0, 4);
   const hidden = items.length - shown.length;
   return (
     <div className="min-w-0 border border-border bg-sunk p-2.5">
       <div className="flex items-center gap-1.5">
-        {blind ? <EyeOff size={11} className="text-sev-medium" /> : <ScanSearch size={11} className="text-text3" />}
-        <span className={cn("text-[11px] font-bold uppercase tracking-[0.06em]", blind ? "text-sev-medium" : "text-text2")}>
-          {blind ? "Blind to" : "Yields"}
+        {blind ? <EyeOff size={11} className="text-sev-medium" />
+          : unread ? <CircleSlash size={11} className="text-text3" />
+          : <ScanSearch size={11} className="text-text3" />}
+        <span className={cn("text-[11px] font-bold uppercase tracking-[0.06em]",
+          blind ? "text-sev-medium" : "text-text2")}>
+          {blind ? "Blind to" : unread ? "Has it, we don't read it" : "Yields"}
         </span>
       </div>
       {items.length === 0 ? (
         <p className="mt-1.5 text-[11px] leading-snug text-text3">
           {blind
             ? "Not stated. An empty list here is a gap in the registry — it is not a source that sees everything."
-            : "Not stated. This build's registry declares nothing for this source."}
+            : unread
+              ? "Nothing. This build reads everything the registry declares for this source."
+              : "Not stated. This build's registry declares nothing for this source."}
         </p>
       ) : (
         <ul className="mt-1.5 space-y-1">
@@ -254,6 +260,17 @@ export function SourceCardView({ card, expanded, onToggle }: SourceCardViewProps
         <CapabilityList items={card.yields ?? []} tone="yields" expanded={expanded} countHidden={connected} />
         <CapabilityList items={card.blind_to ?? []} tone="blind" expanded={expanded} countHidden={connected} />
       </div>
+
+      {/* THE THIRD CATEGORY, and the one this card used to get wrong. These
+          sat under `yields` -- so FortiManager advertised "firewall policies"
+          directly above "0 RECORDS". They are not `blind_to` either: a
+          FortiGate is not blind to its own policy. Rendered only when the
+          registry declares one, so a fully-read source shows nothing here. */}
+      {(card.unread ?? []).length > 0 && (
+        <div className="mt-2">
+          <CapabilityList items={card.unread ?? []} tone="unread" expanded={expanded} countHidden={connected} />
+        </div>
+      )}
 
       {/* ── full detail ───────────────────────────────────────────────────── */}
       {expanded && (

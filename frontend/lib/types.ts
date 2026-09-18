@@ -674,6 +674,9 @@ export interface SourceCard {
   /** What it will NOT give you. The most useful field on the card: it is what
    *  stops an operator reading an empty access lane as an empty access layer. */
   blind_to: string[];
+  /** Exposed by the vendor's API and NOT read by this build. Distinct from
+   *  `blind_to`: the gap is ours, not the vendor's. */
+  unread?: string[];
   notes?: string | null;
   connected: boolean;
   /** True for a seeded export rather than a live connector. Rendered, always. */
