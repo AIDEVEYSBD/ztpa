@@ -107,6 +107,13 @@ INTERNET_EXPOSED = {
     "data-node-01", "db-prod-01", "db-prod-02",
     "internal-app", "internal-app-01",
     "lb-public-01", "lb-public-02",
+    # DMZ-NET and MGMT-NET join the set with the vendor-policy ingest, and both
+    # are TRUE new facts rather than baseline drift: FortiGate policy 1/2 permit
+    # `all` -> DMZ-NET, the Junos edge policy permits `any` -> DMZ-NET, and
+    # FortiManager policy 1 permits `all` -> MGMT-NET on tcp/22. An
+    # internet-reachable out-of-band management segment is the worst of the nine
+    # new findings, so it SHOULD be here; its absence would have been the bug.
+    "DMZ-NET", "MGMT-NET",
 }
 
 # The same set with every declared namespace stripped out of the entities, i.e.
@@ -127,6 +134,12 @@ INTERNET_EXPOSED_IF_UNSCOPED = {
     "10.0.0.0/8", "app-server-08", "app-server-09", "appsrv-07",
     "data-node-01", "db-prod-01", "db-prod-02",
     "lb-public-01", "lb-public-02",
+    # Present here too, and for a reason worth stating: the vendor rules name
+    # ADDRESS OBJECTS, so they need no identity merge to be exposed. Stripping
+    # every declared namespace withholds the appsrv-07 merge and does not touch
+    # these two -- which is the correct behaviour and the whole distinction this
+    # pair of sets exists to measure.
+    "DMZ-NET", "MGMT-NET",
 }
 
 

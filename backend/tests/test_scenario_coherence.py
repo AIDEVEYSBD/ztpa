@@ -150,7 +150,7 @@ def test_demo_is_the_flagship_on_every_screen(sandbox: Path) -> None:
     the resilience analyzer is supposed to find."""
     result, report = _engine("demo")
 
-    assert len(result.findings) == 38
+    assert len(result.findings) == 47
     paths = [f for f in result.findings if f.type == "cross_tool_path"]
     assert len(paths) == 2 and all(f.forced_critical for f in paths)
     assert {tuple(f.signals["path"])[-1] for f in paths} == {"db-prod-01", "db-prod-02"}

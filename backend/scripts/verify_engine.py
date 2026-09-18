@@ -440,7 +440,16 @@ def checks() -> tuple[list[Check], EngineResult]:
     p2 = find(lambda f: f.type == "over_permissive" and f.signals.get("exposed_port") == 3389
               and "pci" in f.signals.get("dest_tags", []))
     p3 = find(lambda f: f.type == "cidr_overlap" and f.signals.get("dest") == "app-segment")
-    p4 = find(lambda f: f.type == "shadowed_rule" and f.signals.get("shadowed_action") == "deny")
+    # Selected by TOOL, not by position. There are now two shadowed denies --
+    # the AlgoSec one this check was written for, and a FortiManager one
+    # (fortimanager-01-3 shadows the deny below it, planted problem 8) that
+    # scores higher and therefore sorts first. Taking whichever comes first made
+    # the check report `shadowing_ref = 'fortimanager-01-3'` and fail, while the
+    # property it exists to assert was intact. P4 is about the ALGOSEC rulebase;
+    # the Fortinet pair gets its own check below.
+    p4 = find(lambda f: f.type == "shadowed_rule"
+              and f.signals.get("shadowed_action") == "deny"
+              and f.source_tools == ["algosec"])
     p6 = find(lambda f: f.type == "transport_exposure" and f.signals.get("subtype") == "quic_blind_spot"
               and f.signals.get("source") == "0.0.0.0/0")
     p7 = find(lambda f: f.type == "transport_exposure"
@@ -478,6 +487,39 @@ def checks() -> tuple[list[Check], EngineResult]:
     add("P6 QUIC blind spot forced_critical", bool(p6 and p6.forced_critical))
     add("P6 QUIC decoded l7_app", bool(p6 and p6.signals.get("l7_app") == "quic"))
     add("P7 TLS fallback-not-blocked present", p7 is not None)
+    # --- P9-P11: the vendor consoles' own policy -----------------------------
+    #
+    # Until these existed every policy record came from AlgoSec, Guardicore or
+    # Wiz, so nine onboarded consoles produced findings attributed to three.
+    # These assert the three new ones actually reach the finding table, because
+    # "the ingest runs" and "the ingest contributes" are different claims and
+    # only the second one is the product.
+    by_tool = {t for f in fs for t in f.source_tools}
+    for tool in ("fortimanager", "fortigate", "junos_space"):
+        add(f"P9 {tool} contributes at least one finding",
+            tool in by_tool,
+            f"tools present: {sorted(by_tool)}")
+
+    # P10: the wildcard collapse. FortiOS says `all`, Junos says `any`, AlgoSec
+    # and Wiz say `0.0.0.0/0`. If those do not collapse onto ONE node then the
+    # graph holds three internets, each its own path origin, and every
+    # reachability answer is computed against a third of the exposure.
+    internet_nodes = sorted(n for n in r1.graph.nodes if n in ("0.0.0.0/0", "all", "any", "*"))
+    add("P10 every spelling of the internet is one node",
+        internet_nodes == ["0.0.0.0/0"],
+        f"internet-ish nodes: {internet_nodes}")
+
+    # P11: the Fortinet shadowed deny, which is the finding an operator most
+    # wants from a policy-package ingest -- a deny whose intent is stated and
+    # never enforced, because the accept above it already matched. Asserted
+    # separately from P4 so neither check depends on which sorts first.
+    fmg_deny = next((f for f in fs if f.type == "shadowed_rule"
+                     and f.source_tools == ["fortimanager"]
+                     and f.signals.get("shadowed_action") == "deny"), None)
+    add("P11 the FortiManager deny is reported as shadowed by the accept above it",
+        bool(fmg_deny) and fmg_deny.signals.get("shadowing_ref") == "fortimanager-01-3",
+        f"finding = {fmg_deny and (sorted(fmg_deny.raw_refs), fmg_deny.signals.get('shadowing_ref'))}")
+
     add("P8 named object resolving to a /16 reaching the PCI database is reported",
         bool(p8 and p8.severity_band in ("high", "critical")),
         f"finding = {p8 and (p8.severity, p8.severity_band)}")

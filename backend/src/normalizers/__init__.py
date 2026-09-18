@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from . import algosec, algosec_topology, carrier, cisco, fortinet, guardicore, juniper, wiz
+from . import vendor_policy  # noqa: E402
 from .common import NormalizeResult
 
 log = logging.getLogger(__name__)
@@ -41,6 +42,15 @@ REQUIRED = (
     ("algosec_export.json", algosec.normalize),
     ("guardicore_export.json", guardicore.normalize),
     ("wiz_export.json", wiz.normalize),
+    # The vendor consoles' own rulebases. REQUIRED, not optional, and that is a
+    # deliberate difference from the topology exports beside them: which
+    # TOPOLOGY files exist is the estate's onboarding state, but policy is what
+    # this engine was built to analyse, so a missing policy export is a broken
+    # deployment rather than a configuration choice. Read by `vendor_policy`,
+    # not by `fortinet`/`juniper` -- see that module's docstring for why.
+    ("fortimanager_policy_export.json", vendor_policy.normalize_fortimanager),
+    ("fortigate_policy_export.json", vendor_policy.normalize_fortigate),
+    ("junos_space_policy_export.json", vendor_policy.normalize_junos_space),
 )
 
 #: The infrastructure exports, one per onboarded console. Each is optional; the

@@ -374,6 +374,13 @@ EXPECTED_CHECKS = [
     "P6 QUIC blind spot forced_critical",
     "P6 QUIC decoded l7_app",
     "P7 TLS fallback-not-blocked present",
+    # P9-P11: the three vendor consoles reach the finding table, every spelling
+    # of the internet is one node, and the Fortinet shadowed deny is named.
+    "P9 fortimanager contributes at least one finding",
+    "P9 fortigate contributes at least one finding",
+    "P9 junos_space contributes at least one finding",
+    "P10 every spelling of the internet is one node",
+    "P11 the FortiManager deny is reported as shadowed by the accept above it",
     "P8 named object resolving to a /16 reaching the PCI database is reported",
     "P8 the resolved address space is what was scored, not the label",
     "L7 decode: declared App-ID resolved to QUIC transport",
@@ -467,7 +474,7 @@ def test_the_standalone_script_still_exits_zero(verify, capsys):
 # It cannot move a policy finding, and did not: the seven topology normalizers
 # emit zero PolicyRecords and zero ObservedEntities by construction
 # (test_two_graphs_stay_separate.py).
-DEMO_SNAPSHOT_ID = "snap_173ab466881a"
+DEMO_SNAPSHOT_ID = "snap_fdabe95f9480"
 
 # ---------------------------------------------------------------------------
 # THE PATH-B RE-BASELINE, IN FULL  (35 -> 38)
@@ -517,27 +524,87 @@ DEMO_SNAPSHOT_ID = "snap_173ab466881a"
 #       inside 10.0.0.0/8, service inside any. A new AlgoSec rule that did NOT
 #       produce one of these would be the anomaly.
 # ---------------------------------------------------------------------------
-DEMO_FINDING_COUNT = 38
+# ---------------------------------------------------------------------------
+# THE VENDOR-POLICY RE-BASELINE  (38 -> 47)
+#
+# Cause: FortiManager, FortiGate and Junos Space now emit PolicyRecords from
+# their own rulebases (scripts/seed_demo.py planted problems 7-10, read by
+# normalizers/vendor_policy.py). Before this, every policy record came from
+# AlgoSec, Guardicore or Wiz, so nine onboarded consoles produced findings
+# attributed to three. No engine code changed; no analyzer changed.
+#
+# NOTHING WAS LOST. The diff is +9 and -0: every pre-existing row is present
+# with the same refs, severity, band and forced flag. That is the property worth
+# checking first, because seven new records could have become covering twins and
+# silently unmade an existing finding.
+#
+#   +1  over_permissive (fortimanager-01-1) 60/critical FORCED. `all` ->
+#       MGMT-NET on tcp/22: SSH to the out-of-band management segment from the
+#       internet, commented as temporary vendor access dated 2019. Forced by the
+#       published guardrail floor -- an admin/lateral-movement port reachable
+#       from 0.0.0.0/0.
+#   +1  over_permissive (edge-inbound-10) 60/critical FORCED. The Junos edge
+#       policy permits `any` -> DMZ-NET on a custom service object covering
+#       tcp/1-65535. The RANGE is the point: it is not a named service, so the
+#       rule does not say what it opens, and what it opens is every admin port.
+#   +1  over_permissive (fortimanager-01-3) 23/low. INTERNAL-NETS -> DB-TIER on
+#       any protocol. Low because the source is three /24s rather than the
+#       internet; it is here for the shadowing pair below, not for its own score.
+#   +1  shadowed_rule (fortimanager-01-3, fortimanager-01-4) 23/low, with
+#       shadowed_action 'deny'. THE FINDING THIS INGEST EXISTS FOR: policy 4
+#       denies DEV-NET -> DB-TIER, and DEV-NET is a MEMBER of the INTERNAL-NETS
+#       group that policy 3 already accepts. Under first-match the deny can
+#       never fire, so the intent an operator wrote down is the one not
+#       enforced. Asserted by verify_engine P11.
+#   +1  shadowed_rule (fortimanager-01-1, fortimanager-01-2) 10/low. Policy 2
+#       grants USERS-NET -> MGMT-NET on tcp/22, which policy 1 already grants
+#       from 0.0.0.0/0 on the same port. Dead config, correctly reported.
+#   +1  cidr_overlap (fortimanager-01-1, fortimanager-01-2) 30/low. The same
+#       pair seen by the redundancy analyzer rather than the ordering one:
+#       10.60.0.0/24 sits inside 0.0.0.0/0 for one destination and service.
+#   +1  transport_exposure (fw-perim-01-2) 57/critical FORCED. QUIC (udp/443)
+#       from the internet to the DMZ, published beside the tcp/443 service as
+#       "HTTP/3 edge acceleration". Encrypted end to end inside UDP, so the
+#       inspection stack sees an opaque flow rather than the web traffic it is.
+#   +1  transport_exposure (edge-inbound-10, fw-perim-01-1, fw-perim-01-2)
+#       40/medium. THE FIRST NON-PATH FINDING WHOSE REFS SPAN TWO VENDORS'
+#       CONSOLES: the DMZ edge is reachable on both tcp/443 and udp/443, and the
+#       evidence is a Junos rule plus two FortiGate rules. Nothing in the
+#       product could produce this before, because all policy came from one
+#       vendor family.
+#   +1  transport_exposure (fortimanager-01-3) 40/medium. The any-protocol grant
+#       to the database tier reaches it on an uninspectable transport too.
+#
+# WHAT DID NOT MOVE, and each is asserted rather than assumed:
+#   * cross_tool_path stays 2, with byte-identical chains. No new rule touches
+#     db-prod-01, db-prod-02, internal-app-01, data-node-01, app-server-07 or
+#     app-server-08 -- which is what keeps both paths and all four sole grants
+#     intact (verify_engine P5).
+#   * every spelling of the internet is still ONE node. FortiOS says `all` and
+#     Junos says `any`; left uncollapsed the graph would hold three internets,
+#     each its own path origin (verify_engine P10).
+# ---------------------------------------------------------------------------
+DEMO_FINDING_COUNT = 47
 
 DEMO_BY_TYPE = {
-    "cidr_overlap": 3,          # 3 - 1 (ALGO-029/030 stopped overlapping) + 1 (ALGO-062/070)
-    "over_permissive": 5,       # unchanged. ALGO-030 still scores 70/high on the /16 it
+    "cidr_overlap": 4,          # 3 + 1 (fortimanager-01-1/02)          # 3 - 1 (ALGO-029/030 stopped overlapping) + 1 (ALGO-062/070)
+    "over_permissive": 8,       # 5 + 3 (fortimanager-01-1, -3, edge-inbound-10)
                                 # now resolves to; ALGO-031's source is one host (E 0.1),
                                 # below sensitive_dest_min_E 0.3, so it is not reported
-    "shadowed_rule": 18,        # 16 + 2: ALGO-031 and ALGO-062, both dead under ALGO-001
-    "transport_exposure": 10,   # unchanged -- ALGO-062 joined a group, it did not make one
+    "shadowed_rule": 20,        # 18 + 2 (the Fortinet dead grant and the shadowed deny)
+    "transport_exposure": 13,   # 10 + 3 (the QUIC pair, the cross-vendor row, the any-protocol grant)
     "cross_tool_path": 2,       # 1 + 1: path B
 }
 
 DEMO_BY_BAND = {
-    "critical": 5,   # 4 + 1 (path B, forced)
+    "critical": 8,   # 5 + 3 (fortimanager-01-1, edge-inbound-10, fw-perim-01-2)   # 4 + 1 (path B, forced)
     "high": 1,       # unchanged (ALGO-030, still 70/high on its resolved /16)
-    "medium": 10,    # unchanged
-    "low": 22,       # 20 - 1 (the ALGO-029/030 overlap) + 3 (ALGO-062/070 overlap
+    "medium": 12,    # 10 + 2 (the cross-vendor row and fortimanager-01-3)
+    "low": 26,       # 22 + 4 (two shadowed, one overlap, one over-permissive)       # 20 - 1 (the ALGO-029/030 overlap) + 3 (ALGO-062/070 overlap
                      # and the two new shadowed rules)
 }
 
-DEMO_FORCED_CRITICAL = 5        # 4 + 1, same cause as the critical band
+DEMO_FORCED_CRITICAL = 8        # 4 + 1, same cause as the critical band
 
 # The full per-finding table: (type, sorted raw_refs, severity, band, forced).
 # This is what a re-baseline must be diffed against -- a total alone would hide a
@@ -617,6 +684,24 @@ DEMO_FINDINGS = [
     # ALGO-062 joined this group: same destination, same service, so it is the
     # same finding with a third rule in it rather than a new one.
     ("transport_exposure", ("ALGO-062", "ALGO-070", "ALGO-080"), 40, "medium", False),
+
+    # ── The vendor consoles' own policy (planted problems 7-10) ────────────
+    # Nine rows, and the reason each is here is in the re-baseline note above.
+    # Grouped at the end rather than interleaved so the AlgoSec/Guardicore/Wiz
+    # table above stays byte-comparable against the previous baseline.
+    ("cidr_overlap", ("fortimanager-01-1", "fortimanager-01-2"), 30, "low", False),
+    ("over_permissive", ("edge-inbound-10",), 60, "critical", True),
+    ("over_permissive", ("fortimanager-01-1",), 60, "critical", True),
+    ("over_permissive", ("fortimanager-01-3",), 23, "low", False),
+    ("shadowed_rule", ("fortimanager-01-1", "fortimanager-01-2"), 10, "low", False),
+    # THE SHADOWED DENY. `fortimanager-01-4` denies DEV-NET -> DB-TIER, and
+    # DEV-NET is a member of the INTERNAL-NETS group that `-3` already accepts,
+    # so the deny can never fire. verify_engine P11 asserts the shadower.
+    ("shadowed_rule", ("fortimanager-01-3", "fortimanager-01-4"), 23, "low", False),
+    # THE CROSS-VENDOR ROW: a Junos rule and two FortiGate rules, one finding.
+    ("transport_exposure", ("edge-inbound-10", "fw-perim-01-1", "fw-perim-01-2"), 40, "medium", False),
+    ("transport_exposure", ("fortimanager-01-3",), 40, "medium", False),
+    ("transport_exposure", ("fw-perim-01-2",), 57, "critical", True),
     ("transport_exposure", ("ALGO-080",), 78, "critical", True),
     ("transport_exposure", ("ALGO-082",), 54, "medium", False),
     ("transport_exposure", ("GC-020",), 34, "low", False),
@@ -630,19 +715,21 @@ DEMO_FINDINGS = [
 # Structural counts. Every move below is path B's three new rules and two new
 # objects arriving -- no rule and no dereference was LOST, which is the thing
 # these numbers exist to catch.
-DEMO_RECORD_COUNT = 32      # 29 + 3: ALGO-031, ALGO-062, GC-030
-DEMO_RESOLVED_COUNT = 25    # 22 + 3: db-prod-02 (algosec) and data-node-01, once
+DEMO_RECORD_COUNT = 39      # 32 + 7: 4 FortiManager, 2 FortiGate, 1 Junos Space      # 29 + 3: ALGO-031, ALGO-062, GC-030
+DEMO_RESOLVED_COUNT = 33    # 25 + 8: one audit row per vendor catalog object    # 22 + 3: db-prod-02 (algosec) and data-node-01, once
                             # from each of the two tools that name it
-DEMO_ASSET_COUNT = 28       # 26 + 2: data-node-01 and db-prod-02. ALGO-062's source
+DEMO_ASSET_COUNT = 34       # 28 + 6: the five FortiOS address objects and the group       # 26 + 2: data-node-01 and db-prod-02. ALGO-062's source
                             # is written as a raw 10.30.0.0/16, which is the address
                             # space `app-segment` already denotes, so it adds no node
-DEMO_ALIAS_COUNT = 29       # tracks the asset count
+DEMO_ALIAS_COUNT = 35       # tracks the asset count       # tracks the asset count
 DEMO_CORRELATION_COUNT = 5  # 4 + 1: a `hostname` row for data-node-01, which AlgoSec
                             # and Guardicore name identically. Path B needs NO
                             # context_ip merge -- that asymmetry with path A is
                             # asserted by verify_engine's scope-strip counterfactual
-DEMO_NODE_COUNT = 28        # tracks the asset count
-DEMO_EDGE_COUNT = 28        # 25 + 3: app-server-08->data-node-01 (GC-030),
+DEMO_NODE_COUNT = 34        # tracks the asset count        # tracks the asset count
+DEMO_EDGE_COUNT = 32        # 28 + 4: MGMT-NET x2, DB-TIER, DMZ-NET (the internet
+                            # spellings collapse, so the three internet-sourced
+                            # vendor rules add edges from ONE node, not three)        # 25 + 3: app-server-08->data-node-01 (GC-030),
                             # data-node-01->db-prod-02 (ALGO-031) and
                             # 10.30.0.0/16->app-server-09 (ALGO-062). Note what is
                             # NOT here: internal-app->db-prod-01 is GONE, because

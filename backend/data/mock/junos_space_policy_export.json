@@ -1,0 +1,76 @@
+{
+  "/api/juniper/sd/policy-management/firewall/policies": {
+    "policies": {
+      "@size": 1,
+      "policy": [
+        {
+          "name": "edge-inbound",
+          "device": "rtr-edge-02",
+          "rules": {
+            "rule": [
+              {
+                "sequence-number": 10,
+                "name": "full-port-test",
+                "source-zone": "untrust",
+                "destination-zone": "trust",
+                "source-address": {
+                  "address": [
+                    {
+                      "name": "any"
+                    }
+                  ]
+                },
+                "destination-address": {
+                  "address": [
+                    {
+                      "name": "DMZ-NET"
+                    }
+                  ]
+                },
+                "service": {
+                  "service": [
+                    {
+                      "name": "any-tcp"
+                    }
+                  ]
+                },
+                "action": "permit",
+                "enable": "true",
+                "description": "temporary full-port test (change CR-2019-118)"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "/api/juniper/sd/address-management/addresses": {
+    "addresses": {
+      "address": [
+        {
+          "name": "DMZ-NET",
+          "ip-address": "10.20.0.0",
+          "netmask": "255.255.255.0",
+          "address-type": "NETWORK"
+        }
+      ]
+    }
+  },
+  "/api/juniper/sd/service-management/services": {
+    "services": {
+      "service": [
+        {
+          "name": "any-tcp",
+          "protocols": {
+            "protocol": [
+              {
+                "name": "tcp",
+                "dst-port": "1-65535"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

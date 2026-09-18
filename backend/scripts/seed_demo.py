@@ -435,3 +435,294 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+# ===========================================================================
+# VENDOR FIREWALL POLICY  (planted problems 7-10)
+# ===========================================================================
+#
+# WHY THESE ARE SEPARATE EXPORTS, and separate normalizer modules.
+#
+# `fortimanager_export.json` and `junos_space_export.json` carry the DEVICE
+# inventory those consoles serve, and `normalizers/fortinet.py` and
+# `juniper.py` state in their own docstrings that they emit no PolicyRecord.
+# That statement is load-bearing: two test modules assert it, and it is what
+# makes "this console contributed devices and interfaces" a checkable claim
+# rather than a hope. So policy arrives in its OWN files, read by its OWN
+# modules, exactly as `algosec_export` and `algosec_topology_export` already
+# split one tool across two files and two readers.
+#
+# WHAT THEY ARE FOR. Before these, every policy record in the product came from
+# AlgoSec, Guardicore or Wiz -- so a client with nine consoles onboarded saw
+# findings attributed to three of them and reasonably concluded the rest had
+# contributed nothing. A FortiManager that yields no firewall policy is not a
+# FortiManager ingest.
+#
+# THE RULES THESE CANNOT BE. Every source/destination/service triple here was
+# chosen to avoid becoming a COVERING TWIN for a grant that an existing finding
+# cites: if a Fortinet rule granted the same flow as ALGO-029 or GC-002, then
+# "remove ALGO-029" would stop closing the access while continuing to resolve
+# the finding, and `verify_engine`'s "cutting a cited grant cuts the ACCESS"
+# check would fail. None of these rules touch db-prod-01, db-prod-02,
+# internal-app-01, data-node-01, app-server-07 or app-server-08, which is what
+# keeps the two cross-tool paths and all four sole grants intact.
+#
+# THE WILDCARD. FortiOS spells the internet `all` and Junos spells it `any`.
+# Both resolve to 0.0.0.0/0 today, but they resolve under their OWN NAMES -- so
+# left alone they would become three separate graph nodes all meaning the
+# internet, and therefore three separate path origins. The emitters canonicalize
+# the NAME onto `0.0.0.0/0` and keep the vendor's own word in the audit row.
+
+#: The FortiManager address catalog, in FortiOS's `ipmask` spelling: the value
+#: is an [address, netmask] pair, not a CIDR string.
+_FMG_ADDRESSES = [
+    {"name": "MGMT-NET", "subnet": ["10.255.0.0", "255.255.255.0"], "type": "ipmask",
+     "comment": "out-of-band management, VLAN 10"},
+    {"name": "USERS-NET", "subnet": ["10.60.0.0", "255.255.255.0"], "type": "ipmask"},
+    {"name": "DEV-NET", "subnet": ["10.31.0.0", "255.255.255.0"], "type": "ipmask"},
+    {"name": "DMZ-NET", "subnet": ["10.20.0.0", "255.255.255.0"], "type": "ipmask"},
+    {"name": "DB-TIER", "subnet": ["10.50.0.0", "255.255.255.0"], "type": "ipmask",
+     "comment": "cardholder data environment"},
+]
+
+#: An address GROUP whose members are the names of three of the above. This is
+#: the shape that made `object_cidrs` return nothing at all when handed a
+#: FortiOS catalog directly, which is why the emitter adapts the catalog into
+#: the shared `{name: {value, type, tags}}` form before dereferencing it.
+_FMG_GROUPS = [
+    {"name": "INTERNAL-NETS", "member": [{"name": "DMZ-NET"}, {"name": "DEV-NET"},
+                                         {"name": "USERS-NET"}]},
+]
+
+
+def fortimanager_policy_export() -> dict:
+    """FortiManager's policy package, in its JSON-RPC envelope.
+
+    Planted problems 7 and 8:
+
+      7. FMG-perim-hq-1 -- `all` -> MGMT-NET on tcp/22. SSH to the out-of-band
+         management segment, from the internet, commented as temporary vendor
+         access dated 2019. Forced critical: an admin/lateral-movement port
+         reachable from 0.0.0.0/0.
+      8. FMG-perim-hq-3 grants INTERNAL-NETS -> DB-TIER on ALL, and
+         FMG-perim-hq-4 below it denies DEV-NET -> DB-TIER. DEV-NET is a MEMBER
+         of INTERNAL-NETS, so under first-match the deny can never fire -- a
+         shadowed deny, which is the anomaly an operator most wants found
+         because the intent it states is the one that is not enforced.
+    """
+    return {
+        "id": 1,
+        "result": [
+            {"url": "/pm/config/adom/root/pkg/default/firewall/policy",
+             "status": {"code": 0, "message": "OK"},
+             "data": [
+                 {"policyid": 1, "name": "perim-hq-1",
+                  "srcintf": [{"name": "port1"}, {"name": "port2"}],
+                  "dstintf": [{"name": "port3"}],
+                  "srcaddr": [{"name": "all"}], "dstaddr": [{"name": "MGMT-NET"}],
+                  "service": [{"name": "SSH"}], "action": "accept", "status": "enable",
+                  "comments": "vendor support access (temporary, 2019)"},
+                 {"policyid": 2, "name": "perim-hq-2",
+                  "srcintf": [{"name": "port4"}], "dstintf": [{"name": "port3"}],
+                  "srcaddr": [{"name": "USERS-NET"}], "dstaddr": [{"name": "MGMT-NET"}],
+                  "service": [{"name": "SSH"}], "action": "accept", "status": "enable",
+                  "comments": "helpdesk to switches"},
+                 {"policyid": 3, "name": "perim-hq-3",
+                  "srcintf": [{"name": "port4"}], "dstintf": [{"name": "port5"}],
+                  "srcaddr": [{"name": "INTERNAL-NETS"}], "dstaddr": [{"name": "DB-TIER"}],
+                  "service": [{"name": "ALL"}], "action": "accept", "status": "enable",
+                  "comments": "app/jump access to database (legacy, review)"},
+                 {"policyid": 4, "name": "perim-hq-4",
+                  "srcintf": [{"name": "port4"}], "dstintf": [{"name": "port5"}],
+                  "srcaddr": [{"name": "DEV-NET"}], "dstaddr": [{"name": "DB-TIER"}],
+                  "service": [{"name": "ALL"}], "action": "deny", "status": "enable",
+                  "comments": "dev must never reach prod db"},
+             ]},
+            {"url": "/pm/config/adom/root/obj/firewall/address",
+             "status": {"code": 0, "message": "OK"}, "data": _FMG_ADDRESSES},
+            {"url": "/pm/config/adom/root/obj/firewall/addrgrp",
+             "status": {"code": 0, "message": "OK"}, "data": _FMG_GROUPS},
+        ],
+    }
+
+
+def fortigate_policy_export() -> dict:
+    """The HA primary's own rulebase, read straight off the box.
+
+    Planted problem 9: the DMZ web service is published on tcp/443 AND udp/443.
+    The QUIC grant is the finding -- HTTP/3 inside UDP, encrypted end to end, so
+    most inspection stacks see an opaque UDP flow rather than the web traffic it
+    is. Only `fw-perim-01` carries it: the secondary's config is synced but a
+    direct read answers from whichever unit you asked.
+    """
+    return {
+        "fw-perim-01": {
+            "cmdb/firewall/policy": {
+                "http_method": "GET", "status": "success", "http_status": 200,
+                "serial": "FG200F1234567890", "version": "v7.4.3", "vdom": "root",
+                "path": "firewall", "name": "policy",
+                "results": [
+                    {"policyid": 1, "name": "dmz-web",
+                     "srcintf": [{"name": "port1"}], "dstintf": [{"name": "port3"}],
+                     "srcaddr": [{"name": "all"}], "dstaddr": [{"name": "DMZ-NET"}],
+                     "service": [{"name": "HTTPS"}], "action": "accept",
+                     "status": "enable", "comments": "published web service"},
+                    {"policyid": 2, "name": "dmz-web-h3",
+                     "srcintf": [{"name": "port1"}], "dstintf": [{"name": "port3"}],
+                     "srcaddr": [{"name": "all"}], "dstaddr": [{"name": "DMZ-NET"}],
+                     "service": [{"name": "QUIC"}], "action": "accept",
+                     "status": "enable", "comments": "HTTP/3 edge acceleration"},
+                ],
+            },
+            "cmdb/firewall/address": {
+                "http_method": "GET", "status": "success", "http_status": 200,
+                "path": "firewall", "name": "address",
+                "results": [
+                    {"name": "DMZ-NET", "subnet": ["10.20.0.0", "255.255.255.0"],
+                     "type": "ipmask"},
+                ],
+            },
+        },
+    }
+
+
+def junos_space_policy_export() -> dict:
+    """Security Director's edge policy.
+
+    Planted problem 10: `any` -> DMZ-NET on a custom service object covering
+    tcp/1-65535, described as a temporary full-port test from a 2019 change
+    request. The port RANGE is the point -- it is not a named service, so a
+    reader cannot tell what it opens without dereferencing the object, and it
+    covers every admin port there is.
+    """
+    return {
+        "/api/juniper/sd/policy-management/firewall/policies": {
+            "policies": {
+                "@size": 1,
+                "policy": [{
+                    "name": "edge-inbound",
+                    "device": "rtr-edge-02",
+                    "rules": {"rule": [
+                        {"sequence-number": 10, "name": "full-port-test",
+                         "source-zone": "untrust", "destination-zone": "trust",
+                         "source-address": {"address": [{"name": "any"}]},
+                         "destination-address": {"address": [{"name": "DMZ-NET"}]},
+                         "service": {"service": [{"name": "any-tcp"}]},
+                         "action": "permit", "enable": "true",
+                         "description": "temporary full-port test (change CR-2019-118)"},
+                    ]},
+                }],
+            },
+        },
+        "/api/juniper/sd/address-management/addresses": {
+            "addresses": {"address": [
+                {"name": "DMZ-NET", "ip-address": "10.20.0.0", "netmask": "255.255.255.0",
+                 "address-type": "NETWORK"},
+            ]},
+        },
+        "/api/juniper/sd/service-management/services": {
+            "services": {"service": [
+                {"name": "any-tcp", "protocols": {"protocol": [
+                    {"name": "tcp", "dst-port": "1-65535"}]}},
+            ]},
+        },
+    }
+
+
+# --- the clean estate's vendor policy --------------------------------------
+#
+# `_clean` onboards every console over `estate.build_resilient()` and asserts
+# ZERO policy findings. These rules exist so the three vendor consoles keep
+# CONTRIBUTING RECORDS in that scenario -- without them their Sources cards
+# would read "connected, 0 records" in the one scenario meant to show a
+# well-built estate, which reads as a broken ingest rather than a clean network.
+#
+# Every one is least-privilege on purpose: a management or DMZ source, a
+# non-sensitive destination, one named port. None is internet-sourced.
+
+def clean_fortimanager_policy_export() -> dict:
+    return {
+        "id": 1,
+        "result": [
+            {"url": "/pm/config/adom/root/pkg/default/firewall/policy",
+             "status": {"code": 0, "message": "OK"},
+             "data": [
+                 {"policyid": 1, "name": "dmz-to-app",
+                  "srcintf": [{"name": "port3"}], "dstintf": [{"name": "port5"}],
+                  "srcaddr": [{"name": "DMZ-NET"}], "dstaddr": [{"name": "APP-NET"}],
+                  "service": [{"name": "HTTPS"}], "action": "accept", "status": "enable",
+                  "comments": "published app tier"},
+                 {"policyid": 2, "name": "mgmt-to-app",
+                  "srcintf": [{"name": "port2"}], "dstintf": [{"name": "port5"}],
+                  "srcaddr": [{"name": "MGMT-NET"}], "dstaddr": [{"name": "APP-NET"}],
+                  "service": [{"name": "SSH"}], "action": "accept", "status": "enable",
+                  "comments": "operations access from the OOB segment"},
+             ]},
+            {"url": "/pm/config/adom/root/obj/firewall/address",
+             "status": {"code": 0, "message": "OK"},
+             "data": [
+                 {"name": "MGMT-NET", "subnet": ["10.255.0.0", "255.255.255.0"], "type": "ipmask"},
+                 {"name": "DMZ-NET", "subnet": ["10.20.0.0", "255.255.255.0"], "type": "ipmask"},
+                 {"name": "APP-NET", "subnet": ["10.30.0.0", "255.255.0.0"], "type": "ipmask"},
+             ]},
+        ],
+    }
+
+
+def clean_fortigate_policy_export() -> dict:
+    return {
+        "fw-perim-01": {
+            "cmdb/firewall/policy": {
+                "http_method": "GET", "status": "success", "http_status": 200,
+                "path": "firewall", "name": "policy",
+                "results": [
+                    {"policyid": 1, "name": "mgmt-to-dmz",
+                     "srcintf": [{"name": "port2"}], "dstintf": [{"name": "port3"}],
+                     "srcaddr": [{"name": "MGMT-NET"}], "dstaddr": [{"name": "DMZ-NET"}],
+                     "service": [{"name": "SSH"}], "action": "accept",
+                     "status": "enable", "comments": "operations access"},
+                ],
+            },
+            "cmdb/firewall/address": {
+                "http_method": "GET", "status": "success", "http_status": 200,
+                "path": "firewall", "name": "address",
+                "results": [
+                    {"name": "MGMT-NET", "subnet": ["10.255.0.0", "255.255.255.0"], "type": "ipmask"},
+                    {"name": "DMZ-NET", "subnet": ["10.20.0.0", "255.255.255.0"], "type": "ipmask"},
+                ],
+            },
+        },
+    }
+
+
+def clean_junos_space_policy_export() -> dict:
+    return {
+        "/api/juniper/sd/policy-management/firewall/policies": {
+            "policies": {"@size": 1, "policy": [{
+                "name": "edge-inbound", "device": "rtr-edge-02",
+                "rules": {"rule": [
+                    {"sequence-number": 10, "name": "metrics-scrape",
+                     "source-zone": "trust", "destination-zone": "trust",
+                     "source-address": {"address": [{"name": "MGMT-NET"}]},
+                     "destination-address": {"address": [{"name": "APP-NET"}]},
+                     "service": {"service": [{"name": "node-exporter"}]},
+                     "action": "permit", "enable": "true",
+                     "description": "prometheus scrape"},
+                ]},
+            }]},
+        },
+        "/api/juniper/sd/address-management/addresses": {
+            "addresses": {"address": [
+                {"name": "MGMT-NET", "ip-address": "10.255.0.0",
+                 "netmask": "255.255.255.0", "address-type": "NETWORK"},
+                {"name": "APP-NET", "ip-address": "10.30.0.0",
+                 "netmask": "255.255.0.0", "address-type": "NETWORK"},
+            ]},
+        },
+        "/api/juniper/sd/service-management/services": {
+            "services": {"service": [
+                {"name": "node-exporter", "protocols": {"protocol": [
+                    {"name": "tcp", "dst-port": "9100"}]}},
+            ]},
+        },
+    }

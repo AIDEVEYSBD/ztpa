@@ -57,7 +57,16 @@ MOCK_DIR = seed_demo.MOCK_DIR
 #: they are what the engine was built to analyse, so an absent one is a broken
 #: deployment rather than a configuration choice. Every scenario writes all three.
 POLICY: tuple[str, ...] = ("algosec_export.json", "guardicore_export.json",
-                           "wiz_export.json")
+                           "wiz_export.json",
+                           # The vendor consoles' rulebases. In POLICY rather
+                           # than INFRA because `normalizers.REQUIRED` reads
+                           # them: every scenario writes all six, and a scenario
+                           # that onboards fewer TOPOLOGY consoles still carries
+                           # the whole policy set. That is what keeps "the same
+                           # 38 findings with one aggregator connected" true.
+                           "fortimanager_policy_export.json",
+                           "fortigate_policy_export.json",
+                           "junos_space_policy_export.json")
 
 #: The seven INFRASTRUCTURE exports, in `normalizers.OPTIONAL` order. Taken from
 #: `seed_topology.EXPORTS` rather than re-listed, because the filename is the
@@ -225,9 +234,11 @@ def _policy() -> dict[str, dict]:
     answer does not degrade when infrastructure coverage does -- so the two must
     read the same fixture rather than two copies of it.
     """
-    algo, gc, wiz = (seed_demo.algosec_export(), seed_demo.guardicore_export(),
-                     seed_demo.wiz_export())
-    return dict(zip(POLICY, (algo, gc, wiz)))
+    return dict(zip(POLICY, (
+        seed_demo.algosec_export(), seed_demo.guardicore_export(),
+        seed_demo.wiz_export(), seed_demo.fortimanager_policy_export(),
+        seed_demo.fortigate_policy_export(), seed_demo.junos_space_policy_export(),
+    )))
 
 
 def _demo():
@@ -310,7 +321,10 @@ def _clean():
     """
     policy = dict(zip(POLICY, (seed_demo.clean_algosec_export(),
                                seed_demo.clean_guardicore_export(),
-                               seed_demo.clean_wiz_export())))
+                               seed_demo.clean_wiz_export(),
+                               seed_demo.clean_fortimanager_policy_export(),
+                               seed_demo.clean_fortigate_policy_export(),
+                               seed_demo.clean_junos_space_policy_export())))
     _write_dataset(policy, seed_topology.build_exports(estate.build_resilient(),
                                                        _CLEAN_CONSOLES))
 
@@ -371,7 +385,8 @@ def _scale(n: int = 500):
                            "src": f"{_SCALE_SOURCE_PREFIX}.{(i // 254) % 254}.0/24", "dst": host,
                            "service": "tcp/443", "action": "allow", "comment": "synthetic"})
     branches = n // _ASSETS_PER_BRANCH
-    _write_dataset(dict(zip(POLICY, (a, g, w))),
+    _write_dataset({**_policy(), "algosec_export.json": a,
+                    "guardicore_export.json": g, "wiz_export.json": w},
                    seed_topology.build_exports(estate.build(branches=branches)))
 
 

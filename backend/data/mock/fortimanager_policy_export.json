@@ -1,0 +1,219 @@
+{
+  "id": 1,
+  "result": [
+    {
+      "url": "/pm/config/adom/root/pkg/default/firewall/policy",
+      "status": {
+        "code": 0,
+        "message": "OK"
+      },
+      "data": [
+        {
+          "policyid": 1,
+          "name": "perim-hq-1",
+          "srcintf": [
+            {
+              "name": "port1"
+            },
+            {
+              "name": "port2"
+            }
+          ],
+          "dstintf": [
+            {
+              "name": "port3"
+            }
+          ],
+          "srcaddr": [
+            {
+              "name": "all"
+            }
+          ],
+          "dstaddr": [
+            {
+              "name": "MGMT-NET"
+            }
+          ],
+          "service": [
+            {
+              "name": "SSH"
+            }
+          ],
+          "action": "accept",
+          "status": "enable",
+          "comments": "vendor support access (temporary, 2019)"
+        },
+        {
+          "policyid": 2,
+          "name": "perim-hq-2",
+          "srcintf": [
+            {
+              "name": "port4"
+            }
+          ],
+          "dstintf": [
+            {
+              "name": "port3"
+            }
+          ],
+          "srcaddr": [
+            {
+              "name": "USERS-NET"
+            }
+          ],
+          "dstaddr": [
+            {
+              "name": "MGMT-NET"
+            }
+          ],
+          "service": [
+            {
+              "name": "SSH"
+            }
+          ],
+          "action": "accept",
+          "status": "enable",
+          "comments": "helpdesk to switches"
+        },
+        {
+          "policyid": 3,
+          "name": "perim-hq-3",
+          "srcintf": [
+            {
+              "name": "port4"
+            }
+          ],
+          "dstintf": [
+            {
+              "name": "port5"
+            }
+          ],
+          "srcaddr": [
+            {
+              "name": "INTERNAL-NETS"
+            }
+          ],
+          "dstaddr": [
+            {
+              "name": "DB-TIER"
+            }
+          ],
+          "service": [
+            {
+              "name": "ALL"
+            }
+          ],
+          "action": "accept",
+          "status": "enable",
+          "comments": "app/jump access to database (legacy, review)"
+        },
+        {
+          "policyid": 4,
+          "name": "perim-hq-4",
+          "srcintf": [
+            {
+              "name": "port4"
+            }
+          ],
+          "dstintf": [
+            {
+              "name": "port5"
+            }
+          ],
+          "srcaddr": [
+            {
+              "name": "DEV-NET"
+            }
+          ],
+          "dstaddr": [
+            {
+              "name": "DB-TIER"
+            }
+          ],
+          "service": [
+            {
+              "name": "ALL"
+            }
+          ],
+          "action": "deny",
+          "status": "enable",
+          "comments": "dev must never reach prod db"
+        }
+      ]
+    },
+    {
+      "url": "/pm/config/adom/root/obj/firewall/address",
+      "status": {
+        "code": 0,
+        "message": "OK"
+      },
+      "data": [
+        {
+          "name": "MGMT-NET",
+          "subnet": [
+            "10.255.0.0",
+            "255.255.255.0"
+          ],
+          "type": "ipmask",
+          "comment": "out-of-band management, VLAN 10"
+        },
+        {
+          "name": "USERS-NET",
+          "subnet": [
+            "10.60.0.0",
+            "255.255.255.0"
+          ],
+          "type": "ipmask"
+        },
+        {
+          "name": "DEV-NET",
+          "subnet": [
+            "10.31.0.0",
+            "255.255.255.0"
+          ],
+          "type": "ipmask"
+        },
+        {
+          "name": "DMZ-NET",
+          "subnet": [
+            "10.20.0.0",
+            "255.255.255.0"
+          ],
+          "type": "ipmask"
+        },
+        {
+          "name": "DB-TIER",
+          "subnet": [
+            "10.50.0.0",
+            "255.255.255.0"
+          ],
+          "type": "ipmask",
+          "comment": "cardholder data environment"
+        }
+      ]
+    },
+    {
+      "url": "/pm/config/adom/root/obj/firewall/addrgrp",
+      "status": {
+        "code": 0,
+        "message": "OK"
+      },
+      "data": [
+        {
+          "name": "INTERNAL-NETS",
+          "member": [
+            {
+              "name": "DMZ-NET"
+            },
+            {
+              "name": "DEV-NET"
+            },
+            {
+              "name": "USERS-NET"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

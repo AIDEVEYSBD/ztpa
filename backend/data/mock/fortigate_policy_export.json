@@ -1,0 +1,97 @@
+{
+  "fw-perim-01": {
+    "cmdb/firewall/policy": {
+      "http_method": "GET",
+      "status": "success",
+      "http_status": 200,
+      "serial": "FG200F1234567890",
+      "version": "v7.4.3",
+      "vdom": "root",
+      "path": "firewall",
+      "name": "policy",
+      "results": [
+        {
+          "policyid": 1,
+          "name": "dmz-web",
+          "srcintf": [
+            {
+              "name": "port1"
+            }
+          ],
+          "dstintf": [
+            {
+              "name": "port3"
+            }
+          ],
+          "srcaddr": [
+            {
+              "name": "all"
+            }
+          ],
+          "dstaddr": [
+            {
+              "name": "DMZ-NET"
+            }
+          ],
+          "service": [
+            {
+              "name": "HTTPS"
+            }
+          ],
+          "action": "accept",
+          "status": "enable",
+          "comments": "published web service"
+        },
+        {
+          "policyid": 2,
+          "name": "dmz-web-h3",
+          "srcintf": [
+            {
+              "name": "port1"
+            }
+          ],
+          "dstintf": [
+            {
+              "name": "port3"
+            }
+          ],
+          "srcaddr": [
+            {
+              "name": "all"
+            }
+          ],
+          "dstaddr": [
+            {
+              "name": "DMZ-NET"
+            }
+          ],
+          "service": [
+            {
+              "name": "QUIC"
+            }
+          ],
+          "action": "accept",
+          "status": "enable",
+          "comments": "HTTP/3 edge acceleration"
+        }
+      ]
+    },
+    "cmdb/firewall/address": {
+      "http_method": "GET",
+      "status": "success",
+      "http_status": 200,
+      "path": "firewall",
+      "name": "address",
+      "results": [
+        {
+          "name": "DMZ-NET",
+          "subnet": [
+            "10.20.0.0",
+            "255.255.255.0"
+          ],
+          "type": "ipmask"
+        }
+      ]
+    }
+  }
+}
