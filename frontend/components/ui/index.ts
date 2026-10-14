@@ -25,3 +25,23 @@ export { SEV } from "./severity";
 export { Skeleton, SkeletonText, SkeletonRows, SkeletonPanel } from "./Skeleton";
 
 export { Spinner, SectionLabel, Eyebrow, SpectrumLine, Brand, EmptyState } from "./Feedback";
+
+// ── design-system primitives ───────────────────────────────────────
+export { Material, SurfaceGrain } from "./Material";
+
+export { Button, IconButton } from "./Button";
+export type { ButtonProps, IconButtonProps, ButtonSize, ButtonVariant, Tone } from "./Button";
+
+export { Status, StatusTag, Dot, Kicker, Mono, Identifier, Meter } from "./Status";
+
+export { Field, Input, Textarea, Select, SearchBox, Checkbox, Switch, Segmented, WindowPick, WINDOWS } from "./Form";
+export type { InputProps, Window } from "./Form";
+
+export { DrillModal, Dialog, Banner } from "./Modal";
+
+export { Table, THead, Th, Td, Tr, EmptyRow } from "./Table";
+
+export { KpiTile, KpiBand, Kpi, Fact, PageHeader, PageFrame } from "./Kpi";
+
+export { hueFor } from "@/lib/hue";
+export type { Hue } from "@/lib/hue";
