@@ -4,48 +4,53 @@ import type { ReactNode } from "react";
 import { AlertTriangle, HelpCircle, Lock, PlugZap, RotateCw, ShieldHalf } from "lucide-react";
 import { asApiError, type ApiError } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { Button } from "./Button";
 import { useReportedFailure } from "@/components/PanelHealth";
 
 export function Spinner({ label }: { label?: string }) {
-  // The ring inherits `currentColor` so it stays visible on any surface —
-  // including the yellow primary button (where a yellow ring would vanish).
+  // The ring inherits `currentColor` so it stays visible on any surface,
+  // including a solid button fill.
   return (
     <span className="inline-flex items-center gap-2 text-[13px]">
-      <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent" />
+      <span className="af-spin size-3.5 rounded-full border-2 border-current border-t-transparent" />
       {label}
     </span>
   );
 }
 
-/** Plain uppercase section label (no leading square). */
+/** Small caps section label. */
 export function SectionLabel({ children, className = "" }: { children: ReactNode; className?: string }) {
-  return <div className={cn("label mb-3", className)}>{children}</div>;
+  return (
+    <div className={cn("mb-3 text-[11px] font-medium tracking-[0.08em] text-faint uppercase", className)}>{children}</div>
+  );
 }
 
-/** Signature eyebrow — yellow square + uppercase micro-label. */
-export function Eyebrow({ children, accent = false, className }: { children: ReactNode; accent?: boolean; className?: string }) {
-  return <span className={cn("eyebrow", accent && "accent", className)}>{children}</span>;
+/** Kicker — small caps accent label above a headline. */
+export function Eyebrow({ children, className }: { children: ReactNode; accent?: boolean; className?: string }) {
+  return (
+    <span className={cn("text-[11px] font-medium tracking-[0.08em] text-accent-text uppercase", className)}>{children}</span>
+  );
 }
 
-/** Thin spectrum keyline (decorative rule). */
-export function SpectrumLine({ thin = false, warm = false, className }: { thin?: boolean; warm?: boolean; className?: string }) {
-  return <span aria-hidden className={cn("spectrum-line", thin && "thin", warm && "warm", className)} />;
+/** Hairline rule. */
+export function SpectrumLine({ className }: { thin?: boolean; warm?: boolean; className?: string }) {
+  return <span aria-hidden className={cn("block h-px w-full bg-line", className)} />;
 }
 
-/** Squared brand mark — the shield in a flat yellow tile + wordmark. */
+/** Brand mark — the shield in an ink tile + wordmark. */
 export function Brand({ size = "md", showSub = true, className }: { size?: "sm" | "md"; showSub?: boolean; className?: string }) {
-  const tile = size === "sm" ? 26 : 30;
-  const glyph = Math.round(tile * 0.56);
+  const tile = size === "sm" ? 22 : 24;
+  const glyph = Math.round(tile * 0.6);
   return (
     <div className={cn("flex items-center gap-2.5", className)}>
-      <span className="grid shrink-0 place-items-center bg-accent" style={{ width: tile, height: tile }}>
-        <ShieldHalf size={glyph} className="text-accent-ink" />
+      <span className="grid shrink-0 place-items-center rounded-md bg-ink text-on-ink" style={{ width: tile, height: tile }}>
+        <ShieldHalf size={glyph} />
       </span>
       <div className="leading-[1.15]">
-        <div className={cn("font-bold tracking-[-0.01em]", size === "sm" ? "text-[13px]" : "text-[14px]")}>
+        <div className={cn("font-bold tracking-tight text-on-grain", size === "sm" ? "text-[12px]" : "text-[13px]")}>
           {showSub ? "Network Policy" : "Network Policy Reviewer"}
         </div>
-        {showSub && <div className="text-[10px] uppercase tracking-[0.14em] text-text3">Reviewer</div>}
+        {showSub && <div className="text-[9.5px] tracking-[0.14em] text-faint uppercase">Reviewer</div>}
       </div>
     </div>
   );
@@ -53,10 +58,10 @@ export function Brand({ size = "md", showSub = true, className }: { size?: "sm" 
 
 export function EmptyState({ icon: Icon, title, sub }: { icon: typeof ShieldHalf; title: string; sub?: string }) {
   return (
-    <div className="flex flex-col items-center justify-center gap-2 p-10 text-center text-text3">
-      <Icon size={26} />
-      <div className="text-[13px] font-bold text-text2">{title}</div>
-      {sub && <div className="text-[11.5px]">{sub}</div>}
+    <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed border-line-strong px-6 py-12 text-center">
+      <Icon size={22} className="text-faint" />
+      <div className="text-[14px] font-medium">{title}</div>
+      {sub && <div className="max-w-[42ch] text-[12.5px] leading-[1.55] text-dim">{sub}</div>}
     </div>
   );
 }
@@ -141,29 +146,27 @@ export function ErrorState({ resource, error, onRetry, className }: ErrorStatePr
     <div
       role="alert"
       className={cn(
-        "border p-3.5",
-        denied ? "border-sev-high-line bg-sev-high-bg" : "border-sev-critical-line bg-sev-critical-bg",
+        "relative flex gap-3 overflow-hidden rounded-lg border border-line bg-surface p-3.5 pl-4 elev-1",
         className,
       )}
     >
-      <div className="flex items-start gap-2.5">
-        <Icon size={16} className={cn("mt-0.5 shrink-0", denied ? "text-sev-high" : "text-sev-critical")} />
-        <div className="min-w-0 flex-1">
-          <div className={cn("text-[13px] font-bold", denied ? "text-sev-high" : "text-sev-critical")}>
-            Could not load {resource} — {errorHeadline(e)}
-          </div>
-          <p className="mt-1 text-[12px] leading-relaxed text-text2">{errorHint(e)}</p>
-          <div className="mono mt-1.5 break-words text-[11px] text-text3">
-            {statusLabel(e)} · {e.detail}
-            {e.path ? ` · ${e.path}` : ""}
-          </div>
+      <span aria-hidden className={cn("absolute inset-y-0 left-0 w-[3px]", denied ? "bg-warn" : "bg-err")} />
+      <Icon size={15} className={cn("mt-0.5 shrink-0", denied ? "text-warn" : "text-err")} />
+      <div className="min-w-0 flex-1">
+        <div className="text-[13px] font-medium text-fg">
+          Could not load {resource} — {errorHeadline(e)}
         </div>
-        {onRetry && (
-          <button onClick={onRetry} className="btn-ghost shrink-0 text-xs">
-            <RotateCw size={12} /> Retry
-          </button>
-        )}
+        <p className="mt-1 text-[12.5px] leading-[1.55] text-dim">{errorHint(e)}</p>
+        <div className="mt-1.5 font-mono text-[10.5px] break-words text-faint">
+          {statusLabel(e)} · {e.detail}
+          {e.path ? ` · ${e.path}` : ""}
+        </div>
       </div>
+      {onRetry && (
+        <Button size="sm" variant="solid" tone="ink" className="shrink-0" onClick={onRetry}>
+          <RotateCw size={12} /> Retry
+        </Button>
+      )}
     </div>
   );
 }
@@ -188,25 +191,30 @@ export function UnavailableState({ resource, reason, onRetry, className }: {
   className?: string;
 }) {
   return (
-    <div role="status" className={cn("border border-sev-medium-line bg-sev-medium-bg p-3.5", className)}>
-      <div className="flex items-start gap-2.5">
-        <HelpCircle size={16} className="mt-0.5 shrink-0 text-sev-medium" />
-        <div className="min-w-0 flex-1">
-          <div className="text-[13px] font-bold text-sev-medium">
-            {resource} is unknown, not empty
-          </div>
-          <p className="mt-1 text-[12px] leading-relaxed text-text2">
-            The backend answered, and told us it could not read this from the system of record.
-            Nothing here has been counted, so treat it as unread rather than as none.
-          </p>
-          <div className="mono mt-1.5 break-words text-[11px] text-text3">{reason}</div>
+    <div
+      role="status"
+      className={cn(
+        "relative flex gap-3 overflow-hidden rounded-lg border border-line bg-surface p-3.5 pl-4 elev-1",
+        className,
+      )}
+    >
+      <span aria-hidden className="absolute inset-y-0 left-0 w-[3px] bg-run" />
+      <HelpCircle size={15} className="mt-0.5 shrink-0 text-run" />
+      <div className="min-w-0 flex-1">
+        <div className="text-[13px] font-medium text-fg">
+          {resource} is unknown, not empty
         </div>
-        {onRetry && (
-          <button onClick={onRetry} className="btn-ghost shrink-0 text-xs">
-            <RotateCw size={12} /> Retry
-          </button>
-        )}
+        <p className="mt-1 text-[12.5px] leading-[1.55] text-dim">
+          The backend answered, and told us it could not read this from the system of record.
+          Nothing here has been counted, so treat it as unread rather than as none.
+        </p>
+        <div className="mt-1.5 font-mono text-[10.5px] break-words text-faint">{reason}</div>
       </div>
+      {onRetry && (
+        <Button size="sm" variant="solid" tone="ink" className="shrink-0" onClick={onRetry}>
+          <RotateCw size={12} /> Retry
+        </Button>
+      )}
     </div>
   );
 }
@@ -221,14 +229,14 @@ export function InlineError({ resource, error, onRetry, className }: ErrorStateP
   useReportedFailure(resource, true);
   const denied = e.status === 401 || e.status === 403;
   return (
-    <div role="alert" className={cn("flex flex-wrap items-center gap-1.5 text-[11.5px]", denied ? "text-sev-high" : "text-sev-critical", className)}>
+    <div role="alert" className={cn("flex flex-wrap items-center gap-1.5 text-[11.5px]", denied ? "text-warn" : "text-err", className)}>
       <AlertTriangle size={12} className="shrink-0" />
-      <span className="font-bold">Could not load {resource}</span>
-      <span className="mono text-text3">
+      <span className="font-medium">Could not load {resource}</span>
+      <span className="font-mono text-[10.5px] text-faint">
         {statusLabel(e)} · {e.detail}
       </span>
       {onRetry && (
-        <button onClick={onRetry} className="font-bold underline">
+        <button onClick={onRetry} className="focusable cursor-pointer font-medium underline">
           Retry
         </button>
       )}

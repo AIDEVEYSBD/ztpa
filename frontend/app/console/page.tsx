@@ -25,6 +25,7 @@ import { MetricsAdmin } from "@/components/admin/MetricsAdmin";
 import { AuditAdmin } from "@/components/admin/AuditAdmin";
 import { AiConfigAdmin } from "@/components/admin/AiConfigAdmin";
 import { ErrorState } from "@/components/ui/Feedback";
+import { Button } from "@/components/ui/Button";
 import { PanelHealthProvider, useScreenFailures } from "@/components/PanelHealth";
 
 const META: Record<ScreenId, { title: string; sub: string }> = {
@@ -176,7 +177,7 @@ export default function Dashboard() {
     .map(([label]) => label);
 
   return (
-    <div id="app-shell" className="flex h-screen w-full overflow-hidden bg-aurora text-text">
+    <div id="app-shell" className="flex h-screen w-full overflow-hidden bg-canvas text-fg">
       <Sidebar active={screen} onSelect={setScreen} counts={navCounts} />
       <div id="app-col" className="flex min-w-0 flex-1 flex-col">
         <Topbar title={m.title} sub={m.sub} viewSnap={viewSnap} onViewSnap={setViewSnap}
@@ -188,7 +189,7 @@ export default function Dashboard() {
             the banner to assert that the panels below it are fine while one of
             them is on screen saying otherwise. */}
         <PanelHealthProvider>
-        <main id="app-main" className="zt-scroll relative flex-1 overflow-x-hidden overflow-y-auto">
+        <main id="app-main" className="zt-scroll relative min-h-0 grow overflow-x-hidden overflow-y-auto overscroll-contain">
           {degraded.length > 0 && (
             <DegradedBanner degraded={degraded} feedCount={feeds.length} failed={failures.length}
               pending={pending.length} fromMemory={fromMemory} unread={unread} onRetry={retry} />
@@ -199,7 +200,7 @@ export default function Dashboard() {
                 <ErrorState key={label} resource={label} error={r.error} onRetry={retry} />
               ))}
               {failures.length > 1 && (
-                <p className="text-[11.5px] text-text3">
+                <p className="text-[11.5px] text-faint">
                   {failures.length} of {feeds.length} console feeds failed. Treat every number on this screen as unknown until they load.
                 </p>
               )}
@@ -208,14 +209,14 @@ export default function Dashboard() {
           <AnimatePresence>
             {historical && (
               <motion.div key="hist-banner" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }}
-                className="flex flex-wrap items-center gap-2 overflow-hidden border-b border-accent bg-accent-soft px-5 py-2 text-[12.5px]">
-                <History size={14} className="shrink-0" />
-                <span className="min-w-0">Viewing a past snapshot <span className="mono">@{viewSnap!.replace(/^snap_/, "").slice(0, 7)}</span> (read-only). Live actions use the latest snapshot.</span>
-                <button onClick={() => setViewSnap(undefined)} className="ml-auto shrink-0 font-bold underline">Back to live</button>
+                className="flex flex-wrap items-center gap-2 overflow-hidden border-b border-line bg-raise/55 px-5 py-2 text-[12.5px] text-dim">
+                <History size={13} className="shrink-0 text-run" />
+                <span className="min-w-0">Viewing a past snapshot <span className="tnum font-mono text-[11px] text-fg">@{viewSnap!.replace(/^snap_/, "").slice(0, 7)}</span> (read-only). Live actions use the latest snapshot.</span>
+                <button onClick={() => setViewSnap(undefined)} className="focusable ml-auto shrink-0 cursor-pointer font-medium text-fg underline">Back to live</button>
               </motion.div>
             )}
           </AnimatePresence>
-          <div id="app-content" className="mx-auto max-w-[1320px] p-5 lg:p-6 2xl:max-w-[1520px] 3xl:max-w-[1800px] 3xl:p-8 4xl:max-w-[2160px]">
+          <div id="app-content" className="mx-auto w-full max-w-[1520px] px-5 py-7 3xl:max-w-[1800px] 4xl:max-w-[2160px]">
             <AnimatePresence mode="wait">
               <motion.div key={`${screen}:${viewSnap ?? "live"}`}
                 initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
@@ -304,29 +305,28 @@ function DegradedBanner({ degraded, feedCount, failed, pending, fromMemory, unre
           : ` All ${feedCount} console feeds below loaded, and no panel on this screen is reporting a failure.`;
 
   return (
-    <div role="status" className="m-4 border border-sev-medium-line bg-sev-medium-bg p-3.5">
-      <div className="flex items-start gap-2.5">
-        <ShieldAlert size={16} className="mt-0.5 shrink-0 text-sev-medium" />
-        <div className="min-w-0 flex-1">
-          <div className="text-[13px] font-bold text-sev-medium">
-            The backend is running in a degraded state
-          </div>
-          <p className="mt-1 text-[12px] leading-relaxed text-text2">
-            It answered, and reported
-            {degraded.length === 1 ? " this problem" : ` these ${degraded.length} problems`} with
-            itself.{panelClaim}
-            {fromMemory.length > 0 &&
-              ` ${fromMemory.join(", ")} came from the running engine rather than from the persisted snapshot: the numbers are real, but they were not read back from the system of record.`}
-            {unread.length > 0 &&
-              ` ${unread.join(", ")} could not be read at all — treat it as unknown, not as empty.`}
-            {" "}Anything durable (snapshots, decisions, the audit trail) may not be being written.
-          </p>
-          <ul className="mono mt-1.5 space-y-0.5 text-[11px] text-text3">
-            {degraded.map((reason) => <li key={reason}>· {reason}</li>)}
-          </ul>
+    <div role="status" className="relative m-4 flex gap-3 overflow-hidden rounded-lg border border-line bg-surface p-3.5 pl-4 elev-1">
+      <span aria-hidden className="absolute inset-y-0 left-0 w-[3px] bg-run" />
+      <ShieldAlert size={15} className="mt-0.5 shrink-0 text-run" />
+      <div className="min-w-0 flex-1">
+        <div className="text-[13px] font-medium text-fg">
+          The backend is running in a degraded state
         </div>
-        <button onClick={onRetry} className="btn-ghost shrink-0 text-xs">Re-check</button>
+        <p className="mt-1 text-[12.5px] leading-[1.55] text-dim">
+          It answered, and reported
+          {degraded.length === 1 ? " this problem" : ` these ${degraded.length} problems`} with
+          itself.{panelClaim}
+          {fromMemory.length > 0 &&
+            ` ${fromMemory.join(", ")} came from the running engine rather than from the persisted snapshot: the numbers are real, but they were not read back from the system of record.`}
+          {unread.length > 0 &&
+            ` ${unread.join(", ")} could not be read at all — treat it as unknown, not as empty.`}
+          {" "}Anything durable (snapshots, decisions, the audit trail) may not be being written.
+        </p>
+        <ul className="mt-1.5 space-y-0.5 font-mono text-[10.5px] text-faint">
+          {degraded.map((reason) => <li key={reason}>· {reason}</li>)}
+        </ul>
       </div>
+      <Button size="sm" variant="solid" tone="ink" className="shrink-0" onClick={onRetry}>Re-check</Button>
     </div>
   );
 }

@@ -6,7 +6,8 @@ import {
   LogOut, History, Rocket, SlidersHorizontal, BarChart3, ScrollText, Cog,
   Boxes,
 } from "lucide-react";
-import { Brand, cn } from "./ui";
+import { Brand, cn, Button } from "./ui";
+import { SurfaceGrain } from "./ui/Material";
 import { ThemeToggle } from "./theme";
 
 export type ScreenId = "explorer" | "inventory" | "sources" | "risks" | "change" | "staging" | "ask" | "report" | "connectors" | "snapshots" | "tools" | "metrics" | "audit" | "config";
@@ -96,14 +97,21 @@ export function Sidebar({ active, onSelect, counts }: {
   const navItem = (it: NavDef, count?: number, critical?: boolean) => {
     const Icon = it.icon;
     return (
-      <button key={it.id} onClick={() => onSelect(it.id)} className="navitem" data-active={active === it.id}>
-        <Icon size={16} className="shrink-0" />
-        <span className="flex-1 truncate">{it.label}</span>
+      <button
+        key={it.id}
+        onClick={() => onSelect(it.id)}
+        className="navitem focusable relative"
+        data-active={active === it.id}
+      >
+        <Icon size={15} className="shrink-0" />
+        <span className="flex-1 truncate text-[13px]">{it.label}</span>
         {count != null && count > 0 && (
-          <span className={cn(
-            "mono min-w-[20px] border px-1.5 text-center text-[11px] leading-5",
-            critical ? "border-sev-critical-line bg-sev-critical-bg text-sev-critical" : "border-border bg-sunk text-text2",
-          )}>
+          <span
+            className={cn(
+              "tnum min-w-5 rounded-sm border px-1.5 text-center font-mono text-[10.5px] leading-[18px]",
+              critical ? "border-err-line bg-err-bg text-err" : "border-line bg-raise text-faint",
+            )}
+          >
             {count}
           </span>
         )}
@@ -112,42 +120,48 @@ export function Sidebar({ active, onSelect, counts }: {
   };
 
   return (
-    <nav className="glass-chrome relative flex h-full w-[232px] shrink-0 flex-col border-r border-border 3xl:w-[268px]">
-      <div className="flex h-14 shrink-0 items-center border-b border-border px-[18px]">
+    <nav className="relative z-20 flex h-full w-[232px] shrink-0 flex-col border-r border-line bg-surface 3xl:w-[268px]">
+      <SurfaceGrain />
+      <div className="relative z-10 flex h-12 shrink-0 items-center border-b border-line px-4">
         <Brand />
       </div>
 
-      <div className="zt-scroll flex-1 overflow-y-auto p-2.5">
-        <div className="label px-2 pb-1.5 pt-2.5">Console</div>
+      <div className="zt-scroll relative z-10 flex-1 overflow-y-auto p-2.5">
+        <div className="px-2 pt-2.5 pb-1.5 text-[11px] font-medium tracking-[0.08em] text-faint uppercase">Console</div>
         {CONSOLE.map((it) =>
           navItem(it, it.id === "risks" ? counts.findings : undefined, it.id === "risks" && counts.critical > 0),
         )}
 
-        <div className="label px-2 pb-1.5 pt-[18px]">Reference</div>
+        <div className="px-2 pt-[18px] pb-1.5 text-[11px] font-medium tracking-[0.08em] text-faint uppercase">Reference</div>
         {REFERENCE.map((it) => navItem(it))}
 
         {role === "admin" && (
           <>
-            <div className="label px-2 pb-1.5 pt-[18px]">Admin</div>
+            <div className="px-2 pt-[18px] pb-1.5 text-[11px] font-medium tracking-[0.08em] text-faint uppercase">Admin</div>
             {ADMIN.map((it) => navItem(it))}
           </>
         )}
       </div>
 
-      <div className="flex shrink-0 items-center gap-2.5 border-t border-border p-3">
-        <div className="grid h-[26px] w-[26px] shrink-0 place-items-center border border-border bg-sunk text-[11px] font-bold text-text2">
+      <div className="relative z-10 flex shrink-0 items-center gap-2.5 border-t border-line p-3">
+        <div className="grid size-6 shrink-0 place-items-center rounded-sm border border-line bg-raise text-[9.5px] font-semibold text-dim">
           {initials(user?.name, user?.email)}
         </div>
         <div className="min-w-0 flex-1 leading-tight">
-          <div className="truncate text-[12px] font-bold" title={user?.email ?? undefined}>{displayName}</div>
-          <div className="text-[11px] capitalize text-text3">{role}</div>
+          <div className="truncate text-[11.5px] font-medium" title={user?.email ?? undefined}>{displayName}</div>
+          <div className="text-[9.5px] text-faint capitalize">{role}</div>
         </div>
         {/* Route through /sso/logout so the AutoX session ends too (RP-initiated
             logout with id_token_hint), not just our cookie. */}
-        <button onClick={() => { window.location.href = "/sso/logout"; }} title="Sign out"
-          className="grid h-[30px] w-[30px] place-items-center border border-border bg-surface2 text-text2 transition-colors hover:border-accent hover:text-accent-fg">
-          <LogOut size={15} />
-        </button>
+        <Button
+          size="sm"
+          variant="solid"
+          tone="err"
+          title="Sign out"
+          onClick={() => { window.location.href = "/sso/logout"; }}
+        >
+          <LogOut size={13} /> Sign out
+        </Button>
         <ThemeToggle />
       </div>
     </nav>

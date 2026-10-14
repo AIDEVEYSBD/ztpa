@@ -11,12 +11,12 @@ import { cn } from "@/lib/cn";
 export type ChipVariant = "neutral" | "accent" | "info" | "ok" | "warn" | "danger";
 
 const VARIANT_CLASS: Record<ChipVariant, string> = {
-  neutral: "border-border bg-sunk text-text2",
-  accent: "border-accent bg-accent-soft text-accent-fg",
-  info: "border-info-line bg-info-bg text-info",
+  neutral: "border-line bg-raise text-dim",
+  accent: "border-line bg-raise text-accent-text",
+  info: "border-queue-line bg-queue-bg text-queue",
   ok: "border-ok-line bg-ok-bg text-ok",
-  warn: "border-sev-high-line bg-sev-high-bg text-sev-high",
-  danger: "border-sev-critical-line bg-sev-critical-bg text-sev-critical",
+  warn: "border-warn-line bg-warn-bg text-warn",
+  danger: "border-err-line bg-err-bg text-err",
 };
 
 export interface ChipProps {
@@ -35,14 +35,14 @@ export function Chip({ children, variant = "neutral", dot = false, pulse = false
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-1.5 whitespace-nowrap border px-2 py-0.5 text-[11px] font-bold leading-[1.45]",
-        mono && "mono tabular-nums",
-        pulse && "animate-pulse",
+        "inline-flex items-center gap-1.5 rounded-sm border px-1.5 py-0.5 text-[11px] font-medium whitespace-nowrap",
+        mono && "tnum font-mono",
+        pulse && "af-pulse",
         VARIANT_CLASS[variant],
         className,
       )}
     >
-      {dot ? <span className="h-1.5 w-1.5 shrink-0 bg-current" /> : null}
+      {dot ? <span className="size-1.5 shrink-0 rounded-[2px] bg-current" /> : null}
       {children}
     </span>
   );

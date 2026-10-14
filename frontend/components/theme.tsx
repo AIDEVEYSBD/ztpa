@@ -31,9 +31,22 @@ export const useTheme = () => useContext(ThemeCtx);
 export function ThemeToggle({ className = "" }: { className?: string }) {
   const { theme, toggle } = useTheme();
   return (
-    <button onClick={toggle} title="Toggle theme" aria-label="Toggle theme"
-      className={`grid h-[30px] w-[30px] place-items-center border border-border bg-surface2 text-text2 transition-colors hover:border-accent hover:text-accent-fg ${className}`}>
-      {theme === "dark" ? <Sun size={15} /> : <Moon size={15} />}
-    </button>
+    <div className={`inline-flex items-center gap-px rounded-sm border border-line bg-raise p-px ${className}`}>
+      {(["light", "dark"] as const).map((t) => (
+        <button
+          key={t}
+          type="button"
+          onClick={() => { if (theme !== t) toggle(); }}
+          aria-pressed={theme === t}
+          aria-label={`${t} theme`}
+          title={`${t} theme`}
+          className={`focusable cursor-pointer rounded-xs px-2 py-1 text-[11px] transition-colors duration-100 ${
+            theme === t ? "bg-surface text-fg" : "text-faint hover:text-dim"
+          }`}
+        >
+          {t === "light" ? <Sun size={13} /> : <Moon size={13} />}
+        </button>
+      ))}
+    </div>
   );
 }

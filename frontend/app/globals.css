@@ -77,8 +77,9 @@
   --color-c9: var(--t-c9);
   --color-c10: var(--t-c10);
 
-  /* brand accent — permitted in exactly two places (kicker text, active nav) */
-  --color-accent: var(--t-accent);
+  /* brand accent — permitted in exactly two places (kicker text, active nav).
+     `--color-accent` is deliberately absent: `bg-accent` / `border-accent` are
+     legacy selected-state utilities and are bridged to ink below. */
   --color-accent-text: var(--t-accent-text);
 
   --font-sans: var(--font-plex), "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
@@ -213,12 +214,15 @@
   --text-2: var(--t-fg-3);
   --text-3: var(--t-fg-4);
 
-  --accent: var(--t-accent);
-  --accent-2: var(--t-accent);
-  --accent-press: var(--t-accent);
-  --accent-ink: #1a1917;
+  /* Selection used to be yellow everywhere. The design system selects with ink,
+     so the whole legacy accent family resolves to ink and the brand yellow is
+     left to the kicker and the active nav underline. */
+  --accent: var(--t-ink);
+  --accent-2: var(--t-ink);
+  --accent-press: var(--t-ink);
+  --accent-ink: var(--t-on-ink);
   --accent-soft: var(--t-raise);
-  --accent-fg: var(--t-accent-text);
+  --accent-fg: var(--t-fg);
   --accent-glow: transparent;
 
   --info: var(--t-queue); --info-bg: var(--t-queue-bg); --info-line: var(--t-queue-line);
@@ -256,6 +260,7 @@
   --color-text3: var(--text-3);
   --color-panel: var(--surface);
   --color-muted: var(--text-2);
+  --color-accent: var(--accent);
   --color-accent-fg: var(--accent-fg);
   --color-accent-ink: var(--accent-ink);
   --color-accent-soft: var(--accent-soft);
