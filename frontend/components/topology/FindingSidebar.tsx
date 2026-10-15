@@ -92,10 +92,10 @@ function Attribution({ icon: Icon, who, note }: { icon: typeof Cpu; who: string;
   return (
     <>
       <div className="flex items-center gap-1.5">
-        <Icon size={11} className="shrink-0 text-accent-fg" />
-        <span className="text-[10px] font-bold uppercase tracking-[0.08em] text-text2">{who}</span>
+        <Icon size={11} className="shrink-0 text-dim" />
+        <span className="text-[11px] font-medium tracking-[0.06em] text-faint uppercase">{who}</span>
       </div>
-      <p className="mt-0.5 text-[10.5px] leading-snug text-text3">{note}</p>
+      <p className="mt-0.5 text-[10.5px] leading-[1.5] text-ghost">{note}</p>
     </>
   );
 }

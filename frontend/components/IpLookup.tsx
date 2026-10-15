@@ -83,8 +83,8 @@ export function AddressChip({
       onClick={() => ip.open(address, mode)}
       title={`Look up what policy reaches ${address}`}
       className={cn(
-        "mono inline-flex items-center gap-1 border border-border bg-sunk px-1.5 py-0.5 text-[11px] leading-[1.45] text-text2",
-        "transition-colors hover:border-accent hover:bg-accent-soft hover:text-accent-fg",
+        "focusable inline-flex cursor-pointer items-center gap-1 rounded-sm border border-line bg-raise px-1.5 py-0.5 font-mono text-[11px] leading-[1.45] text-dim",
+        "transition-colors duration-100 hover:border-line-strong hover:text-fg",
         className,
       )}
     >
@@ -100,7 +100,7 @@ export function AddressChip({
 
 function ModeSelector({ mode, onChange }: { mode: IpMode; onChange: (m: IpMode) => void }) {
   return (
-    <div className="flex flex-wrap items-stretch border border-border" role="group" aria-label="Containment mode">
+    <div className="inline-flex flex-wrap items-center gap-px rounded-md border border-line bg-raise p-px" role="group" aria-label="Containment mode">
       {IP_MODES.map((m) => (
         <button
           key={m}
@@ -109,8 +109,8 @@ function ModeSelector({ mode, onChange }: { mode: IpMode; onChange: (m: IpMode) 
           title={IP_MODE_HINT[m]}
           aria-pressed={m === mode}
           className={cn(
-            "mono border-r border-border px-2 py-1 text-[10.5px] font-bold uppercase tracking-[0.04em] last:border-r-0",
-            m === mode ? "bg-accent text-accent-ink" : "bg-surface2 text-text3 hover:text-text",
+            "focusable cursor-pointer rounded-sm px-2.5 py-1 font-mono text-[11px] transition-colors duration-100",
+            m === mode ? "bg-surface font-medium text-fg shadow-[var(--shadow-1)]" : "text-faint hover:text-dim",
           )}
         >
           {IP_MODE_LABEL[m]}

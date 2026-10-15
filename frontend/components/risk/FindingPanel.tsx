@@ -122,17 +122,17 @@ function PacketWalkView({ w }: { w: PacketWalk }) {
 
   return (
     <div className="border border-border bg-sunk">
-      <div className="flex flex-wrap items-baseline justify-between gap-x-3 border-b border-hair px-2.5 py-1.5">
-        <span className="text-[10px] font-bold uppercase tracking-[0.08em] text-text2">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 border-b border-line px-3 py-2">
+        <span className="text-[11px] font-medium tracking-[0.06em] text-faint uppercase">
           Packet walk
         </span>
         <button type="button" onClick={() => setStage(done ? 0 : total)}
-          className="text-[10.5px] font-bold text-text3 hover:text-accent-fg">
+          className="focusable cursor-pointer text-[10.5px] font-medium text-faint hover:text-fg">
           {done ? "replay" : "skip"}
         </button>
       </div>
 
-      <div className="border-b border-hair px-2.5 py-1.5 text-[11px] text-text2">
+      <div className="border-b border-line px-3 py-2 text-[11.5px] text-dim">
         <span className="mono font-bold">{w.flow.src_display}</span>
         <span className="mx-1.5 text-text3">&rarr;</span>
         <span className="mono font-bold">{w.flow.dst_display}</span>

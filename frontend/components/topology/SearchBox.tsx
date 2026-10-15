@@ -52,8 +52,8 @@ export function SearchBox(p: SearchBoxProps) {
 
   return (
     <div className={cn("relative min-w-0", p.className)}>
-      <div className="flex h-[30px] min-w-0 items-center gap-1.5 border border-border bg-sunk px-2 focus-within:border-accent">
-        <Search size={12} className="shrink-0 text-text3" />
+      <div className="flex h-7 min-w-0 items-center gap-1.5 rounded-sm border border-line bg-canvas px-2 focus-within:border-fg">
+        <Search size={12} className="shrink-0 text-faint" />
         <input
           ref={ref}
           value={p.value}
@@ -69,12 +69,12 @@ export function SearchBox(p: SearchBoxProps) {
           }}
           placeholder="Find a node — name, address, model, VLAN"
           aria-label="Find a node on the canvas"
-          className="mono min-w-0 flex-1 bg-transparent text-[11.5px] text-text outline-none placeholder:text-text3"
+          className="min-w-0 flex-1 bg-transparent font-mono text-[11.5px] text-fg outline-none placeholder:text-ghost"
         />
         {has ? (
           <>
             <span
-              className="mono shrink-0 whitespace-nowrap text-[10.5px] tabular-nums text-text2"
+              className="tnum shrink-0 font-mono text-[10.5px] whitespace-nowrap text-dim"
               title={`${p.hits.length} of ${p.corpusSize} nodes on this canvas match "${p.value}".`}
             >
               {p.hits.length === 0 ? "0" : `${p.active + 1}/${p.hits.length}`}
@@ -83,7 +83,7 @@ export function SearchBox(p: SearchBoxProps) {
               type="button"
               onClick={() => step(-1)}
               disabled={p.hits.length === 0}
-              className="shrink-0 text-text3 hover:text-accent-fg disabled:opacity-40"
+              className="focusable shrink-0 cursor-pointer text-faint hover:text-fg disabled:opacity-40"
               aria-label="Previous match"
               title="Previous match (Shift+Enter)"
             >
@@ -93,7 +93,7 @@ export function SearchBox(p: SearchBoxProps) {
               type="button"
               onClick={() => step(1)}
               disabled={p.hits.length === 0}
-              className="shrink-0 text-text3 hover:text-accent-fg disabled:opacity-40"
+              className="focusable shrink-0 cursor-pointer text-faint hover:text-fg disabled:opacity-40"
               aria-label="Next match"
               title="Next match (Enter)"
             >

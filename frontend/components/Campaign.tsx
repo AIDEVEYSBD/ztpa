@@ -6,7 +6,7 @@ import { Rocket, Wand2, Check, AlertTriangle, ArrowRight, ChevronRight, Sparkles
 import { api, asApiError, type ApiError } from "@/lib/api";
 import type { CampaignPlan, CampaignStep, CampaignSubmitResult } from "@/lib/types";
 import type { ScreenId } from "./Sidebar";
-import { cn, Spinner } from "./ui";
+import { cn, Spinner, Button } from "./ui";
 import { InlineError } from "./ui/Feedback";
 
 /** The Remediation Campaign agent: one click plans a worst-first campaign across the
@@ -61,22 +61,22 @@ export function CampaignPanel({ readOnly = false, onNavigate }: { readOnly?: boo
   return (
     <div className="panel overflow-hidden">
       <div className="flex flex-wrap items-center gap-3 p-4">
-        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-accent bg-accent-soft text-accent-fg">
+        <span className="grid size-9 shrink-0 place-items-center rounded-md bg-ink text-on-ink">
           <Wand2 size={18} />
         </span>
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-bold">Remediation campaign</div>
-          <div className="text-xs text-muted">
+          <div className="text-[13px] font-semibold tracking-[-0.005em]">Remediation campaign</div>
+          <div className="text-[11.5px] leading-[1.55] text-faint">
             The agent plans a worst-first fix sequence and re-analyses after every step, proving it drives the
             critical count down. Nothing is applied — send the proven fixes to the Change Gate to act on them.
           </div>
         </div>
         {!readOnly && (
-          <button onClick={run} disabled={loading || initial} className="btn-primary shrink-0 !py-2 text-xs">
+          <Button variant="solid" tone="ink" size="sm" onClick={run} disabled={loading || initial} className="shrink-0">
             {loading ? <Spinner label="Planning + re-analysing each fix…" />
               : initial ? <Spinner label="Loading…" />
               : <><Sparkles size={14} /> {plan ? "Re-plan" : "Plan the campaign"}</>}
-          </button>
+          </Button>
         )}
       </div>
 

@@ -70,11 +70,11 @@ function Micro({ children, tone = "neutral", title }: { children: React.ReactNod
     <span
       title={title}
       className={cn(
-        "inline-flex h-[13px] shrink-0 items-center gap-0.5 border px-1 text-[9px] font-bold leading-none",
-        tone === "neutral" && "border-border bg-sunk text-text3",
-        tone === "warn" && "border-sev-high-line bg-sev-high-bg text-sev-high",
-        tone === "accent" && "border-accent bg-accent-soft text-accent-fg",
-        tone === "sim" && "border-info-line bg-info-bg text-info",
+        "inline-flex h-[13px] shrink-0 items-center gap-0.5 rounded-[2px] border px-1 text-[9px] font-medium leading-none",
+        tone === "neutral" && "border-line bg-raise text-faint",
+        tone === "warn" && "border-warn-line bg-warn-bg text-warn",
+        tone === "accent" && "border-line-strong bg-raise text-fg",
+        tone === "sim" && "border-queue-line bg-queue-bg text-queue",
       )}
     >
       {children}
@@ -88,7 +88,7 @@ function Dot({ tone, title }: { tone: "sim" | "warn"; title: string }) {
   return (
     <span
       title={title}
-      className={cn("h-[5px] w-[5px] shrink-0", tone === "sim" ? "bg-info" : "bg-sev-high")}
+      className={cn("size-[5px] shrink-0 rounded-[1px]", tone === "sim" ? "bg-queue" : "bg-warn")}
     />
   );
 }
@@ -105,23 +105,23 @@ export function NodeCard({
   const onPath = pathIndex != null;
 
   const shell = cn(
-    "absolute z-10 flex flex-col justify-between overflow-hidden border p-1.5 text-left",
+    "absolute z-10 flex flex-col justify-between overflow-hidden rounded-md border p-1.5 text-left",
     !reduced && "transition-[opacity,border-color,box-shadow] duration-300",
     // A dimmed card is still a card: it stays above the threshold where it can
     // be read and pointed at, because "everything else is unclickable" was the
     // exact complaint that started this rework.
     state === "dim" && "opacity-[0.26]",
     state === "isolated" && "opacity-[0.28]",
-    state === "focus" && "border-accent shadow-[0_0_0_2px_var(--accent-glow)]",
-    state === "failed" && "border-sev-critical bg-sev-critical-bg",
-    (state === "normal" || state === "dim") && "border-border",
-    state === "isolated" && "border-sev-critical-line",
-    onPath && "border-accent shadow-[0_0_0_2px_var(--accent-glow)]",
-    matched && !selected && "border-info shadow-[0_0_0_2px_var(--info-bg)]",
-    activeMatch && "border-info shadow-[0_0_0_3px_var(--info-line)]",
-    selected && "border-accent shadow-[0_0_0_3px_var(--accent-glow)]",
+    state === "focus" && "border-fg shadow-[0_0_0_2px_var(--t-line-strong)]",
+    state === "failed" && "border-err bg-err-bg",
+    (state === "normal" || state === "dim") && "border-line",
+    state === "isolated" && "border-err-line",
+    onPath && "border-fg shadow-[0_0_0_2px_var(--t-line-strong)]",
+    matched && !selected && "border-queue shadow-[0_0_0_2px_var(--t-queue-bg)]",
+    activeMatch && "border-queue shadow-[0_0_0_3px_var(--t-queue-line)]",
+    selected && "border-fg shadow-[0_0_0_3px_var(--t-line-strong)]",
     !band && (state === "failed" ? "" : "bg-surface"),
-    (onSelect || onExpand) && "cursor-pointer hover:border-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent",
+    (onSelect || onExpand) && "focusable cursor-pointer hover:border-line-strong",
   );
 
   if (placed.kind === "group") {

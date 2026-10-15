@@ -203,7 +203,7 @@ export function CanvasKey(props: CanvasKeyProps) {
           type="button"
           onClick={() => onMode("strip")}
           title="Show the key to this diagram"
-          className="popover flex items-center gap-1.5 px-2 py-1 text-[9px] font-bold uppercase tracking-[0.08em] text-text3 hover:text-accent-fg"
+          className="popover focusable flex cursor-pointer items-center gap-1.5 px-2 py-1 text-[11px] font-medium text-faint hover:text-fg"
         >
           <ChevronUp size={12} /> Key
         </button>

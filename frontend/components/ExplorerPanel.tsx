@@ -252,13 +252,13 @@ function OverlaySwitch({
           title={o.title}
           onClick={() => onChange(o.id)}
           className={cn(
-            "flex items-center gap-1.5 px-2.5 py-1 transition-colors",
-            i > 0 && "border-l border-border",
-            value === o.id ? "bg-accent-soft font-bold text-accent-fg" : "text-text2 hover:bg-surfaceHover",
+            "focusable flex cursor-pointer items-center gap-1.5 px-2.5 py-1 text-[12.5px] transition-colors duration-100",
+            i > 0 && "border-l border-line",
+            value === o.id ? "bg-surface font-medium text-fg" : "text-faint hover:text-dim",
           )}
         >
           {o.label}
-          {o.count != null ? <span className="mono text-[10px] tabular-nums opacity-70">{o.count}</span> : null}
+          {o.count != null ? <span className="tnum font-mono text-[10.5px] opacity-70">{o.count}</span> : null}
         </button>
       ))}
     </div>
@@ -1299,13 +1299,11 @@ export function ExplorerPanel({ snapshot, findings, findingsError, initialOverla
             type="button"
             onClick={() => setShowRelations((v) => !v)}
             aria-pressed={showRelations}
-            // The ON state wears the same accent-soft fill the OverlaySwitch
-            // tabs beside it use for "this mode is active", rather than a
-            // border alone — a border change is what `.btn-ghost:hover` already
-            // does, so it read as a hover rather than as a state.
+            // The ON state is a solid ink fill, matching every other selected
+            // control: a border change alone reads as a hover.
             className={cn(
-              "btn-ghost !h-7 px-2 text-[11px]",
-              showRelations && "!border-accent !bg-accent-soft !text-accent-fg",
+              "btn-ghost focusable !h-7 !px-2.5 !text-[12px]",
+              showRelations && "!bg-ink !text-on-ink",
             )}
             title={
               showRelations

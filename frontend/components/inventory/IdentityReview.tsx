@@ -184,30 +184,30 @@ function SettledSummary({
     return <InlineError resource="the settled identity correlations" error={assetsError} onRetry={onRetry} />;
   }
   return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border border-border bg-sunk px-3 py-2 text-[11.5px]">
-      <span className="flex items-center gap-1.5 font-bold text-accent-fg">
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-md border border-line bg-canvas px-3 py-2 text-[11.5px]">
+      <span className="flex items-center gap-1.5 font-medium text-fg">
         <Link2 size={12} />
         {correlatedAssets === undefined ? (
           <span
             className="cursor-help underline decoration-dotted underline-offset-2"
             title="The asset layer has not answered yet, so how many identities were correlated is unknown. It is not zero."
           >
-            &mdash;
+            unknown
           </span>
         ) : (
-          <span className="mono tabular-nums">{correlatedAssets.toLocaleString()}</span>
+          <span className="tnum font-mono">{correlatedAssets.toLocaleString("en-GB")}</span>
         )}{" "}
         settled {correlatedAssets === 1 ? "identity" : "identities"}
       </span>
-      <span className="text-text2">
+      <span className="text-dim">
         proved to be the same thing another console called something else. Each one is marked{" "}
-        <span className="mono text-[10.5px] font-bold text-accent-fg">merged</span> on its inventory row.
+        <span className="font-mono text-[10.5px] font-medium text-fg">merged</span> on its inventory row.
       </span>
       {onShowDuplicates ? (
         <button
           type="button"
           onClick={onShowDuplicates}
-          className="ml-auto shrink-0 font-bold text-text3 underline underline-offset-2 transition-colors hover:text-accent-fg"
+          className="focusable ml-auto shrink-0 cursor-pointer font-medium text-faint underline underline-offset-2 transition-colors duration-100 hover:text-fg"
         >
           show them in the table
         </button>

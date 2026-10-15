@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { Check, Plug, X, Wand2, ArrowRight, Sparkles, RotateCw } from "lucide-react";
 import { api, asApiError, type ApiError } from "@/lib/api";
-import { cn, Spinner, Chip, Eyebrow, EmptyState } from "./ui";
+import { cn, Spinner, Chip, Eyebrow, EmptyState, Button } from "./ui";
 import { ErrorState } from "./ui/Feedback";
 import { Prose } from "./Markdown";
 import { AgentTerminal } from "@/components/agent/AgentTerminal";
@@ -106,14 +106,14 @@ export function Connectors() {
                 setText(JSON.stringify(sm.body, null, 2));
                 setRes(undefined); setErr(undefined); setInputErr(undefined);
               }}
-              className={cn("border px-2 py-1 text-[11px] font-bold",
-                picked === sm.key ? "border-accent bg-accent-soft text-accent-fg"
-                                  : "border-border bg-sunk text-text2 hover:border-borderStrong")}>
+              className={cn("focusable h-7 cursor-pointer rounded-sm border px-2.5 text-[12px] font-medium transition-colors duration-100",
+                picked === sm.key ? "border-transparent bg-ink text-on-ink"
+                                  : "border-line bg-surface text-dim hover:bg-raise hover:text-fg")}>
               {sm.label}
             </button>
           ))}
         </div>
-        <p className="mb-2 text-[11px] leading-snug text-text3">
+        <p className="mb-2 text-[11.5px] leading-[1.5] text-faint">
           {SAMPLES.find((sm) => sm.key === picked)?.note
             ?? "Edited sample. The agent reads whatever is in the box."}
         </p>
@@ -121,12 +121,12 @@ export function Connectors() {
           className="field mb-2 w-full" />
         <textarea value={text}
           onChange={(e) => { setText(e.target.value); setPicked("custom"); }} rows={12}
-          className="field h-auto w-full p-3 font-mono text-xs leading-relaxed" />
-        <button onClick={propose} disabled={loading} className="btn-primary mt-2 w-full">
+          className="field h-auto w-full p-3 font-mono text-[12.5px] leading-[1.55]" />
+        <Button variant="solid" tone="ink" onClick={propose} disabled={loading} className="mt-2 w-full">
           {loading ? <Spinner label="Authoring + validating…" /> : <><Wand2 size={15} /> Propose connector</>}
-        </button>
+        </Button>
         {inputErr && (
-          <div className="mt-2 text-xs text-sev-critical">That sample is not valid JSON: <span className="mono">{inputErr}</span></div>
+          <div className="mt-2 text-[11.5px] text-err">That sample is not valid JSON: <span className="font-mono">{inputErr}</span></div>
         )}
         {err && <ErrorState resource="the proposed connector" error={err} onRetry={propose} className="mt-2" />}
       </div>

@@ -136,17 +136,17 @@ export function RuleToken({ refId, snapshot, tone = "quiet", depth = 0, classNam
         onMouseEnter={() => setArmed(true)}
         aria-expanded={open}
         title={`Open rule ${refId}`}
-        className={cn("mono inline-flex h-[18px] max-w-full shrink-0 items-center gap-1 border px-1 text-[10px] font-bold leading-none transition-colors",
+        className={cn("focusable inline-flex max-w-full shrink-0 cursor-pointer items-center gap-1 rounded-sm border px-1 py-px font-mono text-[10px] font-medium transition-colors duration-100",
           tone === "loud"
-            ? "border-borderStrong bg-surface2 text-text hover:border-accent hover:text-accent-fg"
-            : "border-border bg-sunk text-text2 hover:border-accent hover:text-accent-fg",
-          open && "border-accent text-accent-fg",
+            ? "border-line-strong bg-raise text-fg hover:border-fg"
+            : "border-line bg-raise text-dim hover:border-line-strong hover:text-fg",
+          open && "border-fg text-fg",
           className)}
       >
         {/* The flow colour is on the token once the rule is known, so a strip of
             references reads as directions before anything is expanded. It is
             NEVER guessed: no swatch until the engine has answered. */}
-        {ctx && <span aria-hidden className={cn("h-1.5 w-1.5 shrink-0", ctxSwatch(ctx))} />}
+        {ctx && <span aria-hidden className={cn("size-1.5 shrink-0 rounded-[2px]", ctxSwatch(ctx))} />}
         <span className="truncate">{refId}</span>
         <ChevronDown size={9} className={cn("shrink-0 opacity-60 transition-transform", open && "rotate-180")} />
       </button>

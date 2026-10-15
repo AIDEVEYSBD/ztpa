@@ -51,12 +51,12 @@ function Section({ title, icon: Icon, children, note }: {
   title: string; icon?: typeof Server; children: React.ReactNode; note?: string;
 }) {
   return (
-    <section className="min-w-0 border-t border-hair px-3.5 py-3">
+    <section className="min-w-0 border-t border-line px-4 py-3">
       <div className="mb-1.5 flex items-center gap-1.5">
-        {Icon ? <Icon size={11} className="shrink-0 text-accent-fg" /> : null}
-        <span className="label !mb-0">{title}</span>
+        {Icon ? <Icon size={11} className="shrink-0 text-dim" /> : null}
+        <span className="text-[11px] font-medium tracking-[0.06em] text-faint uppercase">{title}</span>
       </div>
-      {note ? <p className="mb-1.5 text-[10.5px] leading-snug text-text3">{note}</p> : null}
+      {note ? <p className="mb-1.5 text-[10.5px] leading-[1.5] text-ghost">{note}</p> : null}
       {children}
     </section>
   );
@@ -236,14 +236,14 @@ export function NodeDrawer(p: NodeDrawerProps) {
   return (
     <aside
       ref={scroller}
-      className={cn("zt-scroll flex h-full min-w-0 flex-col overflow-y-auto border-l border-border bg-surface", p.className)}
+      className={cn("zt-scroll flex h-full min-w-0 flex-col overflow-y-auto border-l border-line bg-surface", p.className)}
       aria-label={`Details for ${n.name || n.key}`}
     >
-      <header className="sticky top-0 z-10 flex shrink-0 items-start gap-2 border-b border-border bg-surface px-3 py-2">
-        <NetIcon kind={n.role ?? n.kind} size={18} className="mt-0.5 shrink-0 text-accent-fg" />
+      <header className="sticky top-0 z-10 flex shrink-0 items-start gap-2 border-b border-line bg-surface px-3 py-2">
+        <NetIcon kind={n.role ?? n.kind} size={18} className="mt-0.5 shrink-0 text-dim" />
         <div className="min-w-0 flex-1">
-          <div className="mono break-all text-[13px] font-bold leading-tight">{n.name || n.key}</div>
-          <div className="mono break-all text-[10.5px] text-text3">{n.key}</div>
+          <div className="font-mono text-[12.5px] leading-tight font-medium break-all text-fg">{n.name || n.key}</div>
+          <div className="font-mono text-[10.5px] break-all text-faint">{n.key}</div>
         </div>
         <button
           type="button"

@@ -77,15 +77,15 @@ export function HopPanel(p: HopPanelProps) {
       </header>
 
       {p.ready && p.paths.length > 1 ? (
-        <div className="flex flex-wrap gap-1.5 border-b border-border p-2">
+        <div className="flex flex-wrap gap-1.5 border-b border-line p-2">
           {p.paths.map((path, i) => (
             <button
               key={`${path.terminal}:${i}`}
               type="button"
               onClick={() => p.onIndex(i)}
               className={cn(
-                "mono inline-flex max-w-full items-center gap-1 border px-2 py-1 text-[11px]",
-                i === p.index ? "border-accent bg-accent-soft font-bold text-text" : "border-border text-text2 hover:border-accent",
+                "focusable inline-flex h-7 max-w-full cursor-pointer items-center gap-1 rounded-sm border px-2.5 font-mono text-[11px] font-medium transition-colors duration-100",
+                i === p.index ? "border-transparent bg-ink text-on-ink" : "border-line bg-surface text-dim hover:bg-raise hover:text-fg",
               )}
             >
               <ArrowRight size={11} className="shrink-0" />

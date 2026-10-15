@@ -45,14 +45,14 @@ export function Lane({ lane, width, first, onToggle }: LaneProps) {
               <span>node{lane.nodeCount === 1 ? "" : "s"}</span>
             </>
           ) : (
-            <span className="text-text3">unobserved</span>
+            <span className="text-ghost">unobserved</span>
           )}
         </div>
         {lane.collapsible && onToggle ? (
           <button
             type="button"
             onClick={onToggle}
-            className="mt-0.5 inline-flex h-[17px] w-fit items-center gap-1 border border-border bg-sunk px-1 text-[9px] font-bold text-text2 hover:border-accent hover:text-accent-fg"
+            className="focusable mt-0.5 inline-flex h-[17px] w-fit cursor-pointer items-center gap-1 rounded-[3px] border border-line bg-raise px-1 text-[9px] font-medium text-dim hover:border-line-strong hover:text-fg"
             aria-expanded={!lane.collapsed}
           >
             {lane.collapsed ? <ChevronsUpDown size={9} /> : <ChevronsDownUp size={9} />}
