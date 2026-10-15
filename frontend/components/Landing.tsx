@@ -19,6 +19,7 @@ import {
   Layers, Fingerprint, Network, Route, Gauge,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
+import { SurfaceGrain } from "@/components/ui/Material";
 import { TOOL_COLOUR } from "@/lib/toolColour";
 
 const EASE = [0.2, 0, 0, 1] as const;
@@ -110,11 +111,11 @@ function ApproachMark() {
   return (
     <div className="flex items-end gap-3">
       <span className="flex flex-col gap-[3px]">
-        <span className="h-3.5 w-3.5 bg-accent" />
-        <span className="h-3.5 w-3.5 bg-text3" />
-        <span className="h-3.5 w-3.5 bg-text3" />
+        <span className="size-3.5 rounded-[2px] bg-fg" />
+        <span className="size-3.5 rounded-[2px] bg-ghost" />
+        <span className="size-3.5 rounded-[2px] bg-ghost" />
       </span>
-      <span className="text-[13px] leading-[1.5] text-text3">
+      <span className="text-[13px] leading-[1.5] text-faint">
         One policy model.<br />One reachability map.<br />One worst-first list.
       </span>
     </div>
@@ -122,11 +123,11 @@ function ApproachMark() {
 }
 
 function Eyebrow({ children }: { children: React.ReactNode }) {
-  return <div className="eyebrow mb-4">{children}</div>;
+  return <div className="mb-4 text-[11px] font-medium tracking-[0.08em] text-accent-text uppercase">{children}</div>;
 }
 
 function CtaArrow({ size = 14 }: { size?: number }) {
-  return <ArrowRight size={size} className="shrink-0 transition-transform group-hover:translate-x-1" />;
+  return <ArrowRight size={size} className="shrink-0 transition-transform duration-150 group-hover:translate-x-1" />;
 }
 
 export function Landing() {
@@ -139,79 +140,79 @@ export function Landing() {
   const gate = GATE[req];
 
   return (
-    <div data-theme="dark" className="min-h-screen overflow-x-hidden bg-bg text-text [text-wrap:pretty]">
+    <div data-theme="dark" className="min-h-screen overflow-x-hidden bg-canvas text-fg [text-wrap:pretty]">
       {/* ── HEADER ─────────────────────────────────────────────────────────── */}
-      <header className="glass-chrome fixed inset-x-0 top-0 z-[60] flex items-center justify-between border-b border-border px-5 py-3.5 sm:px-10">
-        <span aria-hidden className="spectrum-line thin absolute inset-x-0 top-0" />
-        <Link href="#top" className="flex items-center gap-3">
-          <span className="h-[22px] w-[22px] bg-accent" />
+      <header className="fixed inset-x-0 top-0 z-[60] flex items-center justify-between border-b border-line bg-surface px-5 py-3 sm:px-10">
+        <SurfaceGrain />
+        <Link href="#top" className="focusable relative z-10 flex items-center gap-3">
+          <span className="size-6 rounded-md bg-ink" />
           <span className="flex flex-col leading-none">
-            <span className="text-[18px] font-bold tracking-[-0.02em]">NPR</span>
-            <span className="mt-[3px] text-[11px] tracking-[0.02em] text-text3">Network Policy Reviewer</span>
+            <span className="text-[16px] font-bold tracking-tight text-on-grain">NPR</span>
+            <span className="mt-[3px] text-[10.5px] text-faint">Network Policy Reviewer</span>
           </span>
         </Link>
-        <nav className="flex items-center gap-7">
+        <nav className="relative z-10 flex items-center gap-7">
           <div className="hidden items-center gap-7 md:flex">
             {NAV.map((n) => (
-              <a key={n.href} href={n.href} className="text-[14px] text-text2 transition-colors hover:text-text">{n.label}</a>
+              <a key={n.href} href={n.href} className="focusable text-[13px] font-semibold text-dim transition-colors duration-100 hover:text-on-grain">{n.label}</a>
             ))}
           </div>
-          <Link href={ctaHref} className="btn-primary group !h-auto !px-5 !py-2.5 !text-[14px]">
+          <Link href={ctaHref} className="btn-primary focusable group">
             {ctaLabel}<CtaArrow />
           </Link>
         </nav>
       </header>
 
       {/* ── HERO ───────────────────────────────────────────────────────────── */}
-      <section id="top" className="bg-aurora relative flex min-h-screen flex-col justify-center overflow-hidden px-5 pb-20 pt-36 sm:px-10">
-        {/* ambient network overlay (thin yellow lines + nodes) */}
+      <section id="top" className="relative flex min-h-screen flex-col justify-center overflow-hidden bg-canvas px-5 pt-36 pb-20 sm:px-10">
+        {/* Ambient network motif. Achromatic on purpose: the ground carries no hue. */}
         <svg viewBox="0 0 1440 900" preserveAspectRatio="xMidYMid slice" aria-hidden className="pointer-events-none absolute inset-0 h-full w-full">
-          <g stroke="var(--accent)" strokeWidth="1" fill="none">
+          <g stroke="var(--t-line-strong)" strokeWidth="1" fill="none">
             <path d="M120 200 L420 320 L760 180 L1080 360 L1340 240" style={{ animation: "npr-pulse 7s ease-in-out infinite" }} />
             <path d="M80 640 L380 540 L700 700 L1010 520 L1360 660" style={{ animation: "npr-pulse 9s ease-in-out infinite 1.5s" }} />
             <path d="M420 320 L380 540" style={{ animation: "npr-pulse 8s ease-in-out infinite .8s" }} />
             <path d="M760 180 L700 700" style={{ animation: "npr-pulse 10s ease-in-out infinite 2.2s" }} />
             <path d="M1080 360 L1010 520" style={{ animation: "npr-pulse 8.5s ease-in-out infinite 1.1s" }} />
           </g>
-          <g fill="var(--accent)">
+          <g fill="var(--t-fg-5)">
             {[[416, 316, 0], [756, 176, 1], [1076, 356, 2], [376, 536, 1.6], [1006, 516, 0.5]].map(([x, y, d], i) => (
-              <rect key={i} x={x} y={y} width="8" height="8" style={{ animation: `npr-dot 5s ease-in-out infinite ${d}s` }} />
+              <rect key={i} x={x} y={y} width="8" height="8" rx="2" style={{ animation: `npr-dot 5s ease-in-out infinite ${d}s` }} />
             ))}
           </g>
         </svg>
-        <div className="pointer-events-none absolute inset-0" style={{ background: "linear-gradient(180deg, rgba(11,11,15,0.35) 0%, rgba(11,11,15,0.72) 60%, var(--bg) 100%)" }} />
+        <div className="pointer-events-none absolute inset-0" style={{ background: "linear-gradient(180deg, transparent 0%, color-mix(in srgb, var(--t-canvas) 72%, transparent) 60%, var(--t-canvas) 100%)" }} />
 
         <div className="relative mx-auto w-full max-w-[1200px] 3xl:max-w-[1360px]">
           <Reveal className="mb-7 flex items-center gap-3.5">
             <span className="flex gap-1">
-              <span className="h-[9px] w-[9px] bg-accent" />
-              <span className="h-[9px] w-[9px] bg-text3" />
-              <span className="h-[9px] w-[9px] bg-text3" />
+              <span className="size-[9px] rounded-[2px] bg-fg" />
+              <span className="size-[9px] rounded-[2px] bg-ghost" />
+              <span className="size-[9px] rounded-[2px] bg-ghost" />
             </span>
-            <span className="text-[13px] uppercase tracking-[0.04em] text-text2">Network Policy Reviewer</span>
+            <span className="text-[11px] font-medium tracking-[0.08em] text-accent-text uppercase">Network Policy Reviewer</span>
           </Reveal>
           <Reveal delay={0.05}>
-            <h1 className="m-0 max-w-[1040px] text-[40px] font-bold leading-[1.04] tracking-[-0.03em] sm:text-[56px] lg:text-[72px]">
-              What&apos;s the one risk that crosses every tool, the one <span className="text-accent">no single console</span> can see?
+            <h1 className="m-0 max-w-[1040px] text-[40px] leading-[1.04] font-semibold tracking-[-0.035em] text-dim sm:text-[56px] lg:text-[64px]">
+              What&apos;s the one risk that crosses every tool, the one <span className="text-fg">no single console</span> can see?
             </h1>
           </Reveal>
           <Reveal delay={0.12}>
-            <p className="mt-7 max-w-[740px] text-[18px] leading-[1.5] text-text2 sm:text-[21px]">
+            <p className="mt-7 max-w-[78ch] text-[16px] leading-[1.6] text-faint sm:text-[18px]">
               NPR unifies every network-policy tool you run (firewall, segmentation and cloud) into one policy
               model, one reachability map, and one worst-first to-do list, then explains, prioritizes and gates every
               change with an agentic advisory layer.
             </p>
           </Reveal>
           <Reveal delay={0.18} className="mt-10 flex flex-wrap items-center gap-4">
-            <Link href={ctaHref} className="btn-primary group !h-auto !px-6 !py-[15px] !text-[16px]">{ctaLabel}<CtaArrow size={16} /></Link>
-            <a href="#map" className="btn-ghost !h-auto !px-6 !py-[15px] !text-[16px]">Trace the cross-tool path</a>
+            <Link href={ctaHref} className="btn-primary focusable group !h-11 !px-5 !text-[14px]">{ctaLabel}<CtaArrow size={16} /></Link>
+            <a href="#map" className="btn-ghost focusable !h-11 !px-5 !text-[14px]">Trace the cross-tool path</a>
           </Reveal>
         </div>
 
         <div className="absolute bottom-9 left-5 hidden sm:left-10 sm:block"><ApproachMark /></div>
-        <div className="absolute bottom-10 right-6 hidden flex-col items-center gap-2 sm:flex">
-          <span className="relative h-8 w-5 rounded-full border-[1.5px] border-text3/60">
-            <span className="absolute left-1/2 top-[7px] h-[7px] w-[3px] -translate-x-1/2 bg-accent" style={{ animation: "npr-mouse 1.8s ease-in-out infinite" }} />
+        <div className="absolute right-6 bottom-10 hidden flex-col items-center gap-2 sm:flex">
+          <span className="relative h-8 w-5 rounded-full border-[1.5px] border-line-strong">
+            <span className="absolute top-[7px] left-1/2 h-[7px] w-[3px] -translate-x-1/2 rounded-[1px] bg-fg" style={{ animation: "npr-mouse 1.8s ease-in-out infinite" }} />
           </span>
         </div>
       </section>
@@ -221,12 +222,12 @@ export function Landing() {
         <div className="mx-auto max-w-[1200px] 3xl:max-w-[1360px]">
           <Reveal><Eyebrow>The pain</Eyebrow></Reveal>
           <Reveal delay={0.05}>
-            <h2 className="m-0 max-w-[900px] text-[34px] font-bold leading-[1.06] tracking-[-0.03em] sm:text-[44px] lg:text-[52px]">
-              Four consoles. Four mental models. <span className="text-accent">One blind spot.</span>
+            <h2 className="m-0 max-w-[900px] text-[34px] leading-[1.06] font-semibold tracking-[-0.03em] text-dim sm:text-[44px] lg:text-[52px]">
+              Four consoles. Four mental models. <span className="text-fg">One blind spot.</span>
             </h2>
           </Reveal>
           <Reveal delay={0.1}>
-            <p className="mb-14 mt-6 max-w-[760px] text-[18px] leading-[1.5] text-text2 sm:text-[19px]">
+            <p className="mt-6 mb-14 max-w-[78ch] text-[16px] leading-[1.6] text-faint sm:text-[18px]">
               Every tool sees its own slice. The one risk that matters most, an attack path that crosses all of them,
               is invisible to every single tool you own.
             </p>
@@ -236,10 +237,10 @@ export function Landing() {
               const Icon = p.icon;
               return (
                 <Reveal key={p.label} delay={i * 0.06} className="bg-bg p-7">
-                  <Icon size={26} strokeWidth={1.6} className="text-text3" />
-                  <div className="mt-4 text-[13px] uppercase tracking-[0.03em] text-text3">{p.label}</div>
-                  <div className="mt-3.5 text-[22px] font-bold tracking-[-0.02em]">{p.title}</div>
-                  <div className="mt-2.5 text-[14px] leading-[1.5] text-text3">{p.desc}</div>
+                  <Icon size={24} strokeWidth={1.6} className="text-faint" />
+                  <div className="mt-4 text-[11px] font-medium tracking-[0.08em] text-faint uppercase">{p.label}</div>
+                  <div className="mt-3.5 text-[20px] font-semibold tracking-[-0.015em]">{p.title}</div>
+                  <div className="mt-2.5 text-[13px] leading-[1.55] text-faint">{p.desc}</div>
                 </Reveal>
               );
             })}
@@ -256,12 +257,12 @@ export function Landing() {
         <div className="mx-auto max-w-[1200px] 3xl:max-w-[1360px]">
           <Reveal><Eyebrow>The flow</Eyebrow></Reveal>
           <Reveal delay={0.05}>
-            <h2 className="m-0 max-w-[900px] text-[34px] font-bold leading-[1.06] tracking-[-0.03em] sm:text-[44px] lg:text-[52px]">
-              From three exports to <span className="text-accent">one gated decision.</span>
+            <h2 className="m-0 max-w-[900px] text-[34px] leading-[1.06] font-semibold tracking-[-0.03em] text-dim sm:text-[44px] lg:text-[52px]">
+              From three exports to <span className="text-fg">one gated decision.</span>
             </h2>
           </Reveal>
           <Reveal delay={0.1}>
-            <p className="mb-14 mt-6 max-w-[820px] text-[18px] leading-[1.5] text-text2 sm:text-[19px]">
+            <p className="mt-6 mb-14 max-w-[78ch] text-[16px] leading-[1.6] text-faint sm:text-[18px]">
               A guided pipeline — nothing hidden, every step deterministic and observable as it runs. The engine
               computes every fact and number; the model only advises, at a single stage, grounded in the results.
             </p>
@@ -292,11 +293,11 @@ export function Landing() {
           <span aria-hidden className="spectrum-line block" />
           <div className="mt-6 flex flex-wrap items-center gap-x-7 gap-y-3 text-[13px] text-text3">
             <span className="inline-flex items-center gap-2.5">
-              <span className="inline-flex h-5 w-5 items-center justify-center bg-accent text-accent-ink"><Route size={12} strokeWidth={2} /></span>
+              <span className="inline-flex size-5 items-center justify-center rounded-sm bg-ink text-on-ink"><Route size={12} strokeWidth={2} /></span>
               Filled = the cross-tool path, force-flagged critical
             </span>
             <span className="inline-flex items-center gap-2.5">
-              <span className="inline-flex h-5 w-5 items-center justify-center border border-accent text-accent"><ShieldCheck size={12} strokeWidth={2} /></span>
+              <span className="inline-flex size-5 items-center justify-center rounded-sm border border-line-strong text-fg"><ShieldCheck size={12} strokeWidth={2} /></span>
               Outlined = the guardrailed change decision
             </span>
           </div>
@@ -309,8 +310,8 @@ export function Landing() {
           <div className="mb-12 flex flex-wrap items-end justify-between gap-6">
             <div>
               <Reveal delay={0.05}>
-                <h2 className="m-0 max-w-[820px] text-[34px] font-bold leading-[1.06] tracking-[-0.03em] sm:text-[44px] lg:text-[52px]">
-                  One map. One model. <span className="text-accent">One path you couldn&apos;t see before.</span>
+                <h2 className="m-0 max-w-[820px] text-[34px] leading-[1.06] font-semibold tracking-[-0.03em] text-dim sm:text-[44px] lg:text-[52px]">
+                  One map. One model. <span className="text-fg">One path you couldn&apos;t see before.</span>
                 </h2>
               </Reveal>
             </div>
@@ -367,15 +368,15 @@ export function Landing() {
 
           <Reveal className="mt-7 grid grid-cols-1 gap-px border border-border bg-border md:grid-cols-2">
             <div className="bg-bg p-7">
-              <div className="text-[13px] font-bold uppercase tracking-[0.02em] text-sev-critical">Critical · force-flagged</div>
-              <div className="mt-3 text-[16px] leading-[1.55] text-text2">
+              <div className="text-[11px] font-medium tracking-[0.08em] text-err uppercase">Critical · force-flagged</div>
+              <div className="mt-3 text-[15px] leading-[1.55] text-dim">
                 A public load balancer reaches the customer database through a chain that crosses three tools:{" "}
                 <span className="text-text">Internet → lb-public-01 → app-server-07 → internal-app-01 → db-prod-01</span>. Nothing you own would have shown you this.
               </div>
             </div>
             <div className="bg-bg p-7">
-              <div className="text-[13px] font-bold uppercase tracking-[0.02em] text-accent">Why it&apos;s even visible</div>
-              <div className="mt-3 text-[16px] leading-[1.55] text-text2">
+              <div className="text-[11px] font-medium tracking-[0.08em] text-accent-text uppercase">Why it&apos;s even visible</div>
+              <div className="mt-3 text-[15px] leading-[1.55] text-dim">
                 Wiz calls that server <span className="text-text">appsrv-07</span>; the identity layer merged it with AlgoSec&apos;s{" "}
                 <span className="text-text">app-server-07</span> because both exports place the same address in the same{" "}
                 <span className="text-text">VPC</span>. That deterministic, evidence-backed merge is the only reason the path connects at all.
@@ -390,12 +391,12 @@ export function Landing() {
         <div className="mx-auto max-w-[1200px] 3xl:max-w-[1360px]">
           <Reveal><Eyebrow>The advisory layer</Eyebrow></Reveal>
           <Reveal delay={0.05}>
-            <h2 className="m-0 max-w-[880px] text-[34px] font-bold leading-[1.06] tracking-[-0.03em] sm:text-[44px] lg:text-[52px]">
-              Eight ways the AI <span className="text-accent">advises</span>, never computes.
+            <h2 className="m-0 max-w-[880px] text-[34px] leading-[1.06] font-semibold tracking-[-0.03em] text-dim sm:text-[44px] lg:text-[52px]">
+              Eight ways the AI <span className="text-fg">advises</span>, never computes.
             </h2>
           </Reveal>
           <Reveal delay={0.1}>
-            <p className="mb-14 mt-6 max-w-[760px] text-[18px] leading-[1.5] text-text2 sm:text-[19px]">
+            <p className="mt-6 mb-14 max-w-[78ch] text-[16px] leading-[1.6] text-faint sm:text-[18px]">
               The engine owns every fact and every number. The model only explains, ranks, classifies and drafts,
               grounded in the engine&apos;s structured results.
             </p>
@@ -407,14 +408,14 @@ export function Landing() {
               return (
                 <Reveal key={c.n} delay={(i % 4) * 0.05} className="flex min-h-[184px] flex-col bg-bg p-6">
                   <div className="flex items-start justify-between">
-                    <span className="inline-flex items-center gap-2.5 text-accent">
-                      <Icon size={22} strokeWidth={1.6} />
-                      <span className="text-[13px] font-bold text-text3">{c.n}</span>
+                    <span className="inline-flex items-center gap-2.5 text-fg">
+                      <Icon size={20} strokeWidth={1.7} />
+                      <span className="tnum font-mono text-[12px] text-faint">{c.n}</span>
                     </span>
-                    <span className={cn("border px-1.5 py-0.5 text-[11px]", strong ? "border-accent text-accent" : "border-border text-text2")}>{c.tag}</span>
+                    <span className={cn("rounded-sm border px-1.5 py-0.5 text-[11px] font-medium", strong ? "border-line-strong text-fg" : "border-line text-dim")}>{c.tag}</span>
                   </div>
-                  <div className="mt-[18px] text-[18px] font-bold leading-[1.25] tracking-[-0.02em]">{c.title}</div>
-                  <div className="mt-2.5 text-[13px] leading-[1.5] text-text3">{c.desc}</div>
+                  <div className="mt-[18px] text-[17px] leading-[1.25] font-semibold tracking-[-0.015em]">{c.title}</div>
+                  <div className="mt-2.5 text-[13px] leading-[1.55] text-faint">{c.desc}</div>
                 </Reveal>
               );
             })}
@@ -427,12 +428,12 @@ export function Landing() {
         <div className="mx-auto max-w-[1200px] 3xl:max-w-[1360px]">
           <Reveal><Eyebrow>The change gate</Eyebrow></Reveal>
           <Reveal delay={0.05}>
-            <h2 className="m-0 max-w-[880px] text-[34px] font-bold leading-[1.06] tracking-[-0.03em] sm:text-[44px] lg:text-[52px]">
-              It judges the <span className="text-accent">computed delta</span>, not the requester&apos;s words.
+            <h2 className="m-0 max-w-[880px] text-[34px] leading-[1.06] font-semibold tracking-[-0.03em] text-dim sm:text-[44px] lg:text-[52px]">
+              It judges the <span className="text-fg">computed delta</span>, not the requester&apos;s words.
             </h2>
           </Reveal>
           <Reveal delay={0.1}>
-            <p className="mb-12 mt-6 max-w-[760px] text-[18px] leading-[1.5] text-text2 sm:text-[19px]">
+            <p className="mt-6 mb-12 max-w-[78ch] text-[16px] leading-[1.6] text-faint sm:text-[18px]">
               Pick a change request. The engine simulates it and the gate decides. The model can only auto-approve inside
               an already-safe envelope. It can never raise the risk tolerance, even under prompt injection.
             </p>
@@ -506,10 +507,10 @@ export function Landing() {
       </section>
 
       {/* ── CTA ────────────────────────────────────────────────────────────── */}
-      <section className="bg-accent px-5 py-24 text-accent-ink sm:px-10">
+      <section className="bg-ink px-5 py-24 text-on-ink sm:px-10">
         <div className="mx-auto flex max-w-[1200px] 3xl:max-w-[1360px] flex-wrap items-center justify-between gap-10">
           <Reveal>
-            <h2 className="m-0 max-w-[680px] text-[34px] font-bold leading-[1.04] tracking-[-0.03em] sm:text-[44px] lg:text-[50px]">
+            <h2 className="m-0 max-w-[680px] text-[34px] leading-[1.04] font-semibold tracking-[-0.03em] sm:text-[44px] lg:text-[50px]">
               See the path no console could show you.
             </h2>
             <p className="mt-5 max-w-[560px] text-[18px] leading-[1.5] text-[#2e2e38] sm:text-[19px]">
@@ -518,7 +519,7 @@ export function Landing() {
           </Reveal>
           <Reveal delay={0.08}>
             <Link href={ctaHref}
-              className="group inline-flex flex-none items-center gap-3 bg-accent-ink px-9 py-[18px] text-[18px] font-bold tracking-[-0.02em] text-accent transition-colors hover:bg-elevated">
+              className="focusable group inline-flex flex-none items-center gap-3 rounded-md bg-canvas px-7 py-4 text-[16px] font-semibold tracking-[-0.015em] text-fg transition-[filter] duration-100 hover:brightness-[1.08]">
               {ctaLabel}<CtaArrow size={16} />
             </Link>
           </Reveal>
@@ -531,10 +532,10 @@ export function Landing() {
           <ApproachMark />
           <div className="flex flex-col gap-2 sm:text-right">
             <div className="flex items-center gap-2.5 sm:justify-end">
-              <span className="h-[18px] w-[18px] bg-accent" />
-              <span className="text-[16px] font-bold">NPR · Network Policy Reviewer</span>
+              <span className="size-[18px] rounded-sm bg-ink" />
+              <span className="text-[15px] font-semibold">NPR · Network Policy Reviewer</span>
             </div>
-            <span className="text-[12px] text-text3">Private and confidential. Simulated exports representative of each tool, not a live integration.</span>
+            <span className="text-[11.5px] text-faint">Private and confidential. Simulated exports representative of each tool, not a live integration.</span>
           </div>
         </div>
       </footer>
