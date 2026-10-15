@@ -34,7 +34,7 @@ import type { ActionItem, Band, Finding } from "@/lib/types";
 import { canApprove as canApproveChanges, type AppRole } from "@/lib/roles";
 import { SearchBox } from "@/lib/tableTools";
 import type { ScreenId } from "./Sidebar";
-import { cn, Overlay, SeverityPill, SkeletonRows, ToolBadge } from "./ui";
+import { cn, Overlay, SeverityPill, SkeletonRows, ToolBadge, Button } from "./ui";
 import { ErrorState, InlineError } from "./ui/Feedback";
 import { CampaignPanel } from "./Campaign";
 import { FacetChip, FacetRow, Readout, type FigureSpec } from "./risk/bits";
@@ -47,10 +47,10 @@ import { primaryContext, useRule } from "./risk/useRule";
 const BAND_ORDER: Record<Band, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 const BANDS: Band[] = ["critical", "high", "medium", "low"];
 const BAND_SWATCH: Record<Band, string> = {
-  critical: "bg-sev-critical", high: "bg-sev-high", medium: "bg-sev-medium", low: "bg-sev-low",
+  critical: "bg-err", high: "bg-warn", medium: "bg-run", low: "bg-line-strong",
 };
 const BAND_TONE: Record<Band, string> = {
-  critical: "text-sev-critical", high: "text-sev-high", medium: "text-sev-medium", low: "text-text",
+  critical: "text-err", high: "text-warn", medium: "text-run", low: "text-fg",
 };
 
 /** Where a finding stands in the change workflow. Derived from the decision log
@@ -189,7 +189,7 @@ export function RiskTodo({ actions, findings, readOnly = false, loading = false,
       <div className="grid gap-3">
         {findingsError && <ErrorState resource="findings" error={findingsError} onRetry={onRetry} />}
         {actionsError && <ErrorState resource="prioritized actions" error={actionsError} onRetry={onRetry} />}
-        <p className="text-[12px] leading-relaxed text-text3">
+        <p className="text-[12.5px] leading-[1.55] text-dim">
           No risk list is shown on purpose. Nothing here has been assessed as clean — the data behind this screen did
           not load, so the estate&apos;s posture is unknown.
         </p>
@@ -216,38 +216,39 @@ export function RiskTodo({ actions, findings, readOnly = false, loading = false,
   ];
 
   return (
-    <div className="space-y-2.5">
+    <div className="flex flex-col gap-5">
       <Readout
         title="What the analysis found"
-        note={<>grouped by root cause into <b className="text-text2">{actions.length}</b> actions, worst first</>}
+        note={<>grouped by root cause into <b className="font-medium text-dim">{actions.length}</b> actions, worst first</>}
         figures={figures}
       />
 
       {/* The campaign agent is a bulk action over this list, not a lesson about
           itself — collapsed by default so the screen stays an instrument. */}
-      <div className="border border-border bg-surface2">
+      <section className="overflow-hidden rounded-lg border border-line bg-surface elev-1">
         <button onClick={() => setCampaignOpen((o) => !o)}
-          className="flex w-full items-center gap-2 px-3.5 py-2 text-left hover:bg-surfaceHover">
-          <Wand2 size={13} className="shrink-0 text-text3" />
-          <span className="text-[11px] font-bold uppercase tracking-[0.12em]">Remediation campaign</span>
-          <span className="text-[10.5px] text-text3">one worst-first pass over every finding</span>
-          <ChevronDown size={13} className={cn("ml-auto shrink-0 transition-transform", campaignOpen && "rotate-180")} />
+          aria-expanded={campaignOpen}
+          className="focusable flex w-full items-center gap-2 bg-raise/40 px-4 py-2.5 text-left hover:bg-raise/60">
+          <Wand2 size={13} className="shrink-0 text-dim" />
+          <span className="text-[12.5px] font-semibold tracking-[-0.005em]">Remediation campaign</span>
+          <span className="text-[11px] text-faint">one worst-first pass over every finding</span>
+          <ChevronDown size={14} className={cn("ml-auto shrink-0 transition-transform duration-150", !campaignOpen && "-rotate-90")} />
         </button>
-        {campaignOpen && <div className="border-t border-hair p-3"><CampaignPanel readOnly={readOnly} onNavigate={onNavigate} /></div>}
-      </div>
+        {campaignOpen && <div className="border-t border-line p-4"><CampaignPanel readOnly={readOnly} onNavigate={onNavigate} /></div>}
+      </section>
 
-      <div className="border border-border bg-surface2">
-        <div className="flex flex-wrap items-center gap-2 border-b border-hair px-3.5 py-2">
-          <span className="eyebrow">Risk to-do</span>
-          <span className="ml-auto text-[10.5px] text-text3">
+      <section className="overflow-hidden rounded-lg border border-line bg-surface elev-1">
+        <div data-hue="red" data-hue-bar="" className="flex flex-wrap items-center gap-2 border-b border-line bg-raise/55 px-4 py-2.5">
+          <span className="text-[12.5px] font-semibold tracking-[-0.005em]">Risk to-do</span>
+          <span className="ml-auto tnum text-[11px] text-faint">
             showing {shownCount} of {findings.length} findings
           </span>
-          <button onClick={() => { onRetry?.(); loadGovernance(); }} className="btn-ghost !h-[24px] !px-2 text-[11px]">
+          <Button size="sm" variant="quiet" tone="neutral" onClick={() => { onRetry?.(); loadGovernance(); }}>
             <RotateCw size={11} /> Refresh
-          </button>
+          </Button>
         </div>
 
-        <div className="space-y-2 border-b border-hair px-3.5 py-2.5">
+        <div className="flex flex-col gap-2 border-b border-line px-4 py-3">
           <FacetRow label="severity">
             <FacetChip label="all" n={findings.length} active={band === "all"} onClick={() => setBand("all")} />
             {BANDS.map((b) => (
@@ -269,7 +270,7 @@ export function RiskTodo({ actions, findings, readOnly = false, loading = false,
             <div className="space-y-1">
               {decisionsError && <InlineError resource="the change decision log" error={decisionsError} onRetry={loadGovernance} />}
               {stagingError && <InlineError resource="the implementation queue" error={stagingError} onRetry={loadGovernance} />}
-              <p className="text-[10.5px] text-text3">
+              <p className="text-[10.5px] text-ghost">
                 Every workflow count and chip below reads &ldquo;—&rdquo; while this is unread. None of these findings has been
                 assessed as un-actioned.
               </p>
@@ -278,7 +279,7 @@ export function RiskTodo({ actions, findings, readOnly = false, loading = false,
         </div>
 
         {shown.length === 0 ? (
-          <div className="p-6 text-center text-[12px] text-text3">
+          <div className="p-10 text-center text-[12.5px] text-dim">
             {findings.length === 0
               ? "The analysis returned no findings for this snapshot."
               : "No finding matches this filter."}
@@ -294,23 +295,23 @@ export function RiskTodo({ actions, findings, readOnly = false, loading = false,
                 ? a.priority !== shown[0].a.priority
                 : !openGroups[a.action_id];
               return (
-                <section key={a.action_id} className="border-b border-hair last:border-0">
+                <section key={a.action_id} className="border-b border-line last:border-0">
                   <button onClick={() => setOpenGroups((c) => ({ ...c, [a.action_id]: shut }))}
                     aria-expanded={!shut}
-                    className="flex w-full items-center gap-2.5 px-3.5 py-2 text-left hover:bg-surfaceHover">
-                    <span className={cn("mono grid h-[22px] min-w-[26px] shrink-0 place-items-center border px-1 text-[11px] font-bold tabular-nums",
-                      worst === "critical" ? "border-sev-critical-line bg-sev-critical-bg text-sev-critical"
-                      : worst === "high" ? "border-sev-high-line bg-sev-high-bg text-sev-high"
-                      : worst === "medium" ? "border-sev-medium-line bg-sev-medium-bg text-sev-medium"
-                      : "border-sev-low-line bg-sev-low-bg text-sev-low")}>
+                    className="focusable flex w-full items-center gap-2.5 px-4 py-2 text-left hover:bg-raise/40">
+                    <span className={cn("tnum grid h-[22px] min-w-[26px] shrink-0 place-items-center rounded-sm border px-1 font-mono text-[10.5px] font-medium",
+                      worst === "critical" ? "border-err-line bg-err-bg text-err"
+                      : worst === "high" ? "border-warn-line bg-warn-bg text-warn"
+                      : worst === "medium" ? "border-run-line bg-run-bg text-run"
+                      : "border-line bg-raise text-faint")}>
                       {a.priority}
                     </span>
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate text-[12.5px] font-bold">{a.title}</span>
-                      <span className="block truncate text-[10.5px] text-text3">{a.rationale}</span>
+                      <span className="block truncate text-[12px] font-medium text-fg">{a.title}</span>
+                      <span className="block truncate text-[10.5px] text-faint">{a.rationale}</span>
                     </span>
-                    <span className="mono shrink-0 text-[10.5px] tabular-nums text-text3">{fs.length}</span>
-                    <ChevronRight size={13} className={cn("shrink-0 text-text3 transition-transform", !shut && "rotate-90")} />
+                    <span className="tnum shrink-0 font-mono text-[10.5px] text-faint">{fs.length}</span>
+                    <ChevronRight size={13} className={cn("shrink-0 text-faint transition-transform duration-150", !shut && "rotate-90")} />
                   </button>
                   {!shut && (
                     <ul>
@@ -329,14 +330,14 @@ export function RiskTodo({ actions, findings, readOnly = false, loading = false,
             })}
           </div>
         )}
-      </div>
+      </section>
 
       {/* WHERE THE CHANGES WE MADE ARE LISTED, and the way back out of them. */}
-      <div className="border border-border bg-surface2">
-        <div className="flex flex-wrap items-center gap-2 border-b border-hair px-3.5 py-2">
-          <Undo2 size={13} className="shrink-0 text-text3" />
-          <span className="eyebrow">Applied changes</span>
-          <span className="text-[10.5px] text-text3">what this console has put into the engine&apos;s applied overlay</span>
+      <section className="overflow-hidden rounded-lg border border-line bg-surface elev-1">
+        <div data-hue="indigo" data-hue-bar="" className="flex flex-wrap items-center gap-2 border-b border-line bg-raise/55 px-4 py-2.5">
+          <Undo2 size={13} className="shrink-0 text-dim" />
+          <span className="text-[12.5px] font-semibold tracking-[-0.005em]">Applied changes</span>
+          <span className="text-[11px] text-faint">what this console has put into the engine&apos;s applied overlay</span>
           {/* ── Structural risk ──────────────────────────────────────────────
               Deliberately its OWN section, not folded into the groups above.
               A resilience finding names no rule, so there is nothing to remove
@@ -349,21 +350,21 @@ export function RiskTodo({ actions, findings, readOnly = false, loading = false,
               same reason: those chips filter policy findings, so folding two
               structural criticals into "critical 4" would make the filter lie
               about what it returns. */}
-          <section className="border-t border-border">
+          <section className="border-t border-line">
             <button
               type="button"
               onClick={() => setStructuralOpen((v) => !v)}
               aria-expanded={structuralOpen}
-              className="flex w-full items-center gap-2.5 px-3.5 py-2 text-left hover:bg-surfaceHover"
+              className="focusable flex w-full items-center gap-2.5 px-4 py-2 text-left hover:bg-raise/40"
             >
-              <span className="mono grid h-[22px] min-w-[26px] shrink-0 place-items-center border border-border bg-sunk px-1 text-[11px] font-bold text-text2">
+              <span className="grid h-[22px] min-w-[26px] shrink-0 place-items-center rounded-sm border border-line bg-raise px-1 font-mono text-[10.5px] font-medium text-dim">
                 S
               </span>
               <span className="min-w-0 flex-1">
-                <span className="block truncate text-[12.5px] font-bold">
+                <span className="block truncate text-[12px] font-medium text-fg">
                   Structural risk — from the topology, not the policy
                 </span>
-                <span className="block truncate text-[10.5px] text-text3">
+                <span className="block truncate text-[10.5px] text-faint">
                   {structuralError
                     ? "Could not be read, so this count is unknown rather than zero."
                     : structural === undefined
@@ -374,11 +375,11 @@ export function RiskTodo({ actions, findings, readOnly = false, loading = false,
                 </span>
               </span>
               {structural === undefined ? (
-                <span className="mono shrink-0 text-[10.5px] text-text3">—</span>
+                <span className="shrink-0 font-mono text-[10.5px] text-faint">unknown</span>
               ) : (
-                <span className="mono shrink-0 text-[10.5px] tabular-nums text-text3">
+                <span className="tnum shrink-0 font-mono text-[10.5px] text-faint">
                   {structural.filter((f) => f.severity_band === "critical").length > 0 && (
-                    <span className="mr-1.5 border border-sev-critical-line bg-sev-critical-bg px-1 text-sev-critical">
+                    <span className="mr-1.5 rounded-sm border border-err-line bg-err-bg px-1 text-err">
                       {structural.filter((f) => f.severity_band === "critical").length} critical
                     </span>
                   )}
@@ -386,12 +387,12 @@ export function RiskTodo({ actions, findings, readOnly = false, loading = false,
                 </span>
               )}
               <ChevronRight size={13}
-                className={cn("shrink-0 text-text3 transition-transform", structuralOpen && "rotate-90")} />
+                className={cn("shrink-0 text-faint transition-transform duration-150", structuralOpen && "rotate-90")} />
             </button>
 
             {structuralOpen && (
               structuralError ? (
-                <div className="px-3.5 pb-3">
+                <div className="px-4 pb-3">
                   <InlineError resource="the resilience analysis" error={structuralError} onRetry={loadGovernance} />
                 </div>
               ) : (
@@ -401,7 +402,7 @@ export function RiskTodo({ actions, findings, readOnly = false, loading = false,
                       <button
                         type="button"
                         onClick={() => onNavigate?.("explorer")}
-                        className="flex w-full items-center gap-2.5 px-3.5 py-1.5 text-left hover:bg-surfaceHover"
+                        className="focusable flex w-full items-center gap-2.5 px-4 py-1.5 text-left hover:bg-raise/40"
                         title="Open the Explorer, where the blast radius behind this score is drawn."
                       >
                         <SeverityPill band={f.severity_band} />
@@ -410,11 +411,11 @@ export function RiskTodo({ actions, findings, readOnly = false, loading = false,
                             are not rule references, and a RuleToken here would
                             fire a rule lookup after a router. */}
                         {(f.raw_refs ?? []).slice(0, 3).map((r) => (
-                          <span key={r} className="mono hidden shrink-0 border border-border bg-sunk px-1 text-[10px] text-text3 lg:inline">
+                          <span key={r} className="hidden shrink-0 rounded-sm border border-line bg-raise px-1 py-px font-mono text-[9px] text-dim lg:inline">
                             {r}
                           </span>
                         ))}
-                        <ChevronRight size={12} className="shrink-0 text-text3" />
+                        <ChevronRight size={12} className="shrink-0 text-faint" />
                       </button>
                     </li>
                   ))}
@@ -424,25 +425,25 @@ export function RiskTodo({ actions, findings, readOnly = false, loading = false,
           </section>
 
           {onNavigate && (
-            <button onClick={() => onNavigate("staging")} className="ml-auto text-[10.5px] font-bold underline">
+            <button onClick={() => onNavigate("staging")} className="focusable ml-auto cursor-pointer text-[10.5px] font-medium text-fg underline">
               Open the Implementation Queue
             </button>
           )}
         </div>
-        <div className="p-3">
+        <div className="p-4">
           <AppliedChanges rows={staged} error={stagingError} loading={staged === undefined && !stagingError}
             canApprove={canApprove} onChanged={loadGovernance} onRetry={loadGovernance}
             findingSlot={(row) => {
               const fid = (row.payload ?? {}).finding_id;
               const f = fid ? byId[String(fid)] : undefined;
               return f ? (
-                <button onClick={() => setOpenId(f.finding_id)} className="truncate text-[10.5px] underline decoration-dotted hover:text-accent-fg">
+                <button onClick={() => setOpenId(f.finding_id)} className="focusable cursor-pointer truncate text-[10.5px] underline decoration-dotted hover:text-fg">
                   {f.title ?? f.type}
                 </button>
               ) : null;
             }} />
         </div>
-      </div>
+      </section>
 
       <Overlay open={!!selected} onClose={() => setOpenId(null)} widthClass="max-w-[min(96vw,760px)]"
         label={selected ? `Finding ${selected.finding_id}` : undefined}>
@@ -489,19 +490,19 @@ function FindingRow({ f, snapshot, stage, queuedStatus, selected, onOpen }: {
     <li>
       <div role="button" tabIndex={0} onClick={onOpen}
         onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpen(); } }}
-        className={cn("flex w-full cursor-pointer items-center gap-2 border-t border-hair px-3.5 py-1.5 text-left",
-          selected ? "bg-accent-soft" : "hover:bg-surfaceHover")}>
+        className={cn("focusable flex w-full cursor-pointer items-center gap-2 border-t border-line px-4 py-1.5 text-left",
+          selected ? "bg-raise/80" : "hover:bg-raise/40")}>
         <SeverityPill band={f.severity_band} />
         {ctx ? <DirectionChip size="sm" refId={ctx.raw_ref} direction={ctx.direction} /> : <span className="w-[62px] shrink-0" aria-hidden />}
         <span className="min-w-0 flex-1 truncate text-[12px]" title={f.title ?? f.type}>{f.title ?? f.signals?.title ?? f.type}</span>
         {anomaly && (
-          <span className="mono hidden h-[17px] shrink-0 items-center border border-border bg-sunk px-1 text-[9px] font-bold uppercase tracking-[0.06em] text-text2 lg:inline-flex">
+          <span className="hidden shrink-0 items-center rounded-[3px] border border-line-strong px-1 py-px font-mono text-[9px] font-semibold text-dim lg:inline-flex">
             {anomaly}
           </span>
         )}
         {stage && stage !== "open" && (
           queuedStatus ? <StatusChip size="sm" status={queuedStatus} />
-            : <span className="hidden h-[18px] shrink-0 items-center border border-accent bg-accent-soft px-1.5 text-[9.5px] font-bold uppercase tracking-[0.08em] text-accent-fg sm:inline-flex">
+            : <span className="hidden shrink-0 items-center rounded-sm border border-line bg-raise px-1.5 py-0.5 text-[10.5px] font-medium text-dim sm:inline-flex">
                 {STAGE_LABEL[stage]}
               </span>
         )}
@@ -511,7 +512,7 @@ function FindingRow({ f, snapshot, stage, queuedStatus, selected, onOpen }: {
         <span className="hidden shrink-0 flex-wrap items-center justify-end gap-1 xl:inline-flex" onClick={(e) => e.stopPropagation()}>
           {f.raw_refs.slice(0, 4).map((r) => <RuleToken key={r} refId={r} snapshot={snapshot} />)}
         </span>
-        <ChevronRight size={13} className="shrink-0 text-text3" />
+        <ChevronRight size={13} className="shrink-0 text-faint" />
       </div>
     </li>
   );

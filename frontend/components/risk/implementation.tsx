@@ -38,11 +38,11 @@ type StatusMeta = { label: string; cls: string; Icon: typeof Check; meaning: str
 
 export const QUEUE_STATUS: Record<string, StatusMeta> = {
   staged: {
-    label: "queued", cls: "border-border bg-sunk text-text2", Icon: Rocket,
+    label: "queued", cls: "border-queue-line bg-queue-bg text-queue", Icon: Rocket,
     meaning: "Approved and waiting. Nothing has been applied.",
   },
   pushing: {
-    label: "implementing", cls: "border-accent bg-accent-soft text-accent-fg", Icon: Loader2,
+    label: "implementing", cls: "border-run-line bg-run-bg text-run", Icon: Loader2,
     meaning: "The stepped dry run is executing.",
   },
   pushed: {
@@ -50,19 +50,19 @@ export const QUEUE_STATUS: Record<string, StatusMeta> = {
     meaning: "In the applied overlay — the engine folds it into the record set on every build. No source system was written to.",
   },
   no_op: {
-    label: "skipped — no-op", cls: "border-border bg-sunk text-text3", Icon: SkipForward,
+    label: "skipped — no-op", cls: "border-line bg-raise text-faint", Icon: SkipForward,
     meaning: "Every conflict resolved to 'skip', so nothing was recorded and the next recompute is unchanged.",
   },
   conflict: {
-    label: "held for review", cls: "border-sev-high-line bg-sev-high-bg text-sev-high", Icon: AlertTriangle,
+    label: "held for review", cls: "border-warn-line bg-warn-bg text-warn", Icon: AlertTriangle,
     meaning: "A conflict needs a human. Nothing was applied.",
   },
   failed: {
-    label: "failed", cls: "border-sev-critical-line bg-sev-critical-bg text-sev-critical", Icon: X,
+    label: "failed", cls: "border-err-line bg-err-bg text-err", Icon: X,
     meaning: "The run did not complete. Nothing was applied.",
   },
   rolled_back: {
-    label: "rolled back", cls: "border-sev-medium-line bg-sev-medium-bg text-sev-medium", Icon: Undo2,
+    label: "rolled back", cls: "border-run-line bg-run-bg text-run", Icon: Undo2,
     meaning: "Was applied, then withdrawn. The row is kept: somebody approved it, it was live, somebody reversed it.",
   },
 };
@@ -71,8 +71,8 @@ export function StatusChip({ status, size = "md", className }: { status: string;
   const m = QUEUE_STATUS[status];
   if (!m) {
     return (
-      <span className={cn("mono inline-flex items-center border border-borderStrong bg-sunk px-1.5 font-bold text-text2",
-        size === "sm" ? "h-[18px] text-[9.5px]" : "h-[22px] text-[10.5px]", className)}
+      <span className={cn("inline-flex items-center rounded-sm border border-line-strong bg-raise px-1.5 py-0.5 font-mono font-medium text-dim",
+        size === "sm" ? "text-[9.5px]" : "text-[10.5px]", className)}
         title={`The API reported status "${status}", which this build does not know.`}>
         {status}
       </span>
@@ -81,9 +81,9 @@ export function StatusChip({ status, size = "md", className }: { status: string;
   const { Icon } = m;
   return (
     <span title={m.meaning}
-      className={cn("inline-flex items-center gap-1.5 border px-1.5 font-bold uppercase tracking-[0.08em]", m.cls,
-        size === "sm" ? "h-[18px] text-[9.5px]" : "h-[22px] text-[10.5px]", className)}>
-      <Icon size={size === "sm" ? 10 : 12} className={cn("shrink-0", status === "pushing" && "animate-spin")} />
+      className={cn("inline-flex items-center gap-1.5 rounded-sm border px-1.5 py-0.5 font-medium", m.cls,
+        size === "sm" ? "text-[10px]" : "text-[11px]", className)}>
+      <Icon size={size === "sm" ? 10 : 12} className={cn("shrink-0", status === "pushing" && "af-spin")} />
       {m.label}
     </span>
   );

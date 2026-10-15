@@ -66,7 +66,7 @@ export function Overlay({
         >
           <motion.div
             aria-hidden
-            className="absolute inset-0 bg-black/70 backdrop-blur-[2px]"
+            className="absolute inset-0 bg-canvas/75"
             onClick={dismissable ? onClose : undefined}
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -75,9 +75,9 @@ export function Overlay({
           />
           <motion.div
             className={cn(
-              "glass-modal relative flex w-full flex-col border-border shadow-[0_24px_70px_-24px_rgba(0,0,0,0.9)]",
+              "relative flex w-full flex-col border-line bg-surface elev-3",
               panelWidth,
-              isCenter ? "max-h-[90vh] overflow-hidden border" : "h-full border-l",
+              isCenter ? "max-h-[90vh] overflow-hidden rounded-lg border" : "h-full border-l",
             )}
             initial={isCenter ? { opacity: 0, scale: 0.97, y: 12 } : { x: "100%" }}
             animate={isCenter ? { opacity: 1, scale: 1, y: 0 } : { x: 0 }}

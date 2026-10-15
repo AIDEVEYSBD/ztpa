@@ -46,10 +46,10 @@ export function useFilterSort<T>(rows: T[], cfg: {
 
 export function SearchBox({ value, onChange, placeholder, className }: { value: string; onChange: (v: string) => void; placeholder?: string; className?: string }) {
   return (
-    <div className={cn("field flex h-8 w-full items-center gap-2 !px-2.5 focus-within:border-accent sm:w-64", className)}>
-      <Search size={13} className="shrink-0 text-text3" />
+    <div className={cn("flex h-7 w-full items-center gap-2 rounded-sm border border-line bg-canvas px-2 focus-within:border-fg sm:w-64", className)}>
+      <Search size={13} className="shrink-0 text-faint" />
       <input value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder ?? "Search…"}
-        className="min-w-0 flex-1 bg-transparent text-[12px] text-text outline-none placeholder:text-text3" />
+        className="min-w-0 flex-1 bg-transparent text-[12px] text-fg outline-none placeholder:text-ghost" />
     </div>
   );
 }
@@ -61,8 +61,8 @@ export function SortTh({ label, sortKey, state, className }: { label: string; so
   const active = state.sortKey === sortKey;
   const Icon = !active ? ArrowUpDown : state.dir === "asc" ? ArrowUp : ArrowDown;
   return (
-    <th className={cn("cursor-pointer select-none py-1.5 pr-3 text-[11px] font-bold uppercase tracking-[0.08em] text-text3", className)} onClick={() => state.toggle(sortKey)}>
-      <span className={cn("inline-flex items-center gap-1 transition-colors hover:text-text2", active && "text-text")}>{label}<Icon size={11} className={active ? "text-accent-fg" : "text-text3"} /></span>
+    <th className={cn("cursor-pointer py-2 pr-3 text-[10.5px] font-medium text-faint select-none", className)} onClick={() => state.toggle(sortKey)}>
+      <span className={cn("inline-flex items-center gap-1 transition-colors duration-100 hover:text-dim", active && "text-fg")}>{label}<Icon size={11} className={active ? "text-fg" : "text-faint"} /></span>
     </th>
   );
 }

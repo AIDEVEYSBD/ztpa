@@ -25,7 +25,7 @@ import { api, asApiError, type ApiError } from "@/lib/api";
 import type { ChangeResult } from "@/lib/types";
 import { canApprove as canApproveChanges, type AppRole } from "@/lib/roles";
 import type { ScreenId } from "./Sidebar";
-import { cn, Skeleton, SkeletonText, Spinner } from "./ui";
+import { cn, Skeleton, SkeletonText, Spinner, Button } from "./ui";
 import { ErrorState, InlineError } from "./ui/Feedback";
 import { Readout, type FigureSpec } from "./risk/bits";
 import { GateRuling, ProposedLine, VerdictHeader } from "./risk/gate";
@@ -162,15 +162,17 @@ export function ChangeGate({ onNavigate }: { onNavigate?: (s: ScreenId) => void 
       <Readout title="Change governance" figures={figures}
         note="Every ruling is computed from the simulated delta, not from the request's wording." />
 
-      <div className="grid gap-2.5 lg:grid-cols-[360px_1fr]">
-        <div className="space-y-2.5">
-          <div className="border border-border bg-surface2">
-            <div className="border-b border-hair px-3.5 py-2"><span className="eyebrow">Simulate a change</span></div>
-            <div className="space-y-2 p-3">
+      <div className="grid gap-5 lg:grid-cols-[360px_1fr]">
+        <div className="flex flex-col gap-5">
+          <section className="overflow-hidden rounded-lg border border-line bg-surface elev-1">
+            <div data-hue="amber" data-hue-bar="" className="border-b border-line bg-raise/55 px-4 py-2.5">
+              <span className="text-[12.5px] font-semibold tracking-[-0.005em]">Simulate a change</span>
+            </div>
+            <div className="flex flex-col gap-2 p-4">
               {reqErr && <ErrorState resource="the pending change requests" error={reqErr} onRetry={loadRequests} />}
               {reqLoading && requests.length === 0
                 ? Array.from({ length: 2 }).map((_, i) => (
-                    <div key={i} className="space-y-2 border border-border bg-sunk p-2.5"><Skeleton className="h-3.5 w-2/3" /><Skeleton className="h-3 w-full" /></div>
+                    <div key={i} className="space-y-2 rounded-md border border-line bg-canvas p-3"><Skeleton className="h-3.5 w-2/3" /><Skeleton className="h-3 w-full" /></div>
                   ))
                 : requests.map((r) => (
                     // div[role=button], not <button>: `ProposedLine` renders an
@@ -179,52 +181,52 @@ export function ChangeGate({ onNavigate }: { onNavigate?: (s: ScreenId) => void 
                     <div key={r.id} role="button" tabIndex={0}
                       onClick={() => { setSel(r.id); setResult(undefined); }}
                       onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setSel(r.id); setResult(undefined); } }}
-                      className={cn("w-full cursor-pointer border bg-sunk p-2.5 text-left transition-colors",
-                        sel === r.id ? "border-accent" : "border-border hover:border-borderStrong")}>
-                      <div className="text-[12px] font-bold">{r.title}</div>
+                      className={cn("focusable w-full cursor-pointer rounded-md border bg-canvas p-3 text-left transition-colors duration-100",
+                        sel === r.id ? "border-fg" : "border-line hover:border-line-strong")}>
+                      <div className="text-[12px] font-medium text-fg">{r.title}</div>
                       <ProposedLine proposed={r.proposed} kind={r.kind} className="mt-1" />
-                      {r.justification && <div className="mt-1 text-[10.5px] italic text-text3">“{r.justification}”</div>}
+                      {r.justification && <div className="mt-1 text-[10.5px] text-faint italic">“{r.justification}”</div>}
                     </div>
                   ))}
 
               <button onClick={() => { setSel("custom"); setResult(undefined); }}
-                className={cn("w-full border bg-sunk p-2.5 text-left transition-colors",
-                  sel === "custom" ? "border-accent" : "border-border hover:border-borderStrong")}>
-                <div className="flex items-center gap-2 text-[12px] font-bold"><FlaskConical size={13} /> Compose one</div>
+                className={cn("focusable w-full cursor-pointer rounded-md border bg-canvas p-3 text-left transition-colors duration-100",
+                  sel === "custom" ? "border-fg" : "border-line hover:border-line-strong")}>
+                <div className="flex items-center gap-2 text-[12px] font-medium text-fg"><FlaskConical size={13} /> Compose one</div>
               </button>
 
               {sel === "custom" && (
-                <div className="space-y-2 border border-border bg-sunk p-2.5">
+                <div className="space-y-2 rounded-md border border-line bg-canvas p-3">
                   <datalist id="zt-assets">{assets.map((a) => <option key={a} value={a} />)}<option value="0.0.0.0/0" /></datalist>
                   <datalist id="zt-services">{COMMON_SERVICES.map((s) => <option key={s} value={s} />)}</datalist>
                   {([["source", "Source", "asset, or a CIDR like 0.0.0.0/0"], ["destination", "Destination", "pick a known asset"]] as const).map(([k, lab, ph]) => {
                     const kind = endpointKind((custom as any)[k], assetSet);
                     return (
                       <label key={k} className="block">
-                        <span className="label mb-1 block">{lab}</span>
+                        <span className="mb-1 block text-[12.5px] font-medium text-mist">{lab}</span>
                         <input list="zt-assets" value={(custom as any)[k]} placeholder={ph}
-                          onChange={(e) => setCustom({ ...custom, [k]: e.target.value })} className="field mono !h-[28px] !text-[12px]" />
-                        {kind && <span className={cn("mt-1 block text-[10.5px]", TONE[kind.tone])}>{kind.label}</span>}
+                          onChange={(e) => setCustom({ ...custom, [k]: e.target.value })} className="field !h-8 font-mono !text-[12.5px]" />
+                        {kind && <span className={cn("mt-1 block text-[11.5px]", TONE[kind.tone])}>{kind.label}</span>}
                       </label>
                     );
                   })}
                   <label className="block">
-                    <span className="label mb-1 block">Service</span>
+                    <span className="mb-1 block text-[12.5px] font-medium text-mist">Service</span>
                     <input list="zt-services" value={custom.service} placeholder="tcp/443"
-                      onChange={(e) => setCustom({ ...custom, service: e.target.value })} className="field mono !h-[28px] !text-[12px]" />
+                      onChange={(e) => setCustom({ ...custom, service: e.target.value })} className="field !h-8 font-mono !text-[12.5px]" />
                   </label>
                   <div>
-                    <span className="label mb-1 block">Action</span>
-                    <div className="flex border border-border">
+                    <span className="mb-1 block text-[12.5px] font-medium text-mist">Action</span>
+                    <div className="inline-flex w-full items-center gap-px rounded-md border border-line bg-raise p-px">
                       {(["allow", "deny"] as const).map((a) => (
                         <button key={a} type="button"
                           onClick={() => setCustom({ ...custom, action: a })}
                           aria-pressed={custom.action === a}
                           className={cn(
-                            "mono flex-1 border-r border-border px-2 py-1 text-[11px] font-bold uppercase last:border-r-0",
+                            "focusable flex-1 cursor-pointer rounded-sm px-2.5 py-1 text-[12.5px] transition-colors duration-100",
                             custom.action === a
-                              ? a === "allow" ? "bg-ok-bg text-ok" : "bg-sev-critical-bg text-sev-critical"
-                              : "text-text3 hover:text-text",
+                              ? a === "allow" ? "bg-surface font-medium text-ok shadow-[var(--shadow-1)]" : "bg-surface font-medium text-err shadow-[var(--shadow-1)]"
+                              : "text-faint hover:text-dim",
                           )}>
                           {a}
                         </button>
@@ -237,35 +239,35 @@ export function ChangeGate({ onNavigate }: { onNavigate?: (s: ScreenId) => void 
                       // rule does not OPEN, never what it blocks. A reader who
                       // learns that after pressing the button has already formed
                       // the wrong expectation.
-                      <span className="mt-1 block text-[10.5px] leading-snug text-sev-high">
+                      <span className="mt-1 block text-[11.5px] leading-[1.5] text-warn">
                         A deny tightens policy. The graph holds allow grants only, so the delta
                         shows what this does not open, not what it blocks.
                       </span>
                     )}
                   </div>
                   <label className="block">
-                    <span className="label mb-1 block">Justification</span>
+                    <span className="mb-1 block text-[12.5px] font-medium text-mist">Justification</span>
                     <input value={custom.justification} onChange={(e) => setCustom({ ...custom, justification: e.target.value })}
                       placeholder="e.g. urgent, pre-approved" className="field !h-[28px] !text-[12px]" />
-                    <span className="mt-1 block text-[10.5px] text-text3">Free text. The gate rules on the computed delta, not on this.</span>
+                    <span className="mt-1 block text-[11.5px] text-faint">Free text. The gate rules on the computed delta, not on this.</span>
                   </label>
                   {assetsErr && <InlineError resource={"this snapshot's assets"} error={assetsErr} onRetry={loadAssets} />}
                 </div>
               )}
 
-              <button onClick={evaluate} disabled={loading || !sel} className="btn-primary w-full !h-[30px] text-[12px]">
+              <Button variant="solid" tone="ink" onClick={evaluate} disabled={loading || !sel} className="w-full">
                 {loading ? <Spinner label="Simulating + judging…" /> : <><Play size={13} /> Simulate &amp; evaluate</>}
-              </button>
+              </Button>
             </div>
-          </div>
+          </section>
         </div>
 
-        <div className="space-y-2.5">
+        <div className="flex flex-col gap-5">
           {actionErr && <ErrorState resource={actionErr.what} error={actionErr.error} onRetry={actionErr.retry} />}
           {loading ? (
-            <div className="space-y-2.5">
-              <div className="flex items-center gap-3 border border-border bg-surface2 p-3"><Skeleton className="h-7 w-7 shrink-0" /><div className="flex-1 space-y-2"><Skeleton className="h-4 w-40" /><Skeleton className="h-3 w-56" /></div></div>
-              <div className="space-y-2 border border-border bg-surface2 p-3"><Skeleton className="h-3.5 w-44" /><SkeletonText lines={4} /></div>
+            <div className="flex flex-col gap-5">
+              <div className="flex items-center gap-3 rounded-lg border border-line bg-surface p-4 elev-1"><Skeleton className="h-7 w-7 shrink-0" /><div className="flex-1 space-y-2"><Skeleton className="h-4 w-40" /><Skeleton className="h-3 w-56" /></div></div>
+              <div className="space-y-2 rounded-lg border border-line bg-surface p-4 elev-1"><Skeleton className="h-3.5 w-44" /><SkeletonText lines={4} /></div>
             </div>
           ) : !result ? (
             <DecisionBoard
@@ -274,27 +276,32 @@ export function ChangeGate({ onNavigate }: { onNavigate?: (s: ScreenId) => void 
               canApprove={canApprove} onNavigate={onNavigate}
             />
           ) : (
-            <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} className="space-y-2.5">
+            <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} className="flex flex-col gap-5">
               <VerdictHeader decision={d!.decision} forced={d!.forced_escalate} confidence={d!.confidence} decidedBy={d!.decided_by} />
               {result.request?.id && (
-                <div className="flex flex-wrap items-center gap-2 border border-border bg-surface2 p-2.5 text-[12px]">
-                  <Rocket size={13} className="shrink-0 text-text3" />
-                  <span className="text-text2">
+                <div className="flex flex-wrap items-center gap-2 rounded-lg border border-line bg-surface p-3 text-[12.5px] elev-1">
+                  <Rocket size={13} className="shrink-0 text-dim" />
+                  <span className="text-dim">
                     {d!.decision === "auto_approve"
                       ? "Approved — send it to the Implementation Queue."
                       : "Escalated — an approver can override and send it."}
                   </span>
-                  <button onClick={() => send(result.request.id, d!.decision !== "auto_approve")}
+                  <Button
+                    size="sm"
+                    variant="solid"
+                    tone="ink"
+                    className="ml-auto"
+                    onClick={() => send(result.request.id, d!.decision !== "auto_approve")}
                     disabled={(d!.decision !== "auto_approve" && !canApprove) || staging === result.request.id}
                     title={d!.decision === "auto_approve" || canApprove ? "" : "Only admin or analyst can approve an escalated change"}
-                    className="btn-primary ml-auto !h-[26px] !px-2 text-[11px]">
+                  >
                     {staging === result.request.id ? <Spinner label="Sending…" />
                       : d!.decision === "auto_approve" ? <><Rocket size={12} /> Send to implementation</>
                       : <><ShieldCheck size={12} /> Approve &amp; send</>}
-                  </button>
+                  </Button>
                 </div>
               )}
-              <div className="border border-border bg-surface2 p-3">
+              <div className="rounded-lg border border-line bg-surface p-4 elev-1">
                 {/* A classify request is an add-allow, never a remediation, so the
                     add-allow criteria and the reachability delta are the right
                     vocabulary here. */}
@@ -350,28 +357,28 @@ function DecisionBoard({ decisions, error, onRetry, onSend, sending, onReject, r
   ];
 
   return (
-    <div className="flex h-[calc(100vh-17rem)] min-h-[360px] flex-col overflow-hidden border border-border bg-surface2">
-      <div className="flex shrink-0 border-b border-hair">
+    <div className="flex h-[calc(100vh-17rem)] min-h-[360px] flex-col overflow-hidden rounded-lg border border-line bg-surface elev-1">
+      <div className="flex shrink-0 items-center gap-5 border-b border-line px-4">
         {TABS.map((t) => (
           <button key={t.id} onClick={() => { setTab(t.id); setOpen(undefined); }}
-            className={cn("flex items-center gap-1.5 px-3.5 py-2 text-[11px] font-bold uppercase tracking-[0.1em]",
-              tab === t.id ? "border-b-2 border-accent text-text" : "text-text3 hover:text-text2")}>
+            className={cn("focusable relative -mb-px flex cursor-pointer items-center gap-1.5 pb-2.5 text-[13px] transition-colors duration-100",
+              tab === t.id ? "font-medium text-fg" : "text-faint hover:text-dim")}>
             <t.icon size={12} /> {t.label}
-            <span className={cn("mono ml-0.5 px-1 py-0.5 text-[9.5px] font-bold tabular-nums",
-              tab === t.id ? "border border-accent text-accent-fg" : "bg-sunk text-text3")}>{t.count}</span>
+            <span className={cn("tnum ml-0.5 font-mono text-[10.5px]", tab === t.id ? "text-dim" : "text-faint")}>{t.count}</span>
+            {tab === t.id && <span aria-hidden className="absolute inset-x-0 -bottom-px h-0.5 rounded-[2px] bg-fg" />}
           </button>
         ))}
       </div>
 
-      <div className="zt-scroll min-h-0 flex-1 space-y-2 overflow-y-auto p-3">
+      <div className="zt-scroll min-h-0 flex-1 space-y-2 overflow-y-auto p-4">
         {error ? (
           <ErrorState resource="the change decision log" error={error} onRetry={onRetry} />
         ) : decisions === undefined ? (
           Array.from({ length: 3 }).map((_, i) => (
-            <div key={i} className="space-y-2 border border-border bg-sunk p-2.5"><Skeleton className="h-4 w-2/3" /><Skeleton className="h-3 w-1/2" /></div>
+            <div key={i} className="space-y-2 rounded-md border border-line bg-canvas p-3"><Skeleton className="h-4 w-2/3" /><Skeleton className="h-3 w-1/2" /></div>
           ))
         ) : items.length === 0 ? (
-          <div className="grid h-full min-h-[200px] place-items-center p-6 text-center text-[12px] text-text3">
+          <div className="grid h-full min-h-[200px] place-items-center p-6 text-center text-[12.5px] text-dim">
             {tab === "actions"
               ? (done.length ? "Nothing waiting — every evaluated change has been acted on." : "No change evaluated yet.")
               : "No change has been sent to implementation or rejected yet."}

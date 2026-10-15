@@ -332,6 +332,12 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* Legacy helper: components still mark identifiers and figures with `.mono`. */
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
 /* One focus treatment for every interactive element. */
 .focusable:focus-visible {
   outline: 2px solid var(--t-fg);
@@ -391,6 +397,22 @@ body::-webkit-scrollbar-thumb:hover {
 .af-pulse { animation: af-pulse 1.6s var(--ease-out) infinite; }
 .af-indeterminate { animation: af-indeterminate 1.4s var(--ease-out) infinite; }
 .af-bar { animation: af-bar 900ms var(--ease-out) infinite; }
+
+/* Diagram motion kept from the pre-revamp build: the topology trace march, and
+   the landing page's network, dot, critical-pulse and scroll-cue motifs. */
+@keyframes ztdash { to { stroke-dashoffset: -16; } }
+@keyframes npr-pulse { 0%, 100% { opacity: 0.12; } 50% { opacity: 0.42; } }
+@keyframes npr-dot { 0%, 100% { opacity: 0.35; transform: scale(1); } 50% { opacity: 0.85; transform: scale(1.35); } }
+@keyframes npr-flow { to { stroke-dashoffset: -160; } }
+@keyframes npr-crit {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--t-err) 55%, transparent); }
+  70% { box-shadow: 0 0 0 14px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+@keyframes npr-mouse { 0% { opacity: 0; transform: translateY(0); } 30% { opacity: 1; } 100% { opacity: 0; transform: translateY(9px); } }
+
+.zt-trace-line { animation: ztdash 0.6s linear infinite; }
+.animate-npr-flow { animation: npr-flow 1.5s linear infinite; }
 
 @media (prefers-reduced-motion: reduce) {
   *,
