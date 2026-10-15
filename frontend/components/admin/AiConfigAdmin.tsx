@@ -75,7 +75,7 @@ import type {
   AzureResourceGroup, AzureSubscription,
 } from "@/lib/types";
 import { isAdmin, type AppRole } from "@/lib/roles";
-import { Chip, Skeleton, cn } from "../ui";
+import { Chip, Skeleton, cn, Button } from "../ui";
 import { ErrorState, InlineError, Spinner } from "../ui/Feedback";
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -478,8 +478,9 @@ export function AiConfigAdmin() {
             "saved" nor "failed" is true here, and picking either would be the
             screen inventing an outcome it does not have. */}
         {savedAt && (
-          <p role="alert" className="border border-sev-medium-line bg-sev-medium-bg p-3 text-[12px] leading-relaxed text-text2">
-            Your change was accepted by the API at <span className="mono">{when(savedAt)}</span> — and could not be read
+          <p role="alert" className="relative overflow-hidden rounded-lg border border-line bg-surface p-3.5 pl-4 text-[12.5px] leading-[1.55] text-dim elev-1">
+            <span aria-hidden className="absolute inset-y-0 left-0 w-[3px] bg-run" />
+            Your change was accepted by the API at <span className="font-mono">{when(savedAt)}</span> — and could not be read
             back. What is now stored, and what this deployment is routing on, is therefore unknown: the write may have
             landed exactly as sent, or the store may have become unreachable between the write and the read. Retry
             below before assuming either.
@@ -506,7 +507,7 @@ export function AiConfigAdmin() {
 
   return (
     <div className="space-y-5">
-      <p className="max-w-3xl text-[13px] text-text2">
+      <p className="max-w-[78ch] text-[12.5px] leading-[1.55] text-dim">
         Which model this deployment sends prompts to, saved in the database with your name and the time on it
         (<span className="mono">ztpa.ai_config</span>) rather than baked into a container revision. Changing it takes
         effect on the next model call — no redeploy. API keys are never stored here: they come from this
@@ -516,13 +517,13 @@ export function AiConfigAdmin() {
       <ActivePanel stored={stored} active={active} onRetry={load} />
 
       <div className="panel">
-        <div className="panel-head">
-          <span className="label flex items-center gap-1.5"><Cog size={13} /> Provider</span>
+        <div className="panel-head" data-hue="blue" data-hue-bar="">
+          <span className="flex items-center gap-1.5 text-[12.5px] font-semibold tracking-[-0.005em]"><Cog size={13} /> Provider</span>
           <div className="flex items-center gap-1.5">
             <button
               type="button"
               onClick={() => setMode(mode === "auto" ? "manual" : "auto")}
-              className="btn-ghost !h-7 text-[11px]"
+              className="btn-ghost focusable !h-7 !px-2.5 !text-[12px]"
               aria-pressed={mode === "manual"}
             >
               {mode === "auto" ? <><Pencil size={12} /> Configure manually</> : <><Search size={12} /> Back to discovery</>}
@@ -576,24 +577,24 @@ export function AiConfigAdmin() {
           )}
 
           {!azure && draft.provider !== "auto" && (
-            <p className="border border-hair bg-sunk p-3 text-[12px] leading-relaxed text-text2">
+            <p className="rounded-md border border-line bg-canvas p-3 text-[12.5px] leading-[1.55] text-dim">
               Nothing else to configure here for this provider: its credential and host come from this deployment&apos;s
               environment, which is the only place this product reads a secret from.
             </p>
           )}
 
-          <div className="flex flex-wrap items-center gap-2 border-t border-hair pt-4">
-            <button type="button" onClick={save} disabled={saving || !dirty || incomplete} className="btn-primary">
+          <div className="flex flex-wrap items-center gap-2 border-t border-line pt-4">
+            <Button variant="solid" tone="ink" onClick={save} disabled={saving || !dirty || incomplete}>
               {saving ? <Spinner label="Saving…" /> : <><Save size={13} /> Save configuration</>}
-            </button>
+            </Button>
             {dirty && !incomplete && !saving && (
-              <span className="text-[11.5px] text-text3">Unsaved changes.</span>
+              <span className="text-[11.5px] text-faint">Unsaved changes.</span>
             )}
             {!dirty && !saving && (
-              <span className="text-[11.5px] text-text3">This form matches the stored configuration.</span>
+              <span className="text-[11.5px] text-faint">This form matches the stored configuration.</span>
             )}
             {incomplete && (
-              <span className="text-[11.5px] text-sev-high">
+              <span className="text-[11.5px] text-warn">
                 Provider &ldquo;Azure AI Foundry&rdquo; needs both an endpoint and a deployment. A half-configured
                 Azure provider routes every model call at nothing and degrades to the deterministic fallback, which
                 reads to a user as a weak model rather than as an unfinished form.
@@ -665,9 +666,9 @@ function ActivePanel({ stored, active, onRetry }: {
 
   return (
     <div className="panel">
-      <div className="panel-head">
-        <span className="label flex items-center gap-1.5"><ShieldCheck size={13} /> Currently active</span>
-        <button type="button" onClick={onRetry} className="btn-ghost !h-7 text-[11px]"><RotateCw size={12} /> Re-read</button>
+      <div className="panel-head" data-hue="teal" data-hue-bar="">
+        <span className="flex items-center gap-1.5 text-[12.5px] font-semibold tracking-[-0.005em]"><ShieldCheck size={13} /> Currently active</span>
+        <button type="button" onClick={onRetry} className="btn-ghost focusable !h-7 !px-2.5 !text-[12px]"><RotateCw size={12} /> Re-read</button>
       </div>
       <div className="space-y-3 p-4">
         {active ? (
@@ -686,7 +687,8 @@ function ActivePanel({ stored, active, onRetry }: {
             </dl>
 
             {active.azure_endpoint_error && (
-              <p role="alert" className="border border-sev-critical-line bg-sev-critical-bg p-2.5 text-[12px] leading-relaxed text-sev-critical">
+              <p role="alert" className="relative overflow-hidden rounded-md border border-line bg-canvas p-3 pl-4 text-[12.5px] leading-[1.55] text-dim">
+                <span aria-hidden className="absolute inset-y-0 left-0 w-[3px] bg-err" />
                 The configured endpoint is not usable as one, so the Azure provider is unavailable and model-backed
                 capabilities are falling back to their deterministic output: {active.azure_endpoint_error}
               </p>
@@ -697,14 +699,15 @@ function ActivePanel({ stored, active, onRetry }: {
                 <Chip variant={active.ready ? "ok" : "warn"} dot>
                   {active.ready ? "Can make a call" : "Cannot make a call"}
                 </Chip>
-                {!active.ready && active.reason && <span className="text-text2">{active.reason}</span>}
+                {!active.ready && active.reason && <span className="text-dim">{active.reason}</span>}
               </div>
             )}
           </>
         ) : (
           // The API answered without the resolution block. Saying so beats
           // showing the stored row under a heading that claims it is live.
-          <p role="status" className="border border-sev-medium-line bg-sev-medium-bg p-2.5 text-[12px] leading-relaxed text-text2">
+          <p role="status" className="relative overflow-hidden rounded-md border border-line bg-canvas p-3 pl-4 text-[12.5px] leading-[1.55] text-dim">
+            <span aria-hidden className="absolute inset-y-0 left-0 w-[3px] bg-run" />
             This API build did not report which configuration it is actually routing on, only what is stored. What is
             saved below may or may not be what this deployment is using — the two differ whenever the store is
             unreadable or the AI_CONFIG_IGNORE_DB break-glass is set, and neither can be ruled out from here.
@@ -712,11 +715,12 @@ function ActivePanel({ stored, active, onRetry }: {
         )}
 
         <p className={cn(
-          "border p-2.5 text-[12px] leading-relaxed",
-          note.tone === "ok" ? "border-ok-line bg-ok-bg text-text2"
-            : note.tone === "warn" ? "border-sev-medium-line bg-sev-medium-bg text-text2"
-            : "border-hair bg-sunk text-text2",
+          "relative overflow-hidden rounded-md border border-line bg-canvas p-3 text-[12.5px] leading-[1.55] text-dim",
+          note.tone !== "neutral" && "pl-4",
         )}>
+          {note.tone !== "neutral" && (
+            <span aria-hidden className={cn("absolute inset-y-0 left-0 w-[3px]", note.tone === "ok" ? "bg-ok" : "bg-run")} />
+          )}
           {note.text}
         </p>
 
