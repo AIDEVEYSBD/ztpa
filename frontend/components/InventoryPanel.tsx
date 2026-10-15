@@ -404,18 +404,18 @@ export function InventoryPanel({ snapshot }: { snapshot?: string }) {
                 {/* Deliberately the PAGE's arithmetic, not the estate's — the
                     estate figure is on the filter bar above, and repeating it
                     here beside a local control is how the two get confused. */}
-                <span className="text-[11.5px] text-text3">
-                  <span className="mono tabular-nums">{items.length.toLocaleString()}</span>{" "}
+                <span className="text-[11.5px] text-faint">
+                  <span className="tnum font-mono">{items.length.toLocaleString("en-GB")}</span>{" "}
                   {items.length === 1 ? "row" : "rows"} loaded
                   {view ? (
                     <>
-                      {" "}&middot; <span className="mono tabular-nums">{viewedItems.length.toLocaleString()}</span> shown
+                      {" "}&middot; <span className="tnum font-mono">{viewedItems.length.toLocaleString("en-GB")}</span> shown
                       by the page view
                     </>
                   ) : null}
                   {selected.size ? (
                     <>
-                      {" "}&middot; <span className="mono tabular-nums text-accent-fg">{selected.size.toLocaleString()}</span>{" "}
+                      {" "}&middot; <span className="tnum font-mono text-fg">{selected.size.toLocaleString("en-GB")}</span>{" "}
                       selected
                     </>
                   ) : null}

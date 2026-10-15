@@ -129,7 +129,7 @@ export function InventoryTable({
           onToggleRow={onToggleRow}
         />
       ) : (
-        <div className="min-w-0 border border-border bg-surface">
+        <div className="min-w-0 overflow-hidden rounded-lg border border-line bg-surface elev-1">
           <div className="zt-scroll relative max-h-[min(70vh,760px)] min-w-0 overflow-auto">
             <table className={cn("w-full border-collapse text-left", pad.text)} style={{ minWidth }}>
               <thead>
@@ -137,7 +137,7 @@ export function InventoryTable({
                   <th
                     scope="col"
                     className={cn(
-                      "sticky left-0 top-0 z-30 border-b border-r border-border bg-surface2 text-left align-bottom",
+                      "sticky top-0 left-0 z-30 border-r border-b border-line bg-surface text-left align-bottom",
                       pad.head,
                     )}
                     style={{ minWidth: columns[0]?.minWidth ?? 240 }}
@@ -158,7 +158,7 @@ export function InventoryTable({
                       key={c.id}
                       scope="col"
                       className={cn(
-                        "sticky top-0 z-20 border-b border-border bg-surface2 align-bottom",
+                        "sticky top-0 z-20 border-b border-line bg-surface align-bottom",
                         c.align === "right" && "text-right",
                         pad.head,
                       )}
@@ -193,7 +193,7 @@ export function InventoryTable({
       )}
 
       {rows.length > 0 && hasMore ? (
-        <p className="mt-1 text-[11px] text-text3">
+        <p className="mt-1.5 text-[10.5px] text-ghost">
           Sorting orders the {rows.length} {rows.length === 1 ? "row" : "rows"} on this page. The filter and the paging
           are the server&apos;s &mdash; there are more matches than these.
         </p>
@@ -226,16 +226,16 @@ function Row({
       onClick={() => ctx.onOpen(item, "top")}
       title="Open the full record — every field, every source, every conflict, and the policy touching its address"
       className={cn(
-        "group cursor-pointer border-b border-hair align-top transition-colors last:border-0",
-        selected ? "bg-accent-soft" : "hover:bg-surfaceHover",
+        "group cursor-pointer border-b border-line align-top transition-colors duration-100 last:border-0",
+        selected ? "bg-raise/80" : "hover:bg-raise/40",
       )}
     >
       {/* The sticky cell paints its own background, so it has to repeat the
           row's hover and selected states or it would slide under them. */}
       <td
         className={cn(
-          "sticky left-0 z-10 border-r border-border align-top",
-          selected ? "bg-accent-soft" : "bg-surface group-hover:bg-surfaceHover",
+          "sticky left-0 z-10 border-r border-line align-top",
+          selected ? "bg-raise" : "bg-surface group-hover:bg-raise/40",
           pad.cell,
         )}
       >
@@ -247,7 +247,7 @@ function Row({
             label={`${selected ? "Deselect" : "Select"} ${item.name}`}
             className="mt-[3px]"
           />
-          <span className="mt-[1px] shrink-0 text-text2">
+          <span className="mt-[1px] shrink-0 text-dim">
             <NetIcon kind={item.kind} size={16} />
           </span>
           <span className="min-w-0 flex-1">{first ? first.cell(item, ctx) : item.name}</span>
@@ -265,11 +265,11 @@ function Row({
 function SkeletonRow({ columns, density }: { columns: InvColumn[]; density: Density }) {
   const pad = PAD[density];
   return (
-    <tr className="border-b border-hair last:border-0">
+    <tr className="border-b border-line last:border-0">
       {columns.map((c, i) => (
         <td
           key={c.id}
-          className={cn(pad.cell, i === 0 && "sticky left-0 z-10 border-r border-border bg-surface")}
+          className={cn(pad.cell, i === 0 && "sticky left-0 z-10 border-r border-line bg-surface")}
         >
           <Skeleton className={cn("h-3.5", i === 0 ? "w-44" : c.minWidth > 160 ? "w-28" : "w-16")} />
         </td>
@@ -306,7 +306,7 @@ function CardList({
     return (
       <div className="space-y-2">
         {Array.from({ length: 5 }).map((_, i) => (
-          <div key={i} className="space-y-2 border border-border bg-surface p-3">
+          <div key={i} className="space-y-2 rounded-lg border border-line bg-surface p-4 elev-1">
             <Skeleton className="h-4 w-2/3" />
             <Skeleton className="h-3 w-1/3" />
             <Skeleton className="h-3 w-1/2" />
@@ -324,9 +324,9 @@ function CardList({
         return (
           <li
             key={item.key}
-            className={cn("border bg-surface transition-colors", on ? "border-accent bg-accent-soft" : "border-border")}
+            className={cn("overflow-hidden rounded-lg border bg-surface transition-colors duration-100 elev-1", on ? "border-fg" : "border-line")}
           >
-            <div className="flex items-start gap-2 border-b border-hair p-3">
+            <div className="flex items-start gap-2 border-b border-line p-3">
               <SelectBox
                 checked={on}
                 onChange={() => onToggleRow(item.key)}
@@ -334,10 +334,10 @@ function CardList({
                 label={`${on ? "Deselect" : "Select"} ${item.name}`}
                 className="mt-[3px]"
               />
-              <span className="mt-[1px] shrink-0 text-text2">
+              <span className="mt-[1px] shrink-0 text-dim">
                 <NetIcon kind={item.kind} size={18} />
               </span>
-              <span className="min-w-0 flex-1 text-[13px]">{first ? first.cell(item, ctx) : item.name}</span>
+              <span className="min-w-0 flex-1 text-[12.5px]">{first ? first.cell(item, ctx) : item.name}</span>
               <button
                 type="button"
                 onClick={() => ctx.onOpen(item, "top")}
@@ -349,7 +349,7 @@ function CardList({
             <dl className="grid grid-cols-[minmax(74px,auto)_1fr] gap-x-3 gap-y-1 p-3 text-[12px]">
               {rest.map((c) => (
                 <div key={c.id} className="contents">
-                  <dt className="text-[10px] font-bold uppercase tracking-[0.1em] text-text3">{c.label}</dt>
+                  <dt className="text-[10.5px] text-faint">{c.label}</dt>
                   <dd className="min-w-0 break-words">{c.cell(item, ctx)}</dd>
                 </div>
               ))}
@@ -396,7 +396,7 @@ function SelectBox({
       onClick={stop ? (e) => e.stopPropagation() : undefined}
       onChange={onChange}
       className={cn(
-        "h-[13px] w-[13px] shrink-0 cursor-pointer accent-[var(--accent)] disabled:cursor-default disabled:opacity-40",
+        "focusable size-3.5 shrink-0 cursor-pointer rounded-xs accent-[var(--t-ink)] disabled:cursor-default disabled:opacity-40",
         className,
       )}
     />
@@ -416,7 +416,7 @@ function SortLabel({
 }) {
   if (!sortKey) {
     return (
-      <span className="text-[10.5px] font-bold uppercase tracking-[0.08em] text-text3">{label}</span>
+      <span className="text-[10.5px] font-medium text-faint">{label}</span>
     );
   }
   const active = state.sortKey === sortKey;
@@ -426,14 +426,14 @@ function SortLabel({
       type="button"
       onClick={() => state.toggle(sortKey)}
       className={cn(
-        "inline-flex items-center gap-1 text-[10.5px] font-bold uppercase tracking-[0.08em] transition-colors hover:text-text2",
+        "focusable inline-flex cursor-pointer items-center gap-1 text-[10.5px] font-medium transition-colors duration-100 hover:text-dim",
         align === "right" && "justify-end",
-        active ? "text-text" : "text-text3",
+        active ? "text-fg" : "text-faint",
       )}
       title={`Sort the loaded page by ${label.toLowerCase()}`}
     >
       {label}
-      <Icon size={10} className={active ? "text-accent-fg" : "text-text3"} />
+      <Icon size={10} className={active ? "text-fg" : "text-faint"} />
     </button>
   );
 }

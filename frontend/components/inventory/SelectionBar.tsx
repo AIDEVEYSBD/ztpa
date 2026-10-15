@@ -23,7 +23,7 @@
 import { useState } from "react";
 import { Check, Download, GitMerge, X } from "lucide-react";
 import { asApiError, type ApiError } from "@/lib/api";
-import { Spinner } from "@/components/ui";
+import { Spinner, Button } from "@/components/ui";
 import { InlineError } from "@/components/ui/Feedback";
 import type { MergeSuggestionDetail } from "./identity";
 
@@ -76,22 +76,23 @@ export function SelectionBar({
   };
 
   return (
-    <div className="border border-accent bg-accent-soft">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 py-2">
-        <span className="text-[12px] font-bold text-accent-fg">
-          <span className="mono tabular-nums">{count.toLocaleString()}</span> {count === 1 ? "row" : "rows"} selected
+    <div className="overflow-hidden rounded-lg border border-line bg-surface elev-1">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 bg-raise/55 px-3 py-2">
+        <span className="text-[12px] font-medium text-fg">
+          <span className="tnum font-mono">{count.toLocaleString("en-GB")}</span> {count === 1 ? "row" : "rows"} selected
         </span>
 
-        <button type="button" onClick={onExport} className="btn-ghost !h-7 !px-2 text-[11.5px]" disabled={busy}>
+        <Button size="sm" variant="quiet" tone="neutral" onClick={onExport} disabled={busy}>
           <Download size={12} /> Export selected
-        </button>
+        </Button>
 
         {pendingMerges.length > 0 ? (
-          <button
-            type="button"
+          <Button
+            size="sm"
+            variant="solid"
+            tone="ink"
             onClick={runMerges}
             disabled={busy || !isLive}
-            className="btn-primary !h-7 !px-2 text-[11.5px]"
             title={
               isLive
                 ? `Confirm ${pendingMerges.length} duplicate ${pendingMerges.length === 1 ? "proposal" : "proposals"} the selected rows are named in: ${pendingMerges
@@ -108,34 +109,29 @@ export function SelectionBar({
                 {pendingMerges.length === 1 ? "merge" : "merges"}
               </>
             )}
-          </button>
+          </Button>
         ) : null}
 
-        <span className="text-[10.5px] text-text2">
+        <span className="text-[11px] text-faint">
           {pendingMerges.length === 0
             ? "No unconfirmed duplicate proposal names any selected row, so there is nothing to merge."
             : "The engine never merges on its own — this confirms proposals a human has read."}
         </span>
 
-        <button
-          type="button"
-          onClick={onClear}
-          disabled={busy}
-          className="ml-auto inline-flex items-center gap-1 text-[11.5px] font-bold text-text2 underline underline-offset-2 transition-colors hover:text-accent-fg"
-        >
+        <Button size="sm" variant="solid" tone="err" className="ml-auto" onClick={onClear} disabled={busy}>
           <X size={11} /> Clear
-        </button>
+        </Button>
       </div>
 
       {done > 0 && !busy && !error ? (
-        <p className="flex items-center gap-1.5 border-t border-accent px-3 py-1.5 text-[11.5px] font-bold text-ok">
+        <p className="flex items-center gap-1.5 border-t border-line px-3 py-1.5 text-[11.5px] font-medium text-ok">
           <Check size={12} /> {done} {done === 1 ? "merge" : "merges"} confirmed. Identities were re-resolved and the
           estate recomputed.
         </p>
       ) : null}
 
       {error ? (
-        <div className="border-t border-accent px-3 py-1.5">
+        <div className="border-t border-line px-3 py-1.5">
           <InlineError resource={`the merge after ${done} of ${pendingMerges.length} had been applied`} error={error} />
         </div>
       ) : null}

@@ -107,11 +107,11 @@ function IdentityCell({ item, ctx }: { item: InventoryItem; ctx: CellCtx }) {
   if (!correlated && !suggested) {
     return (
       <span
-        className="cursor-help text-text3 underline decoration-dotted decoration-from-font underline-offset-2"
+        className="cursor-help text-ghost underline decoration-dotted decoration-from-font underline-offset-2"
         title={`This row is in the asset layer under "${id.asset?.asset_key ?? item.key}" and carries no cross-tool correlation: no other console's record was proven to be the same thing.`}
         aria-label="no cross-tool correlation"
       >
-        &mdash;
+        unknown
       </span>
     );
   }
@@ -133,11 +133,11 @@ function IdentityCell({ item, ctx }: { item: InventoryItem; ctx: CellCtx }) {
           ]
             .filter(Boolean)
             .join("\n")}
-          className="inline-flex h-[20px] items-center gap-1 border border-accent bg-accent-soft px-1.5 text-[10px] font-bold uppercase tracking-[0.06em] text-accent-fg transition-colors hover:border-accent-fg"
+          className="focusable inline-flex cursor-pointer items-center gap-1 rounded-sm border border-line-strong bg-raise px-1.5 py-0.5 text-[10.5px] font-medium text-dim transition-colors duration-100 hover:text-fg"
         >
           <Link2 size={10} />
           merged
-          <span className="mono tabular-nums opacity-70">{id.tools.length}</span>
+          <span className="tnum font-mono opacity-70">{id.tools.length}</span>
         </button>
       ) : null}
       {suggested ? (

@@ -16,7 +16,7 @@ import { GitMerge, Link2, TriangleAlert, X } from "lucide-react";
 import type { InventoryItem, SourceCard } from "@/lib/types";
 import { toolColour } from "@/lib/toolColour";
 import { NetIcon } from "@/components/net/icons";
-import { Overlay } from "@/components/ui";
+import { Overlay, Button } from "@/components/ui";
 import { claimValue, DrawerSection, Field, tierMeaning, tierShort, Unreported, Value } from "./bits";
 import type { DrawerFocus } from "./columns";
 import { matchKeyMeaning, type RowIdentity } from "./identity";
@@ -52,22 +52,22 @@ export function InventoryDrawer({ item, focus, cards, cardsUnknown, identity, id
     <Overlay open={!!item} onClose={onClose} placement="right" widthClass="max-w-[min(96vw,680px)]" label="Entity detail">
       {item ? (
         <>
-          <header className="shrink-0 border-b border-border px-4 py-3">
+          <header className="shrink-0 border-b border-line px-4 py-3">
             <div className="flex items-start gap-3">
-              <span className="mt-0.5 shrink-0 text-accent-fg">
+              <span className="mt-0.5 shrink-0 text-dim">
                 <NetIcon kind={item.kind} size={20} />
               </span>
               <div className="min-w-0 flex-1">
-                <h2 className="break-all text-[15px] font-bold leading-tight">{item.name}</h2>
-                <div className="mono mt-0.5 break-all text-[11px] text-text3">{item.key}</div>
+                <h2 className="text-[14px] leading-tight font-semibold tracking-[-0.005em] break-all">{item.name}</h2>
+                <div className="mt-0.5 font-mono text-[10.5px] break-all text-faint">{item.key}</div>
               </div>
-              <button type="button" onClick={onClose} className="btn-ghost !h-7 !px-2 shrink-0" aria-label="Close">
-                <X size={13} />
-              </button>
+              <Button size="sm" variant="solid" tone="err" className="shrink-0" onClick={onClose} aria-label="Close">
+                <X size={13} /> Close
+              </Button>
             </div>
           </header>
 
-          <div ref={bodyRef} className="zt-scroll min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
+          <div ref={bodyRef} className="zt-scroll min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
             <DrawerSection title="Classification">
               <Field label="Kind"><span className="mono text-[12px]">{item.kind}</span></Field>
               <Field label="Role"><Value value={item.role} what="a role" mono /></Field>
@@ -250,15 +250,15 @@ function RoleSource({ source, reason, noun = "role" }: { source?: "declared" | "
   }
   if (source === "unknown") {
     return (
-      <span className="text-text2">
+      <span className="text-dim">
         unknown — no source declared the {noun} and the engine could not derive one
       </span>
     );
   }
   return (
     <span className="block">
-      <span className="text-sev-medium">derived by the engine — no source declared it</span>
-      <span className="mt-1 block border-l-2 border-accent pl-2 text-[12px] leading-relaxed text-text2">
+      <span className="text-run">derived by the engine — no source declared it</span>
+      <span className="mt-1 block border-l-2 border-line-strong pl-3 text-[12.5px] leading-[1.55] text-dim">
         {reason?.trim() || "No reason was supplied with this derivation."}
       </span>
     </span>
@@ -337,23 +337,23 @@ function IdentitySection({ item, identity, unknown }: {
       </Field>
 
       <div className="mt-2">
-        <div className="mb-1 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.1em] text-text3">
+        <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium tracking-[0.06em] text-faint uppercase">
           <Link2 size={11} /> Settled correlations ({correlations.length})
         </div>
         {correlations.length ? (
           <ul className="space-y-1.5">
             {correlations.map((c, i) => (
-              <li key={`${c.match_key}-${i}`} className="border border-accent bg-accent-soft px-2.5 py-1.5">
+              <li key={`${c.match_key}-${i}`} className="rounded-md border border-line bg-canvas px-3 py-2">
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="mono text-[11.5px] font-bold text-accent-fg" title={matchKeyMeaning(c.match_key)}>
+                  <span className="font-mono text-[11.5px] font-medium text-fg" title={matchKeyMeaning(c.match_key)}>
                     {c.match_key}
                   </span>
-                  <span className="mono text-[10.5px] tabular-nums text-text2">
+                  <span className="tnum font-mono text-[10.5px] text-dim">
                     {Math.round(c.confidence * 100)}% confidence
                   </span>
                 </div>
-                <p className="mt-0.5 text-[10.5px] leading-relaxed text-text2">{matchKeyMeaning(c.match_key)}</p>
-                <div className="mono mt-1 break-all text-[10.5px] text-text3">
+                <p className="mt-0.5 text-[11.5px] leading-[1.55] text-dim">{matchKeyMeaning(c.match_key)}</p>
+                <div className="mt-1 font-mono text-[10.5px] break-all text-faint">
                   evidence: {claimValue(c.evidence)}
                 </div>
               </li>

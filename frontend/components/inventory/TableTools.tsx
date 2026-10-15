@@ -76,25 +76,25 @@ export function ColumnMenu({
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
-        className={cn("btn-ghost !h-7 !px-2 text-[11.5px]", open && "!border-accent !text-accent-fg")}
+        className={cn("btn-ghost focusable !h-7 !px-2.5 !text-[12px]", open && "!bg-ink !text-on-ink")}
         title="Choose which columns this table shows. Your choice is remembered on this browser."
       >
         <Columns3 size={12} />
         Columns
-        <span className="mono tabular-nums text-text3">
+        <span className={cn("tnum font-mono text-[10.5px]", open ? "opacity-70" : "text-faint")}>
           {shown}/{INVENTORY_COLUMNS.length}
         </span>
       </button>
 
       {open ? (
-        <div className="popover absolute right-0 top-[calc(100%+4px)] z-40 w-[290px] max-w-[calc(100vw-2rem)]">
-          <div className="flex items-center justify-between gap-2 border-b border-hair px-3 py-2">
-            <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-text3">Columns</span>
+        <div className="popover af-pop absolute right-0 top-[calc(100%+4px)] z-40 w-[290px] max-w-[calc(100vw-2rem)]">
+          <div className="flex items-center justify-between gap-2 border-b border-line px-3 py-2">
+            <span className="text-[11px] font-medium tracking-[0.06em] text-faint uppercase">Columns</span>
             <button
               type="button"
               onClick={onReset}
               disabled={isDefault}
-              className="text-[11px] font-bold text-text3 underline underline-offset-2 transition-colors hover:text-accent-fg disabled:no-underline disabled:opacity-40"
+              className="focusable cursor-pointer text-[11.5px] font-medium text-faint underline underline-offset-2 transition-colors duration-100 hover:text-fg disabled:no-underline disabled:opacity-40"
             >
               reset
             </button>
@@ -110,25 +110,25 @@ export function ColumnMenu({
                     disabled={c.locked}
                     title={c.locked ? `${c.hint}\n\nAlways shown.` : c.hint}
                     className={cn(
-                      "flex w-full items-start gap-2 px-3 py-1.5 text-left transition-colors",
-                      c.locked ? "cursor-default opacity-70" : "hover:bg-surfaceHover",
+                      "focusable flex w-full items-start gap-2 rounded-sm px-3 py-1.5 text-left transition-colors duration-100",
+                      c.locked ? "cursor-default opacity-70" : "cursor-pointer hover:bg-raise/50",
                     )}
                   >
                     <span
                       aria-hidden
                       className={cn(
-                        "mt-[2px] grid h-[13px] w-[13px] shrink-0 place-items-center border",
-                        checked ? "border-accent bg-accent text-accent-ink" : "border-border bg-sunk",
+                        "mt-[2px] grid size-4 shrink-0 place-items-center rounded-xs border",
+                        checked ? "border-ink bg-ink text-on-ink" : "border-line-strong bg-field",
                       )}
                     >
-                      {checked ? <Check size={10} strokeWidth={3} /> : null}
+                      {checked ? <Check size={10} strokeWidth={3.5} /> : null}
                     </span>
                     <span className="min-w-0 flex-1">
-                      <span className="block text-[12px] font-bold">{c.label}</span>
-                      <span className="block text-[10.5px] leading-snug text-text3">{c.hint}</span>
+                      <span className="block text-[12px] font-medium text-fg">{c.label}</span>
+                      <span className="block text-[10.5px] leading-[1.5] text-faint">{c.hint}</span>
                     </span>
                     {c.locked ? (
-                      <span className="mt-[2px] shrink-0 text-[9px] font-bold uppercase tracking-[0.1em] text-text3">
+                      <span className="mt-[2px] shrink-0 rounded-[3px] border border-line-strong px-1 py-px font-mono text-[9px] font-semibold text-dim">
                         pinned
                       </span>
                     ) : null}

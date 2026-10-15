@@ -77,12 +77,12 @@ export function TierChip({ tier }: { tier: string }) {
   const meta = tierMeta(tier);
   return (
     <span
-      className="inline-flex items-center gap-1.5 whitespace-nowrap border border-border bg-sunk px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-[0.08em] text-text2"
+      className="inline-flex items-center gap-1.5 rounded-sm border border-line bg-raise px-1.5 py-0.5 text-[10.5px] font-medium whitespace-nowrap text-dim"
       title={`${meta.label} — rung ${meta.rung || "?"} of ${3}. ${meta.blurb}`}
     >
       <span aria-hidden className="flex items-center gap-[2px]">
         {[1, 2, 3].map((n) => (
-          <span key={n} className={cn("h-[7px] w-[3px]", n === meta.rung ? "bg-accent" : "bg-borderStrong opacity-50")} />
+          <span key={n} className={cn("h-[7px] w-[3px] rounded-[1px]", n === meta.rung ? "bg-fg" : "bg-line-strong opacity-50")} />
         ))}
       </span>
       {meta.label}
@@ -106,18 +106,17 @@ function CapabilityList({
   const shown = expanded ? items : items.slice(0, 4);
   const hidden = items.length - shown.length;
   return (
-    <div className="min-w-0 border border-border bg-sunk p-2.5">
+    <div className="min-w-0 rounded-md border border-line bg-canvas p-3">
       <div className="flex items-center gap-1.5">
-        {blind ? <EyeOff size={11} className="text-sev-medium" />
-          : unread ? <CircleSlash size={11} className="text-text3" />
-          : <ScanSearch size={11} className="text-text3" />}
-        <span className={cn("text-[11px] font-bold uppercase tracking-[0.06em]",
-          blind ? "text-sev-medium" : "text-text2")}>
+        {blind ? <EyeOff size={11} className="text-run" />
+          : unread ? <CircleSlash size={11} className="text-faint" />
+          : <ScanSearch size={11} className="text-faint" />}
+        <span className={cn("text-[11px] font-medium", blind ? "text-run" : "text-faint")}>
           {blind ? "Blind to" : unread ? "Has it, we don't read it" : "Yields"}
         </span>
       </div>
       {items.length === 0 ? (
-        <p className="mt-1.5 text-[11px] leading-snug text-text3">
+        <p className="mt-1.5 text-[11.5px] leading-[1.5] text-faint">
           {blind
             ? "Not stated. An empty list here is a gap in the registry — it is not a source that sees everything."
             : unread
@@ -127,16 +126,16 @@ function CapabilityList({
       ) : (
         <ul className="mt-1.5 space-y-1">
           {shown.map((y) => (
-            <li key={y} className="flex items-start gap-1.5 text-[12px] leading-snug text-text2">
+            <li key={y} className="flex items-start gap-1.5 text-[12px] leading-[1.5] text-dim">
               <span
                 aria-hidden
-                className={cn("mt-[5px] h-[5px] w-[5px] shrink-0", blind ? "border border-sev-medium" : "bg-text3")}
+                className={cn("mt-[5px] size-[5px] shrink-0 rounded-[1px]", blind ? "border border-run" : "bg-faint")}
               />
               <span className="min-w-0 break-words">{y}</span>
             </li>
           ))}
           {hidden > 0 && (
-            <li className="text-[11px] text-text3">{countHidden ? `+${hidden} more` : "… more"}</li>
+            <li className="text-[11px] text-ghost">{countHidden ? `+${hidden} more` : "… more"}</li>
           )}
         </ul>
       )}
@@ -168,22 +167,22 @@ export function SourceCardView({ card, expanded, onToggle }: SourceCardViewProps
   return (
     <div
       className={cn(
-        "card relative flex min-w-0 flex-col",
-        connected ? "p-3.5" : "p-3",
-        expanded && "border-accent",
+        "card relative flex min-w-0 cursor-pointer flex-col",
+        connected ? "p-4" : "p-3",
+        expanded && "border-line-strong",
       )}
       style={{ borderLeftWidth: connected ? 3 : 2, borderLeftColor: colour, borderLeftStyle: "solid" }}
       onClick={onToggle}
     >
       {/* ── identity ─────────────────────────────────────────────────────── */}
       <div className="flex min-w-0 items-start gap-2">
-        <span aria-hidden className="mt-[3px] h-2.5 w-2.5 shrink-0" style={{ background: colour }} />
+        <span aria-hidden className="mt-[3px] size-2.5 shrink-0 rounded-[2px]" style={{ background: colour }} />
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <span className={cn("min-w-0 break-words font-bold", connected ? "text-[15px]" : "text-[14px]")}>{card.label}</span>
-            <span className="text-[12.5px] text-text2">{card.vendor}</span>
+            <span className={cn("min-w-0 font-semibold tracking-[-0.01em] break-words", connected ? "text-[14px]" : "text-[13px]")}>{card.label}</span>
+            <span className="text-[12px] text-dim">{card.vendor}</span>
           </div>
-          <div className="mono mt-0.5 text-[11px] text-text3">{card.tool}</div>
+          <div className="mt-0.5 font-mono text-[10.5px] text-faint">{card.tool}</div>
         </div>
         <div className="flex shrink-0 flex-col items-end gap-1">
           <TierChip tier={card.tier} />
@@ -191,10 +190,10 @@ export function SourceCardView({ card, expanded, onToggle }: SourceCardViewProps
             type="button"
             onClick={(e) => { e.stopPropagation(); onToggle(); }}
             aria-expanded={expanded}
-            className="inline-flex items-center gap-1 text-[10.5px] font-bold uppercase tracking-[0.08em] text-text3 hover:text-accent-fg"
+            className="focusable inline-flex cursor-pointer items-center gap-1 text-[10.5px] text-ghost hover:text-fg"
           >
             {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-            {expanded ? "less" : "detail"}
+            {expanded ? "hide" : "show"}
           </button>
         </div>
       </div>

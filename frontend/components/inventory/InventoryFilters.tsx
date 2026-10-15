@@ -101,10 +101,10 @@ export function InventoryFilters(p: InventoryFiltersProps) {
   const active = activeChips(p);
 
   return (
-    <div className="border border-border bg-surface2">
-      <div className="flex flex-wrap items-center gap-2 border-b border-hair px-3 py-2">
-        <span className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.12em] text-text3">
-          <Filter size={11} /> Filters
+    <div className="overflow-hidden rounded-lg border border-line bg-surface elev-1">
+      <div data-hue="blue" data-hue-bar="" className="flex flex-wrap items-center gap-2 border-b border-line bg-raise/55 px-4 py-2.5">
+        <span className="flex items-center gap-1.5 text-[12.5px] font-semibold tracking-[-0.005em]">
+          <Filter size={12} /> Filters
         </span>
         <SearchBox value={p.q} onChange={p.onQ} placeholder="name, address or tag…" className="min-w-0 sm:ml-auto sm:w-56" />
         <SourceSelect value={p.source} onChange={p.onSource} facets={p.facets} cards={p.cards} disabled={p.disabled} />
@@ -112,36 +112,36 @@ export function InventoryFilters(p: InventoryFiltersProps) {
 
       <IpFilter ip={p.ip} mode={p.ipMode} onApply={p.onIp} disabled={p.disabled} />
 
-      <div className="space-y-2 border-b border-hair px-3 py-2.5">
+      <div className="flex flex-col gap-2 border-b border-line px-4 py-3">
         <FacetRow group="kind" label="Kind" counts={p.facets?.kinds} selected={p.selected.kind} onToggle={p.onToggleFacet} withIcon />
         <FacetRow group="vlan" label="VLAN" counts={p.facets?.vlans} selected={p.selected.vlan} onToggle={p.onToggleFacet} />
         <FacetRow group="zone" label="Zone" counts={p.facets?.zones} selected={p.selected.zone} onToggle={p.onToggleFacet} />
       </div>
 
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 py-2">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2.5">
         {active.length > 0 ? (
           <>
-            <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-text3">Active</span>
+            <span className="mr-0.5 text-[11px] font-medium text-faint">Active</span>
             {active.map((c) => (
               <button
                 key={c.key}
                 type="button"
                 onClick={c.clear}
                 title={`Remove this filter — ${c.title}`}
-                className="inline-flex h-[22px] items-center gap-1.5 border border-accent bg-accent-soft px-2 text-[11px] font-bold text-accent-fg transition-colors hover:border-sev-critical-line hover:bg-sev-critical-bg hover:text-sev-critical"
+                className="focusable inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-sm border border-line-strong bg-raise px-2 text-[11.5px] font-medium transition-colors duration-100 hover:border-err-line hover:bg-err-bg hover:text-err"
               >
                 {c.label}
                 <X size={11} />
               </button>
             ))}
-            <button type="button" onClick={p.onClearAll} className="text-[11px] font-bold text-text3 underline underline-offset-2 transition-colors hover:text-accent-fg">
-              clear all
+            <button type="button" onClick={p.onClearAll} className="focusable cursor-pointer text-[11.5px] font-medium text-faint underline underline-offset-2 transition-colors duration-100 hover:text-fg">
+              Clear {active.length} {active.length === 1 ? "filter" : "filters"} ×
             </button>
           </>
         ) : (
-          <span className="text-[11px] text-text3">No filter applied — every entity in the snapshot is in scope.</span>
+          <span className="text-[11.5px] text-faint">No filter applied — every entity in the snapshot is in scope.</span>
         )}
-        {p.summary ? <span className="ml-auto text-[11.5px] text-text2">{p.summary}</span> : null}
+        {p.summary ? <span className="ml-auto text-[11.5px] text-dim">{p.summary}</span> : null}
       </div>
     </div>
   );
@@ -287,7 +287,7 @@ function FacetRow({ group, label, counts, selected, onToggle, withIcon }: {
         {!counts ? (
           <span className="text-[11px] text-text3">not loaded</span>
         ) : entries.length === 0 ? (
-          <span className="text-[11px] text-text3">nothing in this snapshot carries a {label.toLowerCase()}</span>
+          <span className="text-[11.5px] text-faint">nothing in this snapshot carries a {label.toLowerCase()}</span>
         ) : (
           <>
             {shown.map(([key, n]) => {
@@ -302,20 +302,20 @@ function FacetRow({ group, label, counts, selected, onToggle, withIcon }: {
                     ? `Selected, but no longer in the live facets for this result set - the other filters have narrowed past it. Click to switch it off.`
                     : `${n} ${n === 1 ? "entity" : "entities"} match ${label.toLowerCase()} "${key}"`}
                   className={cn(
-                    "inline-flex h-[22px] max-w-full items-center gap-1.5 border px-2 text-[11px] font-bold leading-none transition-colors sm:max-w-[190px]",
+                    "focusable inline-flex h-7 max-w-full cursor-pointer items-center gap-1.5 rounded-sm border px-2.5 text-[12px] font-medium whitespace-nowrap transition-colors duration-100 sm:max-w-[190px]",
                     on
-                      ? "border-accent bg-accent-soft text-accent-fg"
-                      : "border-border bg-sunk text-text2 hover:border-accent hover:text-accent-fg",
+                      ? "border-transparent bg-ink text-on-ink"
+                      : "border-line bg-surface text-dim hover:bg-raise hover:text-fg",
                   )}
                 >
                   {withIcon && isKnownNetIconKind(key) ? <NetIcon kind={key} size={11} /> : null}
                   <span className="truncate">{key}</span>
-                  <span className="mono shrink-0 text-[10px] tabular-nums opacity-70">{n === null ? "\u2014" : n}</span>
+                  <span className={cn("tnum shrink-0 font-mono text-[10.5px]", on ? "opacity-70" : "text-faint")}>{n === null ? "\u2014" : n}</span>
                 </button>
               );
             })}
             {hidden > 0 && (
-              <button type="button" onClick={() => setAll(true)} className="text-[11px] font-bold text-text3 underline underline-offset-2 hover:text-accent-fg">
+              <button type="button" onClick={() => setAll(true)} className="focusable cursor-pointer text-[11.5px] font-medium text-faint underline underline-offset-2 hover:text-fg">
                 +{hidden} more
               </button>
             )}

@@ -59,7 +59,7 @@ export function Presets({
           <Bookmark size={11} /> Saved queries
         </span>
         {presets.length === 0 ? (
-          <span className="text-[11px] text-text3">
+          <span className="text-[11.5px] text-faint">
             No saved query can be built from this snapshot&apos;s facets.
           </span>
         ) : (
@@ -73,26 +73,26 @@ export function Presets({
                 onClick={() => onApply(on ? EMPTY_FILTER : p.filter)}
                 title={`${p.asks}${on ? "\n\nApplied. Click to clear every filter." : ""}`}
                 className={cn(
-                  "inline-flex min-h-[22px] items-center gap-1.5 border px-2 py-[3px] text-[11px] font-bold leading-tight transition-colors",
+                  "focusable inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-sm border px-2.5 text-[12px] font-medium whitespace-nowrap transition-colors duration-100",
                   on
-                    ? "border-accent bg-accent-soft text-accent-fg"
-                    : "border-border bg-sunk text-text2 hover:border-accent hover:text-accent-fg",
+                    ? "border-transparent bg-ink text-on-ink"
+                    : "border-line bg-surface text-dim hover:bg-raise hover:text-fg",
                 )}
               >
                 {p.label}
                 {p.count !== undefined ? (
-                  <span className="mono text-[10px] tabular-nums opacity-70">{p.count}</span>
+                  <span className={cn("tnum font-mono text-[10.5px]", on ? "opacity-70" : "text-faint")}>{p.count}</span>
                 ) : null}
               </button>
             );
           })
         )}
-        <span className="ml-auto text-[10.5px] text-text3">server-side &middot; describes the snapshot</span>
+        <span className="ml-auto text-[10.5px] text-ghost">server-side &middot; describes the snapshot</span>
       </div>
 
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 px-3 py-2">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 px-4 py-2.5">
         <span
-          className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.12em] text-text3"
+          className="mr-0.5 flex items-center gap-1.5 text-[11px] font-medium text-faint"
           title="These narrow the rows already loaded. They are not server-side filters."
         >
           <Eye size={11} /> Page views
@@ -112,13 +112,13 @@ export function Presets({
           <button
             type="button"
             onClick={() => onView(undefined)}
-            className="text-[11px] font-bold text-text3 underline underline-offset-2 transition-colors hover:text-accent-fg"
+            className="focusable cursor-pointer text-[11.5px] font-medium text-faint underline underline-offset-2 transition-colors duration-100 hover:text-fg"
           >
             show all rows
           </button>
         ) : null}
-        <span className="ml-auto text-[10.5px] text-text3">
-          {loadedRows.toLocaleString()} {loadedRows === 1 ? "row" : "rows"} loaded
+        <span className="tnum ml-auto text-[10.5px] text-ghost">
+          {loadedRows.toLocaleString("en-GB")} {loadedRows === 1 ? "row" : "rows"} loaded
         </span>
       </div>
 

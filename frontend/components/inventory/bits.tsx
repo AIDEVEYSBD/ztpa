@@ -53,11 +53,11 @@ export function tierMeaning(tier: string): string {
 export function Unreported({ what, className }: { what: string; className?: string }) {
   return (
     <span
-      className={cn("cursor-help text-text3 underline decoration-dotted decoration-from-font underline-offset-2", className)}
+      className={cn("cursor-help text-ghost underline decoration-dotted decoration-from-font underline-offset-2", className)}
       title={`No onboarded source reported ${what} for this entity. Unknown, not absent.`}
       aria-label={`${what}: not reported by any source`}
     >
-      —
+      unknown
     </span>
   );
 }
@@ -66,7 +66,7 @@ export function Unreported({ what, className }: { what: string; className?: stri
 export function Value({ value, what, mono, className }: { value?: string | number | null; what: string; mono?: boolean; className?: string }) {
   const empty = value === null || value === undefined || String(value).trim() === "";
   if (empty) return <Unreported what={what} />;
-  return <span className={cn(mono && "mono text-[11.5px]", className)}>{String(value)}</span>;
+  return <span className={cn(mono && "tnum font-mono text-[11px]", className)}>{String(value)}</span>;
 }
 
 // ── Provenance ─────────────────────────────────────────────────────────────
@@ -91,7 +91,7 @@ export function SourceBadge({ obs, card }: { obs: Observation; card?: SourceCard
     <span className="inline-flex items-center align-middle" title={lines.join("\n")}>
       <ToolBadge tool={obs.tool} detail={tierShort(obs.tier)} />
       {card?.simulated ? (
-        <span className="-ml-px inline-flex h-[22px] items-center border border-sev-medium-line bg-sev-medium-bg px-1 text-[9.5px] font-bold uppercase tracking-[0.06em] text-sev-medium">
+        <span className="-ml-px inline-flex items-center rounded-sm border border-run-line bg-run-bg px-1 py-0.5 font-mono text-[9.5px] font-medium text-run">
           sim
         </span>
       ) : null}
