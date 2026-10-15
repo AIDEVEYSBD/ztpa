@@ -187,21 +187,21 @@ function QueueCard({ item, canApprove, onChanged }: { item: QueueRow; canApprove
   const meta = QUEUE_STATUS[status];
 
   return (
-    <div className="border border-border bg-surface2">
-      <div className="flex flex-wrap items-center gap-2 border-b border-hair px-2.5 py-1.5">
+    <div className="overflow-hidden rounded-lg border border-line bg-surface elev-1">
+      <div className="flex flex-wrap items-center gap-2 border-b border-line bg-raise/40 px-3 py-2">
         <StatusChip status={status} />
         {item.kind === "remediation" && (
-          <span className="inline-flex h-[20px] items-center border border-accent bg-accent-soft px-1.5 text-[9.5px] font-bold uppercase tracking-[0.08em] text-accent-fg">
+          <span className="inline-flex items-center rounded-sm border border-line-strong bg-raise px-1.5 py-0.5 text-[10.5px] font-medium text-dim">
             remediation
           </span>
         )}
         <DecisionOrigin decision={item.decision} />
-        <span className="mono ml-auto text-[10px] text-text3">
-          {item.created_at ? new Date(item.created_at).toLocaleString() : ""}
+        <span className="tnum ml-auto font-mono text-[10px] text-faint">
+          {item.created_at ? new Date(item.created_at).toLocaleString("en-GB") : ""}
         </span>
       </div>
 
-      <div className="space-y-1 px-2.5 py-2">
+      <div className="space-y-1 px-3 py-2">
         <ProposedLine proposed={item.payload} kind={item.kind} />
         <div className="text-[10.5px] text-text3">
           target {tool} · requested by <span className="mono text-text2">{item.requested_by ?? "unknown"}</span>

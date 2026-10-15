@@ -17,18 +17,22 @@ export function MetricsAdmin() {
 
   useEffect(() => { setM(undefined); setErr(false); api.adminMetrics(days).then(setM).catch(() => setErr(true)); }, [days]);
 
-  if (err) return <div className="panel border-sev-critical-line bg-sev-critical-bg p-3 text-[13px] text-sev-critical">Could not load metrics.</div>;
+  if (err) return <div className="relative overflow-hidden rounded-lg border border-line bg-surface p-3.5 pl-4 text-[13px] elev-1"><span aria-hidden className="absolute inset-y-0 left-0 w-[3px] bg-err" />Could not load metrics.</div>;
   if (!m) return <div className="space-y-3"><div className="grid grid-cols-2 gap-3 sm:grid-cols-4">{Array.from({ length: 4 }).map((_, i) => <div key={i} className="panel p-4"><Skeleton className="h-3 w-20" /><Skeleton className="mt-2 h-6 w-24" /></div>)}</div></div>;
 
   const t = m.totals;
   return (
     <div className="space-y-5">
       <div className="flex items-center gap-2">
-        <span className="label">Window</span>
-        {RANGES.map((d) => (
-          <button key={d} onClick={() => setDays(d)} className={cn("border px-2 py-1 text-[11px]", days === d ? "border-accent bg-accent-soft text-text" : "border-border text-text2 hover:bg-surfaceHover")}>{d}d</button>
-        ))}
-        <span className="ml-auto text-[11px] text-text3">active snapshot @{m.active_snapshot.replace(/^snap_/, "").slice(0, 7)}</span>
+        <span className="mr-0.5 text-[11px] font-medium text-faint">Window</span>
+        <div className="inline-flex items-center gap-px rounded-sm border border-line bg-canvas p-px">
+          {RANGES.map((d) => (
+            <button key={d} onClick={() => setDays(d)} aria-pressed={days === d}
+              className={cn("focusable cursor-pointer rounded-[3px] px-1.5 py-0.5 font-mono text-[10px] transition-colors duration-100",
+                days === d ? "bg-ink text-on-ink" : "text-faint hover:text-dim")}>{d}d</button>
+          ))}
+        </div>
+        <span className="ml-auto font-mono text-[10.5px] text-faint">active snapshot @{m.active_snapshot.replace(/^snap_/, "").slice(0, 7)}</span>
       </div>
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -74,29 +78,29 @@ export function MetricsAdmin() {
 
 function Kpi({ icon: Icon, label, value, sub }: { icon: any; label: string; value: string; sub?: string }) {
   return (
-    <div className="panel p-4">
-      <div className="label flex items-center gap-1.5 text-[10px]"><Icon size={13} /> {label}</div>
-      <div className="mt-1 text-[20px] font-bold tabular-nums">{value}</div>
-      {sub && <div className="text-[11px] text-text3">{sub}</div>}
+    <div className="flex flex-col gap-2 rounded-lg border border-line bg-surface p-4 elev-1">
+      <div className="flex items-center gap-1.5 text-[11px] font-medium text-faint"><Icon size={13} /> {label}</div>
+      <div className="tnum text-[28px] leading-none font-semibold tracking-[-0.025em]">{value}</div>
+      {sub && <div className="text-[11.5px] text-faint">{sub}</div>}
     </div>
   );
 }
 
 function Bars({ rows }: { rows: { label: string; value: number; meta?: string }[] }) {
-  if (!rows.length) return <div className="text-[12px] text-text3">No data yet.</div>;
+  if (!rows.length) return <div className="text-[12.5px] text-dim">No data yet.</div>;
   const max = Math.max(...rows.map((r) => r.value), 1);
   return (
     <div className="space-y-1.5">
       {rows.map((r, i) => (
         <div key={i} className="text-[12px]">
           <div className="flex items-baseline justify-between gap-2">
-            <span className="truncate font-mono text-[11px]">{r.label}</span>
-            <span className="shrink-0 tabular-nums font-semibold">{r.value}</span>
+            <span className="truncate font-mono text-[11px] text-mist">{r.label}</span>
+            <span className="tnum shrink-0 font-medium">{r.value}</span>
           </div>
-          <div className="mt-0.5 h-1.5 w-full bg-sunk">
-            <div className="h-full bg-accent" style={{ width: `${(r.value / max) * 100}%` }} />
+          <div className="mt-0.5 h-1.5 w-full overflow-hidden rounded-[2px] bg-sunken">
+            <div className="h-full rounded-[2px]" style={{ width: `${(r.value / max) * 100}%`, background: "var(--t-c2)" }} />
           </div>
-          {r.meta && <div className="mt-0.5 text-[10px] text-text3">{r.meta}</div>}
+          {r.meta && <div className="mt-0.5 text-[10px] text-ghost">{r.meta}</div>}
         </div>
       ))}
     </div>
@@ -104,14 +108,14 @@ function Bars({ rows }: { rows: { label: string; value: number; meta?: string }[
 }
 
 function TimeChart({ data }: { data: { day: string; calls: number; tokens: number; cost: number }[] }) {
-  if (!data.length) return <div className="text-[12px] text-text3">No activity in this window yet.</div>;
+  if (!data.length) return <div className="text-[12.5px] text-dim">No activity in this window yet.</div>;
   const max = Math.max(...data.map((d) => d.calls), 1);
   return (
     <div className="flex items-end gap-1.5 overflow-x-auto pb-1" style={{ minHeight: 120 }}>
       {data.map((d) => (
         <div key={d.day} className="group flex min-w-[14px] flex-1 flex-col items-center justify-end" title={`${d.day}: ${d.calls} calls · ${fmtNum(d.tokens)} tok · ${fmtCost(d.cost)}`}>
-          <div className="w-full bg-accent transition-opacity group-hover:opacity-80" style={{ height: `${Math.max((d.calls / max) * 100, 2)}px` }} />
-          <div className="mt-1 w-full truncate text-center text-[9px] text-text3">{d.day.slice(5)}</div>
+          <div className="w-full rounded-[1px] transition-opacity duration-100 group-hover:opacity-80" style={{ height: `${Math.max((d.calls / max) * 100, 2)}px`, background: "var(--t-c2)" }} />
+          <div className="tnum mt-1 w-full truncate text-center font-mono text-[9.5px] text-faint">{d.day.slice(5)}</div>
         </div>
       ))}
     </div>

@@ -5,7 +5,7 @@ import { motion } from "framer-motion";
 import { Send, Terminal, User, Bot } from "lucide-react";
 import { api, asApiError, type ApiError } from "@/lib/api";
 import type { AskResult } from "@/lib/types";
-import { Spinner, SkeletonText, Skeleton, cn } from "./ui";
+import { Spinner, SkeletonText, Skeleton, cn, Button } from "./ui";
 import { ErrorState, InlineError } from "./ui/Feedback";
 import { Prose } from "./Markdown";
 
@@ -75,12 +75,12 @@ export function Assistant() {
           {turns.map((t, i) => (
             <div key={i} className="space-y-2">
               <div className="flex items-start justify-end gap-2">
-                <div className="sunk max-w-[85%] px-3 py-2 text-sm font-medium text-text">{t.q}</div>
-                <User size={16} className="mt-1.5 shrink-0 text-text3" />
+                <div className="max-w-[85%] rounded-md border border-line bg-canvas px-3 py-2 text-[12.5px] font-medium text-fg">{t.q}</div>
+                <User size={15} className="mt-1.5 shrink-0 text-faint" />
               </div>
               <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex items-start gap-2">
-                <span className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center bg-accent-ink"><Bot size={15} className="text-accent" /></span>
-                <div className="panel min-w-0 flex-1 p-3">
+                <span className="mt-0.5 grid size-7 shrink-0 place-items-center rounded-md bg-ink text-on-ink"><Bot size={15} /></span>
+                <div className="min-w-0 flex-1 rounded-lg border border-line bg-surface p-4 elev-1">
                   {t.loading ? (
                     <div className="space-y-2">
                       <Spinner label="Calling deterministic tools…" />
@@ -92,16 +92,16 @@ export function Assistant() {
                     <>
                       <Prose>{t.a?.answer ?? ""}</Prose>
                       {!!t.a?.trace?.length && (
-                        <div className="sunk mt-2 p-2">
-                          <div className="label mb-1 flex items-center gap-1 text-[10px]"><Terminal size={11} className="text-accent-fg" /> Tool trace</div>
+                        <div className="mt-2 rounded-md border border-line bg-canvas p-2.5">
+                          <div className="mb-1 flex items-center gap-1 text-[11px] font-medium text-faint"><Terminal size={11} /> Tool trace</div>
                           {t.a.trace.map((tr, j) => (
-                            <div key={j} className="mono text-[10px] text-text3">
-                              <span className="text-text2">{tr.tool}</span>({Object.values(tr.args ?? {}).join(", ")})
+                            <div key={j} className="font-mono text-[10.5px] text-faint">
+                              <span className="text-dim">{tr.tool}</span>({Object.values(tr.args ?? {}).join(", ")})
                             </div>
                           ))}
                         </div>
                       )}
-                      {t.a?.by && <div className="mt-1.5 text-[10px] text-text3">via {t.a.by}</div>}
+                      {t.a?.by && <div className="mt-1.5 text-[10.5px] text-ghost">via {t.a.by}</div>}
                     </>
                   )}
                 </div>
@@ -109,11 +109,11 @@ export function Assistant() {
             </div>
           ))}
         </div>
-        <form onSubmit={(e) => { e.preventDefault(); ask(input); }} className="flex gap-2 border-t border-border p-3">
+        <form onSubmit={(e) => { e.preventDefault(); ask(input); }} className="flex gap-2 border-t border-line p-3">
           <input value={input} onChange={(e) => setInput(e.target.value)} disabled={busy}
             placeholder={busy ? "Waiting for the current answer…" : "Ask about reachability, exposure, or a hypothetical change…"}
             className="field flex-1 disabled:opacity-60" />
-          <button className="btn-primary" type="submit" disabled={busy || !input.trim()}><Send size={15} /></button>
+          <Button variant="solid" tone="ink" type="submit" disabled={busy || !input.trim()}><Send size={15} /></Button>
         </form>
       </div>
       <div className="space-y-2">

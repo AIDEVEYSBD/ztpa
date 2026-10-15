@@ -98,8 +98,9 @@ export function ToolsAdmin() {
                     {roles.map((r) => {
                       const on = t.enabled_roles.includes(r);
                       return (
-                        <button key={r} onClick={() => toggle(t, r)} disabled={saving === t.key}
-                          className={cn("border px-2 py-1 text-[11px] capitalize", on ? "border-accent bg-accent-soft text-text" : "border-border text-text3 hover:bg-surfaceHover")}>
+                        <button key={r} onClick={() => toggle(t, r)} disabled={saving === t.key} aria-pressed={on}
+                          className={cn("focusable h-7 cursor-pointer rounded-sm border px-2.5 text-[12px] font-medium capitalize transition-colors duration-100 disabled:pointer-events-none disabled:opacity-40",
+                            on ? "border-transparent bg-ink text-on-ink" : "border-line bg-surface text-dim hover:bg-raise hover:text-fg")}>
                           {r}
                         </button>
                       );

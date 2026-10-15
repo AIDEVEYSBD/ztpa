@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { FileText, RefreshCw, Printer, Route, ShieldCheck, ArrowRight, Sparkles } from "lucide-react";
 import { api, asApiError, type ApiError } from "@/lib/api";
-import { SeverityPill, Spinner, Stat, Skeleton, SkeletonText } from "./ui";
+import { SeverityPill, Spinner, Stat, Skeleton, SkeletonText, Button } from "./ui";
 import { ErrorState, InlineError } from "./ui/Feedback";
 import { Prose } from "./Markdown";
 import { RuleRef } from "./RuleRef";
@@ -61,16 +61,16 @@ export function ReportPanel() {
   if (!r) {
     return (
       <div className="panel mx-auto max-w-3xl p-6">
-        <div className="eyebrow mb-3">Executive &amp; compliance posture report</div>
-        <p className="mb-4 max-w-2xl text-[13px] text-text2">
+        <div className="mb-3 text-[11px] font-medium tracking-[0.08em] text-faint uppercase">Executive &amp; compliance posture report</div>
+        <p className="mb-4 max-w-[64ch] text-[12.5px] leading-[1.55] text-dim">
           A board-ready report: severity breakdown, the cross-tool exposures, a prioritised remediation plan, and a
           PCI-DSS / Zero-Trust compliance read. The orchestrator returns the facts instantly; the model then
           writes the narrative. Every rule reference is clickable.
         </p>
         {err && <ErrorState resource="the posture report" error={err} onRetry={gen} className="mb-3" />}
-        <button onClick={gen} disabled={loading} className="btn-primary">
+        <Button variant="solid" tone="ink" onClick={gen} disabled={loading}>
           {loading ? <Spinner label="Assembling report…" /> : <><FileText size={14} /> Generate report</>}
-        </button>
+        </Button>
       </div>
     );
   }
@@ -84,24 +84,24 @@ export function ReportPanel() {
     <div className="space-y-4">
       <div className="print:hidden">
         <div className="flex flex-wrap items-center gap-2">
-          <button onClick={gen} disabled={loading} className="btn-ghost"><RefreshCw size={13} className={loading ? "animate-spin" : ""} /> Regenerate</button>
-          <button onClick={() => window.print()} className="btn-primary"><Printer size={14} /> Download / Print</button>
-          <span className="ml-auto text-[11px] text-text3">{narrLoading ? "writing narrative locally…" : `via ${r.by}`} · grounded in the deterministic snapshot</span>
+          <Button variant="quiet" tone="neutral" onClick={gen} disabled={loading}><RefreshCw size={13} className={loading ? "af-spin" : ""} /> Regenerate</Button>
+          <Button variant="solid" tone="ink" onClick={() => window.print()}><Printer size={14} /> Download / Print</Button>
+          <span className="ml-auto text-[10.5px] text-faint">{narrLoading ? "writing narrative locally…" : `via ${r.by}`} · grounded in the deterministic snapshot</span>
         </div>
-        <p className="mt-1.5 text-[11px] text-text3">In the print dialog choose &ldquo;Save as PDF&rdquo; and turn off <b className="font-semibold text-text2">Headers and footers</b> to remove the URL/page-number line.</p>
+        <p className="mt-1.5 text-[10.5px] text-ghost">In the print dialog choose &ldquo;Save as PDF&rdquo; and turn off <b className="font-medium text-dim">Headers and footers</b> to remove the URL/page-number line.</p>
       </div>
 
       <div id="report" className="panel mx-auto max-w-4xl space-y-7 p-5 sm:p-8">
         {/* Letterhead */}
-        <div className="flex items-center gap-3 border-b border-border pb-4">
-          <div className="grid h-10 w-10 shrink-0 place-items-center bg-accent-ink"><ShieldCheck size={20} className="text-accent" /></div>
+        <div className="flex items-center gap-3 border-b border-line pb-4">
+          <div className="grid size-10 shrink-0 place-items-center rounded-md bg-ink text-on-ink"><ShieldCheck size={20} /></div>
           <div className="min-w-0">
-            <div className="text-[17px] font-bold leading-tight sm:text-[19px]">Zero-Trust Posture Report</div>
-            <div className="text-[11px] text-text3 sm:text-[12px]">
+            <div className="text-[20px] leading-tight font-semibold tracking-[-0.02em] sm:text-[22px]">Zero-Trust Posture Report</div>
+            <div className="text-[11.5px] text-faint">
               Cross-tool network-policy risk · {s.total_findings ?? 0} findings · {r.cross_tool_paths?.length ?? 0} cross-tool paths · {(r.sensitive_assets ?? []).length} regulated assets
             </div>
           </div>
-          <div className="ml-auto hidden text-right text-[11px] text-text3 sm:block">
+          <div className="ml-auto hidden text-right text-[10.5px] text-faint sm:block">
             AlgoSec · Guardicore · Wiz<br />consolidated snapshot
           </div>
         </div>

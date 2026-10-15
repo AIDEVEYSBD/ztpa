@@ -103,20 +103,20 @@ function SnapshotTimeline({ snaps, active, onView, confirm, setConfirm, busy, de
         <div className="panel"><EmptyState icon={History} title="No snapshots found" sub="Try a different search, or run an analysis to create one." /></div>
       ) : (
       <div className="relative pl-5">
-        <div className="absolute bottom-2 left-[7px] top-2 w-px bg-border" />
+        <div className="absolute top-2 bottom-2 left-[7px] w-px bg-line" />
         {t.rows.map((s) => {
           const isActive = s.snapshot_id === active;
           const rowDelErr = delErr && delErr.id === s.snapshot_id ? delErr.error : undefined;
           return (
             <div key={s.snapshot_id} className="relative mb-3">
-              <span className={cn("absolute -left-[14px] top-3 h-2.5 w-2.5 border-2",
-                isActive ? "border-accent bg-accent" : "border-borderStrong bg-surface")} />
+              <span className={cn("absolute -left-[14px] top-3 size-2.5 rounded-[2px] border-2",
+                isActive ? "border-ink bg-ink" : "border-line-strong bg-surface")} />
               <div className="panel p-3">
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="mono text-[13px] font-bold">@{s.snapshot_id.replace(/^snap_/, "").slice(0, 10)}</span>
+                  <span className="tnum font-mono text-[12px] font-medium">@{s.snapshot_id.replace(/^snap_/, "").slice(0, 10)}</span>
                   {s.label && <Chip variant="neutral">{s.label}</Chip>}
                   {isActive && <Chip variant="accent" mono>ACTIVE</Chip>}
-                  <span className="ml-auto text-[11px] text-text3">{new Date(s.created_at).toLocaleString()}</span>
+                  <span className="ml-auto text-[10.5px] text-faint">{new Date(s.created_at).toLocaleString("en-GB")}</span>
                 </div>
                 <div className="mono mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-text2">
                   <span>{s.assets} assets</span><span>{s.rules} rules</span><span>{s.findings} findings</span>

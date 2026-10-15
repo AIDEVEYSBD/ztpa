@@ -168,13 +168,16 @@ export function AuditAdmin() {
       </p>
 
       <div className="flex flex-wrap items-center gap-2">
-        <span className="label">Per page</span>
-        {PAGE_SIZES.map((n) => (
-          <button key={n} onClick={() => { setLimit(n); setOffset(0); }}
-            className={cn("border px-2 py-1 text-[11px]", limit === n ? "border-accent bg-accent-soft text-text" : "border-border text-text2 hover:bg-surfaceHover")}>
-            {n}
-          </button>
-        ))}
+        <span className="mr-0.5 text-[11px] font-medium text-faint">Per page</span>
+        <div className="inline-flex items-center gap-px rounded-sm border border-line bg-canvas p-px">
+          {PAGE_SIZES.map((n) => (
+            <button key={n} onClick={() => { setLimit(n); setOffset(0); }} aria-pressed={limit === n}
+              className={cn("focusable cursor-pointer rounded-[3px] px-1.5 py-0.5 font-mono text-[10px] transition-colors duration-100",
+                limit === n ? "bg-ink text-on-ink" : "text-faint hover:text-dim")}>
+              {n}
+            </button>
+          ))}
+        </div>
         <button onClick={load} className="btn-ghost !h-7 text-[11px]" disabled={loading}>
           <RotateCw size={12} /> {loading ? "Refreshing…" : "Refresh"}
         </button>

@@ -59,14 +59,14 @@ export function SsoSignIn({ callbackUrl = "/console", auto = false, label = "Con
   const busy = phase !== "idle";
   return (
     <div className="space-y-2">
-      <button type="button" onClick={go} disabled={busy} className="btn-primary w-full">
+      <button type="button" onClick={go} disabled={busy} className="btn-primary focusable w-full">
         {phase === "idle" && label}
         {phase === "probing" && <Spinner label="Contacting AutoX SSO…" />}
         {phase === "waking" && <Spinner label="Waking AutoX SSO…" />}
         {phase === "redirecting" && <Spinner label="Redirecting…" />}
       </button>
       {phase === "waking" && (
-        <p className="text-center text-[11px] text-text3">
+        <p className="text-center text-[11px] text-faint">
           The identity service is starting up. This can take up to a minute on first use.
         </p>
       )}
