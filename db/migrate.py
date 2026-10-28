@@ -194,8 +194,17 @@ def ensure_app_role(conn: psycopg.Connection, role: str, password: str) -> None:
         cur.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", [role])
         if cur.fetchone() is None:
             cur.execute(sql.SQL("CREATE ROLE {} LOGIN").format(r))
-        cur.execute(sql.SQL("ALTER ROLE {} WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE "
-                            "PASSWORD {}").format(r, sql.Literal(password)))
+        # Only LOGIN and the password are set: on managed Postgres (Cloud SQL,
+        # Flexible Server) the migration identity is not a superuser and may
+        # not touch SUPERUSER at all, even to clear it. A role created as above
+        # has none of the dangerous attributes; that is VERIFIED below instead.
+        cur.execute(sql.SQL("ALTER ROLE {} WITH LOGIN PASSWORD {}").format(r, sql.Literal(password)))
+        cur.execute("SELECT rolsuper, rolcreatedb, rolcreaterole, rolbypassrls FROM pg_roles "
+                    "WHERE rolname = %s", [role])
+        attrs = cur.fetchone()
+        if any(attrs):
+            raise RuntimeError(f"runtime role {role} holds superuser/createdb/createrole/bypassrls; "
+                               "refusing to hand it to the application")
         cur.execute(sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(
             sql.Identifier(conn.info.dbname), r))
         cur.execute(sql.SQL("GRANT USAGE ON SCHEMA {} TO {}").format(sql.Identifier(SCHEMA), r))
