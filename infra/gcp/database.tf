@@ -38,8 +38,8 @@ resource "google_sql_database_instance" "pg" {
       query_insights_enabled = true
     }
 
-    # Budget: (api instances x processes + worker instances x (slots x 2)) x
-    # DB_POOL_MAX must stay below this with headroom for migrations and admin.
+    # Budget: api instances x processes x DB_POOL_MAX (8) + worker instances x
+    # slots x 2 must stay below this, with headroom for migrations and admin.
     database_flags {
       name  = "max_connections"
       value = "400"

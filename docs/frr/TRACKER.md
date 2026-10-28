@@ -14,6 +14,7 @@ _Last updated: 2026-10-28_
 
 | Date | Item(s) | Change |
 |---|---|---|
+| 2026-10-28 | PLAT-11 | Deployment guides for both clouds, runbook, production checklist |
 | 2026-10-28 | PLAT-10, 05.1, 05.2 | Azure Terraform (planned against sandbox: 56 resources); deploy pipelines for both clouds; in-network smoke test; CI runs real-DB tests as the runtime role |
 | 2026-10-28 | PLAT-9, PLAT-17 | GCP Terraform (validated + planned against sandbox); runtime DB role without DDL rights; worker health port for Cloud Run |
 | 2026-10-28 | PLAT-8, PLAT-16 | Hash-pinned lockfile, multi-process image with preflight, shared JSON logging; one-command database bootstrap with advisory lock |
@@ -113,4 +114,4 @@ _Last updated: 2026-10-28_
 | PLAT-16 | One-step schema bootstrap for the migrate job (`schema.sql` + `auth_schema.sql` + `sso_schema.sql` + migrations) | ✅ | `python db/migrate.py --bootstrap`; advisory lock serialises concurrent runs; verified on an empty database, re-run is a no-op, full suite (2,082) green against it |
 | PLAT-17 | Least-privilege runtime DB role | ✅ | `db/migrate.py --ensure-app-role`: runtime role has row access to `ztpa` only (CREATE/ALTER/DROP and ledger writes refused, verified); migrate runs as owner. Full suite (2,083) passes connecting as the restricted role |
 | PLAT-18 | Azure Front Door + WAF in Terraform | ⬜ | |
-| PLAT-11 | Deployment docs: `docs/frr/DEPLOY-GCP.md`, `docs/frr/DEPLOY-AZURE.md`, runbook, prod checklist | ⬜ | |
+| PLAT-11 | Deployment docs: `docs/frr/DEPLOY-GCP.md`, `docs/frr/DEPLOY-AZURE.md`, runbook, prod checklist | ✅ | `docs/frr/DEPLOY-GCP.md`, `DEPLOY-AZURE.md` (one-time setup with keyless CI identity, GitHub environment config, release flow, first-release checks, capacity and connection budget), `RUNBOOK.md`, `PRODUCTION-CHECKLIST.md` |
