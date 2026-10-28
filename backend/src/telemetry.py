@@ -47,7 +47,11 @@ def configure(app=None) -> str | None:
     service = os.environ.get("OTEL_SERVICE_NAME", "frr-api")
     try:
         from opentelemetry.sdk.trace.sampling import ParentBased, TraceIdRatioBased
-        sampler = ParentBased(TraceIdRatioBased(rate))
+        # Cloud Run and load balancers send a trace parent marked NOT sampled
+        # unless someone asked for a trace; obeying it would drop every request
+        # span. Our own ratio applies then too; a sampled parent is honoured.
+        ratio = TraceIdRatioBased(rate)
+        sampler = ParentBased(root=ratio, remote_parent_not_sampled=ratio)
         if kind == "azure_monitor":
             from azure.monitor.opentelemetry import configure_azure_monitor
             configure_azure_monitor(sampling_ratio=rate, enable_live_metrics=False,
@@ -82,6 +86,17 @@ def configure(app=None) -> str | None:
     _STATE["backend"] = kind
     log.info("tracing enabled", extra={"event": "telemetry_enabled", "backend": kind, "sample": rate})
     return kind
+
+
+def tag_request_id(request_id: str | None) -> None:
+    """Put the API's request id on the current server span (called where the id
+    is minted), so a trace and the log lines for that request join on it."""
+    if not request_id or not _STATE["backend"]:
+        return
+    from opentelemetry import trace
+    span = trace.get_current_span()
+    if span.is_recording():
+        span.set_attribute("npr.request_id", request_id)
 
 
 def _tag_request(span, scope) -> None:

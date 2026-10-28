@@ -183,6 +183,7 @@ class _ActorMiddleware:
         # end to end; otherwise mint one.
         rid = (h.get("x-request-id") or "").strip()[:64] or uuid.uuid4().hex
         request_ctx.set_request_id(rid)
+        telemetry.tag_request_id(rid)
         request_ctx.set_actor(None, None, None)   # reset: contextvars outlive a pooled worker
 
         # Two independent reasons to demand the secret, OR'd: the request claims
