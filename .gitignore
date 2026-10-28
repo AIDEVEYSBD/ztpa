@@ -22,6 +22,7 @@ npm-debug.log*
 # Generated engine output is committed-by-default for demo reproducibility,
 # but ignore local scratch
 backend/data/scratch/
+backend/data/store/
 
 # Agent worktrees / local tooling scratch
 .claude/

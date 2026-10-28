@@ -13,6 +13,7 @@ def prod(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(settings, "NPR_ENV", "prod")
     monkeypatch.setattr(settings, "DATABASE_URL", "postgresql://x/y")
     monkeypatch.setenv("NPR_PROXY_SECRET", "s3cret")
+    monkeypatch.setattr(settings, "NPR_STORAGE_URL", "gs://bucket/frr")
 
 
 def test_dev_has_no_startup_requirements(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -54,3 +55,8 @@ def test_the_app_will_not_start_when_refused(prod, monkeypatch: pytest.MonkeyPat
     with pytest.raises(settings.StartupRefused, match="NPR_PROXY_SECRET"):
         with TestClient(app):
             pass
+
+
+def test_production_on_local_disk_storage_is_refused(prod, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "NPR_STORAGE_URL", "file:///tmp/x")
+    assert any("NPR_STORAGE_URL" in e for e in settings.production_startup_errors())

@@ -37,6 +37,11 @@ azure-identity>=1.19,<2
 # package above then calls. The [requests] extra is google-auth's refresh
 # transport. No Vertex SDK: it would be a second HTTP stack for the same call.
 google-auth[requests]>=2.30,<3
+# Object storage for uploaded exports and snapshot artifacts (src/storage.py).
+# Imported lazily, only by the backend NPR_STORAGE_URL selects; both
+# authenticate with workload identity (ADC / DefaultAzureCredential).
+google-cloud-storage>=2.18,<4
+azure-storage-blob>=12.20,<13
 # Postgres (Neon) — system of record
 psycopg[binary]>=3.1
 psycopg_pool>=3.2

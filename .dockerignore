@@ -53,6 +53,7 @@ htmlcov
 backend/tests
 backend/conftest.py
 backend/data/scratch
+backend/data/store
 
 # --- Node / Next.js installed + generated output ----------------------------
 **/node_modules

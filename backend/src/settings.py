@@ -208,6 +208,9 @@ def production_startup_errors() -> list[str]:
                       "from any caller that can reach it")
     if not DATABASE_URL:
         errors.append("DATABASE_URL is not set: there is no system of record")
+    if NPR_STORAGE_URL.startswith("file://"):
+        errors.append("NPR_STORAGE_URL is a local directory: uploads and snapshot artifacts "
+                      "would live on one replica's disk and vanish on restart (use gs:// or az://)")
     return errors
 
 
@@ -222,6 +225,14 @@ def _vertex_ok() -> bool:
     from .advisory.client import vertex_ready   # late: client imports this module
     return vertex_ready()[0]
 
+
+# --- Object storage --------------------------------------------------------
+# Uploaded exports and published snapshot artifacts. file:// (dev), gs://bucket
+# or az://account/container -- see src/storage.py. A cloud deployment must point
+# this at the cloud store: a container's local disk is neither shared between
+# replicas nor kept across restarts.
+NPR_STORAGE_URL: str = os.environ.get(
+    "NPR_STORAGE_URL", f"file://{BACKEND_ROOT / 'data' / 'store'}").strip()
 
 # --- Misc ------------------------------------------------------------------
 FRONTEND_ORIGIN: str = os.environ.get("FRONTEND_ORIGIN", "http://localhost:3000")
