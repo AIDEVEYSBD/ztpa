@@ -10,8 +10,9 @@
 # because one image has to carry both halves of the deploy. The same image runs
 # the API and the schema migration, so `db/` ships alongside `backend/`:
 #
-#     the API          uvicorn app.main:app --host 0.0.0.0 --port 8000   (CMD)
-#     the migration    python /app/db/migrate.py
+#     the API          uvicorn app.main:app, $WEB_CONCURRENCY processes   (CMD)
+#     the worker       python -m src.jobs.worker                           (job queue)
+#     the migration    python /app/db/migrate.py --bootstrap
 #     first-run seed   python /app/backend/scripts/seed_demo.py
 #                      python /app/backend/scripts/precompute.py
 #
@@ -47,12 +48,14 @@ ENV PIP_NO_CACHE_DIR=1 \
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Only the requirements file, so this layer is cached across every source edit:
-# the dependency install is by far the slowest step, and application code
-# changes far more often than the 15 lines of requirements.txt.
-COPY backend/requirements.txt /tmp/requirements.txt
+# The LOCKFILE, hash-pinned: every build installs byte-identical packages, and
+# a tampered or substituted wheel fails the hash check instead of shipping.
+# --no-deps because the lock already lists the full closure. Test tooling is in
+# requirements-dev.txt and never reaches this image. Only the lock is copied,
+# so this slow layer stays cached across source edits.
+COPY backend/requirements.lock /tmp/requirements.lock
 RUN pip install --no-cache-dir --upgrade pip \
- && pip install --no-cache-dir -r /tmp/requirements.txt
+ && pip install --no-cache-dir --require-hashes --no-deps -r /tmp/requirements.lock
 
 
 # --------------------------------------------------------------------------
@@ -98,6 +101,9 @@ WORKDIR /app/backend
 
 USER npr
 
+# Cloud Run injects PORT (8080); Container Apps uses the configured target port.
+ENV PORT=8000 \
+    WEB_CONCURRENCY=2
 EXPOSE 8000
 
 # LIVENESS — deliberately /api/live and never /api/health.
@@ -115,6 +121,13 @@ EXPOSE 8000
 # python:3.12-slim does not ship: adding it would mean an apt layer and another
 # package to keep patched, to make one HTTP request.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD ["python", "-c", "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/live', timeout=4).status == 200 else 1)"]
+    CMD ["python", "-c", "import os, sys, urllib.request; sys.exit(0 if urllib.request.urlopen(f\"http://127.0.0.1:{os.environ.get('PORT', '8000')}/api/live\", timeout=4).status == 200 else 1)"]
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# One container, WEB_CONCURRENCY uvicorn processes (respawned if one dies): the
+# routes are sync and CPU-bound work holds the GIL, so processes, not threads,
+# are what use more than one core. Every process is stateless (see
+# docs/frr/ARCHITECTURE.md), so this composes with horizontal scaling.
+# --proxy-headers: the platform's load balancer terminates TLS. The graceful
+# timeout sits inside both platforms' SIGTERM grace periods. `src.preflight`
+# first, so a revision configured to fail open exits 1 instead of starting.
+CMD ["sh", "-c", "python -m src.preflight && exec uvicorn app.main:app --host 0.0.0.0 --port \"${PORT}\" --workers \"${WEB_CONCURRENCY}\" --proxy-headers --forwarded-allow-ips='*' --timeout-graceful-shutdown 20"]

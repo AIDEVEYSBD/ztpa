@@ -37,6 +37,8 @@ Usage:
     python db/migrate.py                    # baseline schema.sql, then pending migrations
     python db/migrate.py db/auth_schema.sql # that file as the baseline, then pending migrations
     python db/migrate.py --migrations-only  # skip the baseline (deploy/preDeploy step)
+    python db/migrate.py --bootstrap        # every baseline in dependency order, then
+                                            # migrations: the one command a deploy runs
     python db/migrate.py --status           # report applied vs pending, change nothing
     python db/migrate.py --check            # exit 1 if anything is pending (CI / pre-deploy gate)
 
@@ -159,8 +161,20 @@ def _drifted(files: list[pathlib.Path], applied: dict[str, tuple[str, str]]) -> 
     return out
 
 
+# The baselines a complete database needs, in dependency order: auth_schema
+# creates ztpa.app_users, which sso_schema extends and migration 0005 alters.
+# Applying them by hand in the wrong order (or forgetting one) is how a fresh
+# database ended up without the SSO columns the frontend writes.
+BOOTSTRAP_BASELINES = (HERE / "schema.sql", HERE / "auth_schema.sql", HERE / "sso_schema.sql")
+
+# Serialises concurrent runs (two deploys, a deploy and an operator): the second
+# waits instead of racing the first through the same migrations.
+_LOCK_ID = 0x6E70726D  # "nprm"
+
+
 def main(argv: list[str] | None = None) -> int:
     args = list(argv if argv is not None else sys.argv[1:])
+    bootstrap = "--bootstrap" in args
     check_only = "--check" in args
     status_only = "--status" in args or check_only
     skip_baseline = "--migrations-only" in args
@@ -171,10 +185,16 @@ def main(argv: list[str] | None = None) -> int:
         print("ERROR: DATABASE_URL is not set (load it from .env).", file=sys.stderr)
         return 2
 
-    baseline = pathlib.Path(positional[0]) if positional else DEFAULT_SCHEMA
-    if not skip_baseline and not baseline.is_file():
-        print(f"ERROR: {baseline} does not exist.", file=sys.stderr)
-        return 2
+    if bootstrap:
+        baselines = list(BOOTSTRAP_BASELINES)
+    elif skip_baseline:
+        baselines = []
+    else:
+        baselines = [pathlib.Path(positional[0]) if positional else DEFAULT_SCHEMA]
+    for baseline in baselines:
+        if not baseline.is_file():
+            print(f"ERROR: {baseline} does not exist.", file=sys.stderr)
+            return 2
 
     try:
         files = migration_files()
@@ -186,6 +206,9 @@ def main(argv: list[str] | None = None) -> int:
     # once its ledger row is written, so a migration and the record of it can
     # never disagree.
     with psycopg.connect(url) as conn:
+        if not status_only:
+            conn.execute("SELECT pg_advisory_lock(%s)", [_LOCK_ID])
+            conn.commit()
         _ensure_ledger(conn)
         applied = _applied(conn)
 
@@ -213,7 +236,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
             return 0
 
-        if not skip_baseline:
+        for baseline in baselines:
             _apply_file(conn, baseline)
             conn.commit()
             print(f"applied baseline {baseline.name} to schema {SCHEMA}")

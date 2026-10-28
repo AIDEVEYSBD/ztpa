@@ -66,3 +66,10 @@ def test_production_on_local_disk_storage_is_refused(prod, monkeypatch: pytest.M
 def test_production_without_an_artifact_key_is_refused(prod, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "NPR_ARTIFACT_KEY", "short")
     assert any("NPR_ARTIFACT_KEY" in e for e in settings.production_startup_errors())
+
+
+def test_preflight_exits_nonzero_when_refused(prod, monkeypatch: pytest.MonkeyPatch) -> None:
+    from src import preflight
+    assert preflight.main() == 0
+    monkeypatch.delenv("NPR_PROXY_SECRET")
+    assert preflight.main() == 1

@@ -80,7 +80,7 @@ def cmd_setup(_args):
         run([base_python, "-m", "venv", str(VENV)])
     vpy = venv_python()
     run([vpy, "-m", "pip", "install", "-q", "-U", "pip"])
-    run([vpy, "-m", "pip", "install", "-q", "-r", str(BACKEND / "requirements.txt")])
+    run([vpy, "-m", "pip", "install", "-q", "-r", str(BACKEND / "requirements-dev.txt")])
     print("==> installing frontend deps")
     run([tool("npm"), "install", "--no-audit", "--no-fund"], cwd=FRONTEND)
     env = ROOT / ".env"

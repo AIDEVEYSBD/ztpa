@@ -23,7 +23,7 @@ help:
 setup:
 	python3.12 -m venv backend/.venv || python3 -m venv backend/.venv
 	$(PIP) install -q -U pip
-	$(PIP) install -q -r backend/requirements.txt
+	$(PIP) install -q -r backend/requirements-dev.txt
 	cd frontend && npm install --no-audit --no-fund
 	@test -f .env || cp .env.example .env
 	ln -sf ../.env frontend/.env   # Next reads env from its own dir; share the root .env

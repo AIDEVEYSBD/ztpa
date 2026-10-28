@@ -31,10 +31,10 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: backend/requirements.txt
+          cache-dependency-path: backend/requirements-dev.txt
 
       - name: Install backend dependencies
-        run: pip install --disable-pip-version-check -r backend/requirements.txt
+        run: pip install --disable-pip-version-check -r backend/requirements-dev.txt
 
       # Run from the repo root so pyproject.toml's [tool.pytest.ini_options] is
       # the config that applies (pythonpath=["backend"], testpaths). Identical to

@@ -45,6 +45,10 @@ azure-storage-blob>=12.20,<13
 # Postgres (Neon) — system of record
 psycopg[binary]>=3.1
 psycopg_pool>=3.2
-# dev / test
-pytest>=8.0
+# HTTP client for Ollama, ARM discovery and the assistant's tool loop. Runtime,
+# not a test dependency.
 httpx>=0.27
+# Test tooling lives in requirements-dev.txt and never ships in the image.
+# The image installs requirements.lock (hash-pinned, generated from this file):
+#   uv pip compile requirements.txt --generate-hashes --python-version 3.12 \
+#      --python-platform x86_64-manylinux_2_28 -o requirements.lock

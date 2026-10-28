@@ -72,41 +72,10 @@ from src.persist import (  # noqa: E402
 # actor and the event name, which is what makes the swallowed paths below
 # observable instead of merely non-fatal.
 
-class _JsonFormatter(logging.Formatter):
-    """One JSON object per line: greppable in Render's log stream and parseable
-    by any collector, without pulling in structlog. Extra fields set via
-    `logger.warning(..., extra={...})` are merged in; the request id and actor
-    are read from request_ctx at format time (same context as the call site)."""
+from src.logjson import JsonFormatter as _JsonFormatter, configure as _configure_logging  # noqa: E402
 
-    _SKIP = frozenset(logging.LogRecord("", 0, "", 0, "", (), None).__dict__) | {"message", "asctime", "taskName"}
+log = _configure_logging()
 
-    def format(self, record: logging.LogRecord) -> str:
-        payload: dict = {
-            "ts": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(timespec="milliseconds"),
-            "level": record.levelname,
-            "logger": record.name,
-            "msg": record.getMessage(),
-        }
-        rid = request_ctx.request_id()
-        if rid:
-            payload["request_id"] = rid
-        actor = request_ctx.current()
-        payload["role"] = actor.role
-        if actor.email:
-            payload["actor"] = actor.email
-        payload.update({k: v for k, v in record.__dict__.items() if k not in self._SKIP})
-        if record.exc_info:
-            payload["exc"] = self.formatException(record.exc_info)
-        return json.dumps(payload, default=str)
-
-
-log = logging.getLogger("npr.api")
-if not log.handlers:                       # idempotent: uvicorn reloads re-import this module
-    _handler = logging.StreamHandler(sys.stdout)
-    _handler.setFormatter(_JsonFormatter())
-    log.addHandler(_handler)
-    log.propagate = False                  # don't double-print through uvicorn's root handler
-log.setLevel(os.environ.get("NPR_LOG_LEVEL", "INFO").upper())
 
 
 @contextlib.asynccontextmanager

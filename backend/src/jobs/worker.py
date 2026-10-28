@@ -214,7 +214,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                    help="comma-separated job kinds (default: all registered)")
     p.add_argument("--lease", type=int, default=int(os.environ.get("NPR_JOB_LEASE_S", "60")))
     args = p.parse_args(argv)
-    logging.basicConfig(level=os.environ.get("NPR_LOG_LEVEL", "INFO").upper())
+    from ..logjson import configure
+    configure()                                    # same JSON lines as the API
     _register_builtin_handlers()
     w = Worker(kinds=[k for k in args.kinds.split(",") if k] or None,
                concurrency=args.concurrency, lease_s=args.lease).start()
