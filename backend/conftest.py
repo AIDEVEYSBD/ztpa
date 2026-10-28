@@ -76,7 +76,7 @@ def _no_ollama() -> tuple[bool, list[str]]:
 
 
 @pytest.fixture(autouse=True)
-def _offline(monkeypatch: pytest.MonkeyPatch) -> None:
+def _offline(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory) -> None:
     """Applied to every test; monkeypatch unwinds all of it afterwards."""
     import src.db
     import src.metrics
@@ -99,6 +99,14 @@ def _offline(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DATABASE_URL", "")
     monkeypatch.setattr(src.settings, "DATABASE_URL", "")
     monkeypatch.setattr(src.db, "DATABASE_URL", "")
+
+    # Object storage goes to a per-session temp directory, never the repo's
+    # backend/data/store, so a test that publishes a snapshot artifact leaves
+    # nothing behind.
+    import src.storage
+    monkeypatch.setattr(src.settings, "NPR_STORAGE_URL",
+                        f"file://{tmp_path_factory.getbasetemp() / 'store'}")
+    src.storage.reset_store()
 
 
 # ---------------------------------------------------------------------------

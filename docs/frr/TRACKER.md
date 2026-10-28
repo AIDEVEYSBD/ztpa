@@ -14,6 +14,7 @@ _Last updated: 2026-10-28_
 
 | Date | Item(s) | Change |
 |---|---|---|
+| 2026-10-28 | PLAT-4 | Replicas serve one published snapshot: active pointer + signed artifacts; cold start loads rather than rebuilds; fixed artifact publish that could keep a corrupted object |
 | 2026-10-28 | PLAT-5 | Durable Postgres job queue + worker process + job status API |
 | 2026-10-28 | PLAT-3 | Object storage interface (local / GCS / Azure Blob) |
 | 2026-10-28 | PLAT-6, 01.3 | Production fail-closed boot checks; `docs/frr/ARCHITECTURE.md` |
@@ -97,7 +98,7 @@ _Last updated: 2026-10-28_
 | PLAT-13 | BYOK: OpenAI / Anthropic / Azure key / GCP service-account file, from the platform secret store, never the DB | 🟡 | Env-based keys work and are reported by name in `/api/health` (`byok_keys`); Secret Manager / Key Vault wiring is PLAT-3 |
 | PLAT-14 | Cross-cloud identity federation (e.g. GCP workload calling Azure OpenAI without a key) | ⬜ | Later; designed-for, not built |
 | PLAT-3 | Storage / secrets / identity interfaces (GCS + Blob, Secret Manager + Key Vault) | 🟡 | Storage done: `backend/src/storage.py` (`file://`, `gs://`, `az://`, workload identity, streamed, atomic local writes), `tests/test_storage.py`. Secrets: injected as env by Cloud Run / Container Apps (deploy wiring, PLAT-9/10). Live bucket test pending deploy |
-| PLAT-4 | Stateless backend: engine state out of process memory and local disk | ⬜ | `_ENGINE` global (`app/main.py`) |
+| PLAT-4 | Stateless backend: engine state out of process memory and local disk | 🟡 | Done: `ztpa.active_snapshot` pointer (migration 0010) + HMAC-signed engine artifacts in object storage (`backend/src/snapshot_artifacts.py`); every publish site moves the pointer in its own transaction; replicas poll it (`NPR_SNAPSHOT_POLL_S`) and LOAD instead of rebuild (~0.1s vs ~2s at 2,000 assets); concurrent cold requests build once. 7 real-DB tests. Remaining: move recompute / dataset / merge rebuilds onto jobs (202 + polling) and replace `data/mock` inputs with uploaded exports (02.2d) |
 | PLAT-5 | Job worker for recompute / review runs | ✅ | Postgres queue `db/migrations/0009_jobs.sql`, `backend/src/jobs/` (SKIP LOCKED claim, heartbeat lease, backoff retries, dead state, idempotency keys, per-kind stats); worker `python -m src.jobs.worker`; inline in API for dev; `/api/jobs/{id}`, `/api/admin/jobs/{stats,ping}`. 19 real-Postgres tests incl. 8-worker contention. Existing endpoints not yet moved onto it (PLAT-4) |
 | PLAT-6 | Fail-closed proxy auth when `NPR_PROXY_SECRET` unset | ✅ | `settings.production_startup_errors()`: staging/prod refuses to boot without proxy secret, DATABASE_URL or cloud storage; localhost CORS dev-only. `tests/test_production_startup.py` |
 | PLAT-7 | Rate limits + LLM input size caps | ⬜ | |

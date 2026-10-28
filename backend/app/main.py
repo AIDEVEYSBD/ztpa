@@ -52,6 +52,7 @@ from src.db import (  # noqa: E402
 from src.graph.zones import zone_of  # noqa: E402
 from src.ids import det_id  # noqa: E402
 from src.models import ChangeRequest, RankedAction, RankedActions  # noqa: E402
+from src import snapshot_artifacts  # noqa: E402
 from src.persist import (  # noqa: E402
     accept_remediation_revision, cache_explanation, delete_asset_merge,
     asset_rows, canonical_rule_rows, correlation_rows, finding_rows, graph_edge_rows,
@@ -492,8 +493,82 @@ def _require_publishable_snapshot(built: EngineResult) -> None:
     raise HTTPException(503, f"refusing to persist a degraded snapshot: {blocked}")
 
 
+_ENGINE_LOCK = threading.RLock()
+_SYNC_LOCK = threading.Lock()
+_SYNC: dict = {"generation": None, "checked": float("-inf")}
+
+
+def _publish_snapshot(cur, built: EngineResult, scenario: str) -> None:
+    """Point every replica at `built`, on the caller's transaction."""
+    pointer = snapshot_artifacts.publish(cur, built, scenario,
+                                         published_by=request_ctx.current().email)
+    _SYNC["generation"] = pointer.get("generation")
+
+
+def _sync_from_pointer() -> None:
+    """Adopt the snapshot `ztpa.active_snapshot` names, if it moved.
+
+    This is what makes the API horizontally scalable: a dataset switch or
+    recompute on one replica is served by all of them within
+    `NPR_SNAPSHOT_POLL_S`, and a cold replica LOADS the published artifact
+    instead of rebuilding the engine. Throttled per process, so the pointer
+    costs at most one indexed single-row read per interval. Never raises: if the
+    pointer or artifact cannot be read, this replica keeps serving what it has
+    and says so in the log."""
+    global _ENGINE, _ACTIVE_SCENARIO
+    if not settings.DATABASE_URL:
+        return
+    now = time.monotonic()
+    if now - _SYNC["checked"] < settings.NPR_SNAPSHOT_POLL_S:
+        return
+    # A replica with nothing to serve waits for the sync in flight rather than
+    # starting a rebuild of its own; one that has a snapshot keeps serving it.
+    if not _SYNC_LOCK.acquire(blocking=_ENGINE is None):
+        return
+    try:
+        if time.monotonic() - _SYNC["checked"] < settings.NPR_SNAPSHOT_POLL_S:
+            return
+        _SYNC["checked"] = time.monotonic()
+        with get_conn() as conn, conn.cursor() as cur:
+            pointer = snapshot_artifacts.read_pointer(cur)
+        if pointer is None or pointer["generation"] == _SYNC["generation"]:
+            return
+        if _ENGINE is not None and _ENGINE.snapshot_id == pointer["snapshot_id"]:
+            _SYNC["generation"] = pointer["generation"]
+            _ACTIVE_SCENARIO = pointer["scenario"]
+            return
+        t0 = time.perf_counter()
+        loaded = snapshot_artifacts.load(pointer)
+        with _ENGINE_LOCK:
+            _ENGINE, _ACTIVE_SCENARIO = loaded, pointer["scenario"]
+            _SYNC["generation"] = pointer["generation"]
+        _ENGINE_STATE.update(persisted=True, persist_error=None)
+        log.info("serving the published snapshot", extra={
+            "event": "snapshot_synced", "snapshot_id": pointer["snapshot_id"],
+            "scenario": pointer["scenario"], "generation": pointer["generation"],
+            "ms": round((time.perf_counter() - t0) * 1000)})
+    except Exception as exc:  # noqa: BLE001 — keep serving; the log line is the trace
+        log.warning("could not adopt the published snapshot; serving the one in memory",
+                    exc_info=True, extra={"event": "snapshot_sync_failed", "error": str(exc)})
+    finally:
+        _SYNC_LOCK.release()
+
+
 def engine() -> EngineResult:
-    """Cached deterministic engine; persists the snapshot if the DB lacks it."""
+    """The snapshot this replica serves: the published one (see
+    `_sync_from_pointer`), else a cold build that is then published."""
+    global _ENGINE
+    _sync_from_pointer()
+    if _ENGINE is not None:
+        return _ENGINE
+    with _ENGINE_LOCK:
+        return _cold_engine()
+
+
+def _cold_engine() -> EngineResult:
+    """Build the engine in-process: no published snapshot exists yet, or the
+    database is unreachable. Callers hold `_ENGINE_LOCK`, so concurrent first
+    requests build once."""
     global _ENGINE
     if _ENGINE is None:
         try:
@@ -523,6 +598,9 @@ def engine() -> EngineResult:
                                 [_ENGINE.snapshot_id])
                 if not row:
                     persist_engine_result(cur, _ENGINE)
+                pointer = snapshot_artifacts.read_pointer(cur)
+                if pointer is None or pointer["snapshot_id"] != _ENGINE.snapshot_id:
+                    _publish_snapshot(cur, _ENGINE, _ACTIVE_SCENARIO)
             _ENGINE_STATE.update(persisted=True, persist_error=None)
         except Exception as exc:
             # DB optional for live-only ops -- but no longer SILENT: the snapshot
@@ -775,6 +853,7 @@ def recompute(_: None = Depends(require_operator)):
     snap = _ENGINE.snapshot_id
     with get_conn() as conn, conn.cursor() as cur:
         summary = persist_engine_result(cur, _ENGINE)
+        _publish_snapshot(cur, _ENGINE, _ACTIVE_SCENARIO)
         summary["timings"] = _ENGINE.timings
         summary["paths"] = sum(1 for f in _ENGINE.findings if f.type == "cross_tool_path")
         cur.execute("DELETE FROM ztpa.ranked_actions WHERE snapshot_id=%s", [snap])
@@ -820,6 +899,7 @@ def switch_dataset(body: DatasetBody, _: None = Depends(require_admin)):
     snap = _ENGINE.snapshot_id
     with get_conn() as conn, conn.cursor() as cur:
         summary = persist_engine_result(cur, _ENGINE)
+        _publish_snapshot(cur, _ENGINE, body.scenario)
         summary["timings"] = _ENGINE.timings
         summary["paths"] = sum(1 for f in _ENGINE.findings if f.type == "cross_tool_path")
         cur.execute("DELETE FROM ztpa.ranked_actions WHERE snapshot_id=%s", [snap])
@@ -1999,6 +2079,7 @@ def _merge_and_repersist(write, action: str, a: str, b: str) -> dict:
         _require_publishable_snapshot(built)
         snap = built.snapshot_id
         persist_engine_result(cur, built)
+        _publish_snapshot(cur, built, _ACTIVE_SCENARIO)
         cur.execute("DELETE FROM ztpa.ranked_actions WHERE snapshot_id=%s", [snap])
         cur.execute("UPDATE ztpa.findings SET explanation=NULL WHERE snapshot_id=%s", [snap])
         audit(cur, action, subject=f"{a}~{b}", snapshot_id=snap, detail={"a": a, "b": b})
@@ -2452,6 +2533,7 @@ def reset_demo(_: None = Depends(require_admin)):
         _require_publishable_snapshot(built)
         snap = built.snapshot_id
         summary = persist_engine_result(cur, built)
+        _publish_snapshot(cur, built, _ACTIVE_SCENARIO)
         summary["timings"] = built.timings
         summary["paths"] = sum(1 for f in built.findings if f.type == "cross_tool_path")
         cur.execute("DELETE FROM ztpa.ranked_actions WHERE snapshot_id=%s", [snap])

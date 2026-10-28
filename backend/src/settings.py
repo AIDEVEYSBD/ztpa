@@ -208,6 +208,9 @@ def production_startup_errors() -> list[str]:
                       "from any caller that can reach it")
     if not DATABASE_URL:
         errors.append("DATABASE_URL is not set: there is no system of record")
+    if len(NPR_ARTIFACT_KEY) < 32:
+        errors.append("NPR_ARTIFACT_KEY is missing or shorter than 32 characters: snapshot "
+                      "artifacts could not be signed and verified")
     if NPR_STORAGE_URL.startswith("file://"):
         errors.append("NPR_STORAGE_URL is a local directory: uploads and snapshot artifacts "
                       "would live on one replica's disk and vanish on restart (use gs:// or az://)")
@@ -245,6 +248,20 @@ def _vertex_ok() -> bool:
 # replicas nor kept across restarts.
 NPR_STORAGE_URL: str = os.environ.get(
     "NPR_STORAGE_URL", f"file://{BACKEND_ROOT / 'data' / 'store'}").strip()
+
+# Signs published engine artifacts (src/snapshot_artifacts.py). Required in
+# staging/prod; dev uses a fixed key so a laptop needs no setup. Rotating it
+# invalidates existing artifacts: replicas then rebuild once and republish.
+NPR_ARTIFACT_KEY: str = os.environ.get("NPR_ARTIFACT_KEY", "").strip()
+_DEV_ARTIFACT_KEY = "npr-dev-artifact-key-not-for-production"
+
+
+def artifact_key() -> str:
+    return NPR_ARTIFACT_KEY or _DEV_ARTIFACT_KEY
+
+
+# How often each API replica checks the active-snapshot pointer, in seconds.
+NPR_SNAPSHOT_POLL_S: float = float(os.environ.get("NPR_SNAPSHOT_POLL_S", "5"))
 
 # --- Misc ------------------------------------------------------------------
 FRONTEND_ORIGIN: str = os.environ.get("FRONTEND_ORIGIN", "http://localhost:3000")
