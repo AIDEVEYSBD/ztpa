@@ -14,6 +14,7 @@ _Last updated: 2026-10-28_
 
 | Date | Item(s) | Change |
 |---|---|---|
+| 2026-10-28 | 05.4 | Reviewer feedback with false-positive / missed-finding semantics; reviews export as eval labels |
 | 2026-10-28 | 01.5, 04.3-04.5 | Labelled evaluation suite, metrics and CI gate; first severity-tuning signal recorded |
 | 2026-10-28 | 02.1, 02.4a-c, 01.4 | Five-agent orchestrated review run; validated, cited, versioned impact narratives (live on Vertex); knowledge base with full-text retrieval |
 | 2026-10-28 | 01.2, 03.1c, 03.1d, 03.2a, 03.2b | Change-package drafter with rollback, approver matrix, two-stage owner → approver review with four eyes, runbook export, FRR mode switch; shadowing refuted by install targets or recent hits |
@@ -94,7 +95,7 @@ _Last updated: 2026-10-28_
 | 05.1 | CI builds images once, deploys by digest | ✅ | `.github/workflows/deploy-gcp.yml`, `deploy-azure.yml`: manual per-environment, workload identity federation (no stored cloud keys), build+push once with provenance/SBOM, digests flow to migrate -> terraform -> smoke. CI (`ci.yml`) adds real-Postgres tests as the runtime role, image builds, prod-boot refusal, no-pytest-in-image, `terraform validate`, `next build`. actionlint clean. Not yet run on GitHub |
 | 05.2 | Post-deploy smoke test | ✅ | `python -m src.smoke`: runs inside the private network as a one-off of the migrate job; checks API liveness, migrations current, and a worker completing a `system.ping` job. 2 real-DB tests |
 | 05.3 | Runtime telemetry (OpenTelemetry export) | 🟡 | `ztpa.ai_metrics`, `advisory/trace.py`; no OTel |
-| 05.4 | Structured reviewer feedback (agree/disagree on severity) | 🟡 | Comment threads only |
+| 05.4 | Structured reviewer feedback (agree/disagree on severity) | ✅ | `ztpa.frr_feedback` (migration 0015), `PUT /api/exports/{id}/review/{rule}/feedback`: agree / disagree (false positive) / disagree naming an unraised check (missed finding, needs a band), suggested band, required comment on disagreement; `GET .../feedback` agreement per check + suggested band shifts; `GET .../labels` (admin) turns reviews into eval labels for `src.frr.evals --labels`. 2 tests |
 | 05.5 | Versioned, eval-gated prompt / retrieval / agent tuning | ⬜ | |
 
 ## Platform (GCP + Azure multi-cloud)
