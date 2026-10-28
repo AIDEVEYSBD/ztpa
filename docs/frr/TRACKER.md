@@ -14,6 +14,7 @@ _Last updated: 2026-10-28_
 
 | Date | Item(s) | Change |
 |---|---|---|
+| 2026-10-28 | 03.1a, 05.4 (UI) | Effective-policy view and per-check reviewer feedback (agree / disagree / report missed) on the Rule review screen |
 | 2026-10-28 | UI-1, 03.1b, 03.1e | FRR screens in the console |
 | 2026-10-28 | 02.3a, 02.3c, 03.1a | Shadowing computed per (layer, gateway); per-gateway effective-policy model served with the register |
 | 2026-10-28 | PLAT-15 | Load test suite and first measured baseline; immutable review documents cached per process |
@@ -73,7 +74,7 @@ _Last updated: 2026-10-28_
 
 | ID | Item | Status | Where / note |
 |---|---|---|---|
-| 03.1a | Effective-policy model view | 🟡 | API: per-gateway effective policy served with the register. UI screen pending |
+| 03.1a | Effective-policy model view | ✅ | API: per-gateway effective policy with the register; UI `components/frr/EffectivePolicy.tsx` on the Rule review screen (per gateway: installed, effective allow, deny, shadowed here, inactive) |
 | 03.1b | Rule-risk register with evidence | ✅ | API `GET /api/exports/{id}/review`; UI `components/frr/ReviewScreen.tsx` + `RegisterTable.tsx`: KPIs, always-visible limitations, band/check filters, pagination, expandable evidence, hits shown as unknown (never 0) when absent |
 | 03.1c | Narrowed or time-bound rule proposals | ✅ | `backend/src/frr/package.py`: deterministic proposal per check (remove / disable-then-remove / reorder / time-bound-and-narrow / revisit-after), availability impact per item, owner input required for narrowing (no flow data yet to derive it). Guards against outages: never moves a cleanup rule, never removes a rule shadowed by one being narrowed. 8 tests |
 | 03.1d | Rollback plan artefact | ✅ | Every item carries Check Point `mgmt_cli` change and exact rollback (restores rule as exported); `GET /api/change-packages/{id}/runbook` (approved only) emits accepted items with rollback under the approval record |
@@ -120,7 +121,7 @@ _Last updated: 2026-10-28_
 | PLAT-10 | Terraform: Azure (Container Apps, private PG, Blob, Key Vault, ACR) | ✅ | `infra/azure/`: VNet + private endpoints/DNS; PG Flexible private access (optional ZR HA, pgvector allowed); Blob with shared keys and public access off; Key Vault (RBAC, purge protection) via managed identities; ACR; Container Apps API (internal), worker (KEDA PostgreSQL queue-depth scaling), frontend; migrate job as its own identity; alerts. Validated; read-only plan against the sandbox: 56 resources, no errors. Not yet applied |
 | PLAT-15 | Load-test suite (`loadtest/`) gating releases | ✅ | `loadtest/run.py`: ingest burst + multi-process read mix (register, exports, package, findings, live), p50/p95/p99 and error-rate thresholds, exit 1 on breach. Local run (one instance, 4 API processes, 2 workers, runtime DB role, laptop): **1,129 req/s, 0 errors, p95 84–103 ms**; 30 exports ingested in 1.5 s; a 10,000-rule export (5.3 MB) uploaded in 0.03 s and reviewed in 4.6 s, register pages p50 1 ms. To repeat against staging after first deploy |
 | PLAT-16 | One-step schema bootstrap for the migrate job (`schema.sql` + `auth_schema.sql` + `sso_schema.sql` + migrations) | ✅ | `python db/migrate.py --bootstrap`; advisory lock serialises concurrent runs; verified on an empty database, re-run is a no-op, full suite (2,082) green against it |
-| UI-1 | FRR screens: Exports (upload, status, rejection reasons), Rule review (register), Change package (agent run steps, AI/engine summary, items with commands + rollback, owner decisions, validate, approve, runbook download), Approvers and Knowledge (admin) | 🟡 | `frontend/components/frr/*`, `lib/frr.ts`, `lib/frrTypes.ts`; typecheck, lint, `next build` and the swallowed-catch grep all clean. **Not yet exercised in a browser** (needs an SSO session). Not yet wired: effective-policy view (03.1a) and reviewer feedback (05.4) |
+| UI-1 | FRR screens: Exports, Rule review (register + effective policy + reviewer feedback), Change package (agent run steps, AI/engine summary, items with commands + rollback, owner decisions, validate, approve, runbook), Approvers and Knowledge (admin) | 🟡 | `frontend/components/frr/*`, `lib/frr.ts`, `lib/frrTypes.ts`; typecheck, lint, `next build` and the swallowed-catch grep clean. **Not yet exercised in a browser** (needs an SSO session) |
 | PLAT-17 | Least-privilege runtime DB role | ✅ | `db/migrate.py --ensure-app-role`: runtime role has row access to `ztpa` only (CREATE/ALTER/DROP and ledger writes refused, verified); migrate runs as owner. Full suite (2,083) passes connecting as the restricted role |
 | PLAT-18 | Azure Front Door + WAF in Terraform | ⬜ | |
 | PLAT-11 | Deployment docs: `docs/frr/DEPLOY-GCP.md`, `docs/frr/DEPLOY-AZURE.md`, runbook, prod checklist | ✅ | `docs/frr/DEPLOY-GCP.md`, `DEPLOY-AZURE.md` (one-time setup with keyless CI identity, GitHub environment config, release flow, first-release checks, capacity and connection budget), `RUNBOOK.md`, `PRODUCTION-CHECKLIST.md` |

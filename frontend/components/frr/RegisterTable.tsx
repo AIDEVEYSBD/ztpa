@@ -2,9 +2,10 @@
 
 import { Fragment, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import type { RegisterEntry } from "@/lib/frrTypes";
+import type { FeedbackRow, RegisterEntry } from "@/lib/frrTypes";
 import { Chip, SeverityPill, Table, THead, Th, Td } from "../ui";
 import { EvidenceList, checkLabel, when } from "./bits";
+import { CheckFeedback } from "./CheckFeedback";
 
 /** A hit count the export did not carry is unknown — never 0, which would read
  *  as "this rule is never used" and invite its removal. */
@@ -24,7 +25,11 @@ function List({ xs }: { xs: string[] }) {
   return <span className="font-mono break-words">{xs.join(", ")}</span>;
 }
 
-export function RegisterTable({ items }: { items: RegisterEntry[] }) {
+export function RegisterTable({ items, feedback }: {
+  items: RegisterEntry[];
+  /** When present, the caller may review checks: rule uid -> check -> their verdict. */
+  feedback?: { exportId: string; mine: Record<string, Record<string, FeedbackRow>>; onChange: (r: FeedbackRow) => void };
+}) {
   const [open, setOpen] = useState<Set<string>>(new Set());
   const toggle = (id: string) => setOpen((s) => {
     const n = new Set(s);
@@ -109,6 +114,10 @@ export function RegisterTable({ items }: { items: RegisterEntry[] }) {
                               <EvidenceList evidence={c.evidence} />
                             </div>
                           ))}
+                          {feedback && (
+                            <CheckFeedback exportId={feedback.exportId} entry={e}
+                              mine={feedback.mine[e.rule_uid] ?? {}} onChange={feedback.onChange} />
+                          )}
                         </div>
                       </div>
                     </td>

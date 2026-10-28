@@ -9,7 +9,7 @@ import { requestJson as j, requestText } from "./api";
 import type {
   ApproverGrant, ChangePackage, ExportList, FrrExport, FrrMe, FrrRun, KnowledgeDoc, KnowledgeHit,
   KnowledgeKind, OwnerDecision, OwnerInput, PackageItem, ReviewPage, ReviewQuery, UploadResult,
-  FrrDuty,
+  FrrDuty, FeedbackBand, FeedbackList, FeedbackRow, FeedbackVerdict,
 } from "./frrTypes";
 
 const enc = encodeURIComponent;
@@ -62,6 +62,12 @@ export const frr = {
   decide: (pkgId: string, decision: "approve" | "reject", note?: string) =>
     j<ChangePackage>(`/api/change-packages/${enc(pkgId)}/decision`, postJson({ decision, note: note || undefined })),
   runbook: (pkgId: string) => requestText(`/api/change-packages/${enc(pkgId)}/runbook`),
+
+  // ── reviewer feedback ─────────────────────────────────────────────────────
+  feedback: (exportId: string) => j<FeedbackList>(`/api/exports/${enc(exportId)}/feedback`),
+  giveFeedback: (exportId: string, ruleUid: string,
+                 body: { check: string; verdict: FeedbackVerdict; suggested_band?: FeedbackBand; comment?: string }) =>
+    j<FeedbackRow>(`/api/exports/${enc(exportId)}/review/${enc(ruleUid)}/feedback`, postJson(body, "PUT")),
 
   // ── approver matrix (admin) ───────────────────────────────────────────────
   approvers: () => j<{ items: ApproverGrant[] }>("/api/admin/frr/approvers"),

@@ -13,11 +13,12 @@ import { useEffect, useState } from "react";
 import { ChevronLeft, ChevronRight, Info, RotateCw, ShieldCheck } from "lucide-react";
 import { asApiError, type ApiError } from "@/lib/api";
 import { frr } from "@/lib/frr";
-import { CHECK_KINDS, type FrrExport, type ReviewPage } from "@/lib/frrTypes";
+import { CHECK_KINDS, type FeedbackRow, type FrrExport, type ReviewPage } from "@/lib/frrTypes";
 import type { Band } from "@/lib/types";
 import { Button, Checkbox, EmptyState, Field, KpiBand, KpiTile, Select, Skeleton } from "../ui";
 import { ErrorState, InlineError } from "../ui/Feedback";
-import { BANDS, checkLabel, when } from "./bits";
+import { BANDS, checkLabel, useFrrMe, when } from "./bits";
+import { EffectivePolicy } from "./EffectivePolicy";
 import { RegisterTable } from "./RegisterTable";
 
 const PAGE_SIZES = [25, 50, 100] as const;
@@ -34,6 +35,33 @@ export function ReviewScreen({ exportId, onGoToExports }: { exportId: string; on
   const [limit, setLimit] = useState<number>(50);
   const [offset, setOffset] = useState(0);
   const [attempt, setAttempt] = useState(0);
+  const { me } = useFrrMe();
+  // rule uid -> check -> MY verdict. Loaded once per export; updated in place on save.
+  const [mine, setMine] = useState<Record<string, Record<string, FeedbackRow>>>({});
+  const [fbErr, setFbErr] = useState<ApiError>();
+  const meEmail = (me.data?.email ?? "").toLowerCase();
+  const canReview = !!me.data && (me.data.can_upload || me.data.duties.length > 0);
+
+  useEffect(() => {
+    if (!canReview) return;
+    let live = true;
+    setFbErr(undefined);
+    frr.feedback(exportId)
+      .then((f) => {
+        if (!live) return;
+        const m: Record<string, Record<string, FeedbackRow>> = {};
+        for (const r of f.items) {
+          if (r.reviewer.toLowerCase() !== meEmail) continue;
+          (m[r.rule_uid] ??= {})[r.check_kind] = r;
+        }
+        setMine(m);
+      })
+      .catch((e) => { if (live) setFbErr(asApiError(e)); });
+    return () => { live = false; };
+  }, [exportId, canReview, meEmail, attempt]);
+
+  const onFeedback = (r: FeedbackRow) =>
+    setMine((m) => ({ ...m, [r.rule_uid]: { ...(m[r.rule_uid] ?? {}), [r.check_kind]: r } }));
 
   useEffect(() => {
     let live = true;
@@ -120,6 +148,12 @@ export function ReviewScreen({ exportId, onGoToExports }: { exportId: string; on
         </section>
       )}
 
+      {page?.effective_policy && page.effective_policy.length > 0 && (
+        <EffectivePolicy gateways={page.effective_policy} />
+      )}
+
+      {fbErr && <InlineError resource="your earlier feedback" error={fbErr} onRetry={retry} />}
+
       <div className="flex flex-wrap items-end gap-3">
         <Field label="Band" htmlFor="frr-band" className="w-40">
           <Select id="frr-band" value={band} onChange={(e) => { setBand(e.target.value as Band | ""); resetPaging(); }}>
@@ -161,7 +195,8 @@ export function ReviewScreen({ exportId, onGoToExports }: { exportId: string; on
             : "The register is shorter than this offset. Go back a page."} />
       ) : (
         <div className={loading ? "opacity-60 transition-opacity" : undefined}>
-          <RegisterTable items={page.items} />
+          <RegisterTable items={page.items}
+            feedback={canReview ? { exportId, mine, onChange: onFeedback } : undefined} />
         </div>
       )}
 

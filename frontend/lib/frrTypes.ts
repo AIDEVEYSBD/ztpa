@@ -125,6 +125,39 @@ export interface ReviewPage {
   items: RegisterEntry[];
   limit: number;
   offset: number;
+  /** Per (layer, gateway): the rules installed there, in order, and what each does. */
+  effective_policy?: EffectivePolicyGateway[];
+}
+
+export interface EffectivePolicyGateway {
+  layer: string;
+  gateway: string;
+  rules_installed: number;
+  effective_allow: (number | null)[];
+  shadowed: (number | null)[];
+  deny: (number | null)[];
+  inactive: (number | null)[];
+}
+
+export type FeedbackVerdict = "agree" | "disagree";
+export type FeedbackBand = "none" | "low" | "medium" | "high" | "critical";
+
+export interface FeedbackRow {
+  export_id: string;
+  rule_uid: string;
+  check_kind: string;
+  reviewer: string;
+  verdict: FeedbackVerdict;
+  suggested_band: FeedbackBand | null;
+  comment: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface FeedbackList {
+  items: FeedbackRow[];
+  summary: Record<string, { agree: number; disagree: number; agreement: number }>;
+  suggested_bands: Record<string, number>;
 }
 
 export interface ReviewQuery {
