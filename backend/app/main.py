@@ -118,6 +118,9 @@ def _start_inline_worker():
 
 app = FastAPI(title="Network Policy Reviewer", version="1.0", lifespan=_lifespan)
 
+from src import telemetry  # noqa: E402
+telemetry.configure(app)
+
 from app.jobs_api import router as _jobs_router  # noqa: E402
 from app.limits import LLM_LIMITED, BodyLimitMiddleware  # noqa: E402
 app.include_router(_jobs_router)

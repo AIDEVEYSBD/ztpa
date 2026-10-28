@@ -14,6 +14,7 @@ _Last updated: 2026-10-28_
 
 | Date | Item(s) | Change |
 |---|---|---|
+| 2026-10-28 | 05.3 | OpenTelemetry tracing to each cloud's native backend |
 | 2026-10-28 | 04.1 | UAT scenario script |
 | 2026-10-28 | PLAT-18 | Azure Front Door Premium WAF with origin lock |
 | 2026-10-28 | 01.1c, 01.1d, 03.1c | CMDB/IPAM and flow datasets; owners on every package item; flow-observed sources prefill narrowing; Context data screen |
@@ -101,7 +102,7 @@ _Last updated: 2026-10-28_
 |---|---|---|---|
 | 05.1 | CI builds images once, deploys by digest | ✅ | `.github/workflows/deploy-gcp.yml`, `deploy-azure.yml`: manual per-environment, workload identity federation (no stored cloud keys), build+push once with provenance/SBOM, digests flow to migrate -> terraform -> smoke. CI (`ci.yml`) adds real-Postgres tests as the runtime role, image builds, prod-boot refusal, no-pytest-in-image, `terraform validate`, `next build`. actionlint clean. Not yet run on GitHub |
 | 05.2 | Post-deploy smoke test | ✅ | `python -m src.smoke`: runs inside the private network as a one-off of the migrate job; checks API liveness, migrations current, and a worker completing a `system.ping` job. 2 real-DB tests |
-| 05.3 | Runtime telemetry (OpenTelemetry export) | 🟡 | `ztpa.ai_metrics`, `advisory/trace.py`; no OTel |
+| 05.3 | Runtime telemetry (OpenTelemetry export) | ✅ | `backend/src/telemetry.py`: FastAPI + psycopg spans, parent-based sampling (`NPR_OTEL_SAMPLE`, 0.1), request id on each span; Azure → Application Insights (connection string from Terraform), GCP → Cloud Trace (`NPR_OTEL=gcp` in Terraform, ADC), else OTLP; never fatal. Plus `ztpa.ai_metrics` for model calls. Verified exporters import in the image; live traces to verify after first deploy |
 | 05.4 | Structured reviewer feedback (agree/disagree on severity) | ✅ | `ztpa.frr_feedback` (migration 0015), `PUT /api/exports/{id}/review/{rule}/feedback`: agree / disagree (false positive) / disagree naming an unraised check (missed finding, needs a band), suggested band, required comment on disagreement; `GET .../feedback` agreement per check + suggested band shifts; `GET .../labels` (admin) turns reviews into eval labels for `src.frr.evals --labels`. 2 tests |
 | 05.5 | Versioned, eval-gated prompt / retrieval / agent tuning | ⬜ | |
 

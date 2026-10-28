@@ -243,6 +243,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = p.parse_args(argv)
     from ..logjson import configure
     configure()                                    # same JSON lines as the API
+    from .. import telemetry
+    telemetry.configure()                          # database spans from jobs, same backend
     _register_builtin_handlers()
     w = Worker(kinds=[k for k in args.kinds.split(",") if k] or None,
                concurrency=args.concurrency, lease_s=args.lease).start()

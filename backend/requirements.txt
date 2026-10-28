@@ -42,6 +42,14 @@ google-auth[requests]>=2.30,<3
 # authenticate with workload identity (ADC / DefaultAzureCredential).
 google-cloud-storage>=2.18,<4
 azure-storage-blob>=12.20,<13
+# Tracing (src/telemetry.py), exported to the host cloud's backend; imported only
+# when a backend is configured.
+opentelemetry-sdk>=1.27,<2
+opentelemetry-instrumentation-fastapi>=0.48b0
+opentelemetry-instrumentation-psycopg>=0.48b0
+opentelemetry-exporter-otlp-proto-http>=1.27,<2
+opentelemetry-exporter-gcp-trace>=1.7,<2
+azure-monitor-opentelemetry>=1.6,<2
 # Postgres (Neon) — system of record
 psycopg[binary]>=3.1
 psycopg_pool>=3.2

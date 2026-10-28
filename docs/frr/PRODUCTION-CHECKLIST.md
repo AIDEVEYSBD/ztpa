@@ -36,5 +36,5 @@ Go-live gate for an environment. ✅ = enforced in code or CI; ☐ = to verify p
 
 ## Not yet in place (tracked)
 
-See [TRACKER.md](TRACKER.md): OpenTelemetry traces (05.3), Skybox ingestion (01.1b), NAT
+See [TRACKER.md](TRACKER.md): Skybox ingestion (01.1b), NAT
 applied to effective policy (02.2b), and validation against real client exports.
