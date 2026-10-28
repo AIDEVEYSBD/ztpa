@@ -14,6 +14,7 @@ _Last updated: 2026-10-28_
 
 | Date | Item(s) | Change |
 |---|---|---|
+| 2026-10-28 | 01.5, 04.3-04.5 | Labelled evaluation suite, metrics and CI gate; first severity-tuning signal recorded |
 | 2026-10-28 | 02.1, 02.4a-c, 01.4 | Five-agent orchestrated review run; validated, cited, versioned impact narratives (live on Vertex); knowledge base with full-text retrieval |
 | 2026-10-28 | 01.2, 03.1c, 03.1d, 03.2a, 03.2b | Change-package drafter with rollback, approver matrix, two-stage owner → approver review with four eyes, runbook export, FRR mode switch; shadowing refuted by install targets or recent hits |
 | 2026-10-28 | 01.1a, 02.2b-d, 02.3b-e, 03.1b, 03.1e | Check Point parser, export upload + intake job with checksum/age/shape checks, deterministic rule-risk register API; shadowing bucketed (~8x faster at 1k rules, near-linear to 20k); `migrate.py --check` made read-only |
@@ -42,7 +43,7 @@ _Last updated: 2026-10-28_
 | 01.2 | Role-to-approver matrix (network owner, network security approver) | ✅ | `ztpa.frr_approvers` (migration 0013): duty `network_owner` / `security_approver` per principal (email or SSO subject) and scope (layer or `*`), admin-managed via `/api/admin/frr/approvers`, separate from product roles; every grant/revoke audited |
 | 01.3 | Process, integrations and data-flow documentation | 🟡 | Platform architecture and data flow: `docs/frr/ARCHITECTURE.md`. Client process walkthrough still to capture |
 | 01.4 | RAG sources: network standards, exceptions, change/rollback runbooks | 🟡 | Knowledge base built: `backend/src/frr/knowledge.py` + migration 0014 (heading-aware chunking, Postgres full-text retrieval, identical on both clouds), `/api/knowledge` add/list/search/delete (admin), citations checked against what was retrieved. **The client's actual documents still to be loaded**; pgvector hybrid retrieval later |
-| 01.5 | Labelled test rulebase + metrics (check accuracy, severity agreement, time / 1,000 rules) | 🟡 | Time per 1,000 rules measured (synthetic Check Point, parse + review, laptop): 0.55 s at 1k, 0.79 s at 10k, 0.86 s at 20k (was 4.45 s at 1k / 82 s total at 10k before the shadowing index). Labelled set and accuracy metrics still to build |
+| 01.5 | Labelled test rulebase + metrics (check accuracy, severity agreement, time / 1,000 rules) | ✅ | `backend/src/frr/evals.py`: synthetic labelled Check Point rulebase (labels by construction; bands from a written v1 reviewer policy), per-check precision/recall/F1, exact band agreement + Cohen's kappa, time per 1,000 rules; `--export/--labels` for the client's labelled set. Latest (2,000 rules): P = R = 1.0 on 560+ pairs; band agreement 0.91, κ 0.85; 0.17 s / 1k rules |
 
 ## FRR-02 · Effective-policy reconstruction and risk workflow
 
@@ -82,9 +83,9 @@ _Last updated: 2026-10-28_
 |---|---|---|---|
 | 04.1 | UAT scenarios + expected outcomes | ⬜ | |
 | 04.2 | Internal functional + integration testing | 🟡 | 2,065 backend tests green against real Postgres 16 + pgvector locally; DB tests still skip in CI; 0 frontend tests |
-| 04.3 | Re-runnable eval suite incl. live-model evals | ⬜ | Agent tests stub the model |
-| 04.4 | False-positive / false-negative measurement and tuning | ⬜ | |
-| 04.5 | Eval gate in CI before UAT / release | ⬜ | |
+| 04.3 | Re-runnable eval suite incl. live-model evals | 🟡 | Deterministic eval suite re-runnable (`python -m src.frr.evals`). Live-model narrative checked manually on Vertex; automated narrative eval (groundedness / citation rate) not yet built |
+| 04.4 | False-positive / false-negative measurement and tuning | 🟡 | FP/FN measured per check with misses listed. Tuning signal found, **not applied pending reviewer labels**: engine rates broad internal admin access low (policy says medium) and internet-exposed database ports medium (policy says high) |
+| 04.5 | Eval gate in CI before UAT / release | ✅ | CI step `FRR evaluation gate` (2,000 rules): fails on precision/recall < 0.98, any check recall < 0.95, or > 3 s per 1,000 rules; band agreement enforced when `NPR_EVAL_MIN_BAND_AGREEMENT` is set; report kept as a build artifact |
 
 ## FRR-05 · Release and continuous finetuning
 

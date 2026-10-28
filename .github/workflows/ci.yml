@@ -50,6 +50,19 @@ jobs:
       - name: Engine self-check
         run: python backend/scripts/verify_engine.py
 
+      # FRR evaluation gate: check precision/recall against the labelled
+      # rulebase and review time per 1,000 rules. Fails the build on regression.
+      - name: FRR evaluation gate
+        working-directory: backend
+        run: python -m src.frr.evals --rules 2000 --gate > frr-eval.json
+
+      - name: Keep the evaluation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frr-eval
+          path: backend/frr-eval.json
+
   backend-db:
     name: backend (real Postgres, least-privilege role)
     runs-on: ubuntu-latest
