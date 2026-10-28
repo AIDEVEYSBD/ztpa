@@ -14,6 +14,7 @@ _Last updated: 2026-10-28_
 
 | Date | Item(s) | Change |
 |---|---|---|
+| 2026-10-28 | PLAT-7 | Shared rate limits on model-backed routes; request body and field caps |
 | 2026-10-28 | PLAT-4 | Replicas serve one published snapshot: active pointer + signed artifacts; cold start loads rather than rebuilds; fixed artifact publish that could keep a corrupted object |
 | 2026-10-28 | PLAT-5 | Durable Postgres job queue + worker process + job status API |
 | 2026-10-28 | PLAT-3 | Object storage interface (local / GCS / Azure Blob) |
@@ -101,7 +102,7 @@ _Last updated: 2026-10-28_
 | PLAT-4 | Stateless backend: engine state out of process memory and local disk | 🟡 | Done: `ztpa.active_snapshot` pointer (migration 0010) + HMAC-signed engine artifacts in object storage (`backend/src/snapshot_artifacts.py`); every publish site moves the pointer in its own transaction; replicas poll it (`NPR_SNAPSHOT_POLL_S`) and LOAD instead of rebuild (~0.1s vs ~2s at 2,000 assets); concurrent cold requests build once. 7 real-DB tests. Remaining: move recompute / dataset / merge rebuilds onto jobs (202 + polling) and replace `data/mock` inputs with uploaded exports (02.2d) |
 | PLAT-5 | Job worker for recompute / review runs | ✅ | Postgres queue `db/migrations/0009_jobs.sql`, `backend/src/jobs/` (SKIP LOCKED claim, heartbeat lease, backoff retries, dead state, idempotency keys, per-kind stats); worker `python -m src.jobs.worker`; inline in API for dev; `/api/jobs/{id}`, `/api/admin/jobs/{stats,ping}`. 19 real-Postgres tests incl. 8-worker contention. Existing endpoints not yet moved onto it (PLAT-4) |
 | PLAT-6 | Fail-closed proxy auth when `NPR_PROXY_SECRET` unset | ✅ | `settings.production_startup_errors()`: staging/prod refuses to boot without proxy secret, DATABASE_URL or cloud storage; localhost CORS dev-only. `tests/test_production_startup.py` |
-| PLAT-7 | Rate limits + LLM input size caps | ⬜ | |
+| PLAT-7 | Rate limits + LLM input size caps | ✅ | `backend/src/ratelimit.py` + migration 0011: per-identity and per-deployment per-minute ceilings on all 11 model-backed routes, shared across replicas (in-process fallback in dev), 429 + Retry-After, fails open loudly. `backend/app/limits.py`: 1 MB body cap incl. chunked bodies (413); field caps on ask/intake/connector sample. `tests/test_limits.py` |
 | PLAT-8 | Pinned dependencies / lockfile; test deps out of prod image | ⬜ | |
 | PLAT-9 | Terraform: GCP (Cloud Run, Cloud SQL, GCS, Secret Manager, Artifact Registry) | ⬜ | |
 | PLAT-10 | Terraform: Azure (Container Apps, private PG, Blob, Key Vault, ACR) | ⬜ | `scripts/azure/deploy.sh` exists (CLI, public DB) |

@@ -27,7 +27,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request  # noqa: E40
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import JSONResponse  # noqa: E402
 from psycopg.types.json import Jsonb  # noqa: E402
-from pydantic import BaseModel, Field  # noqa: E402
+from pydantic import BaseModel, Field, field_validator  # noqa: E402
 from starlette.exceptions import HTTPException as StarletteHTTPException  # noqa: E402
 
 from src import ai_config, azure_arm, request_ctx, settings, tools_registry  # noqa: E402
@@ -150,6 +150,7 @@ def _start_inline_worker():
 app = FastAPI(title="Network Policy Reviewer", version="1.0", lifespan=_lifespan)
 
 from app.jobs_api import router as _jobs_router  # noqa: E402
+from app.limits import LLM_LIMITED, BodyLimitMiddleware  # noqa: E402
 app.include_router(_jobs_router)
 app.add_middleware(
     CORSMiddleware,
@@ -232,6 +233,10 @@ class _ActorMiddleware:
         await self.app(scope, receive, _send)
 
 
+# Registered BEFORE the actor middleware, so it runs inside it (Starlette runs
+# the last-added middleware outermost): the proxy check and the request id
+# happen first, and a 413 carries the same request id as every other error.
+app.add_middleware(BodyLimitMiddleware)
 app.add_middleware(_ActorMiddleware)
 
 
@@ -1638,7 +1643,7 @@ def _preload_explanations(result) -> None:
     _spawn("explain-preload", run)
 
 
-@app.post("/api/findings/{fid}/explain")
+@app.post("/api/findings/{fid}/explain", dependencies=LLM_LIMITED)
 def explain_finding(fid: str):
     _require_capability("explain")
     f = _finding(fid)
@@ -1685,7 +1690,7 @@ def explain_finding(fid: str):
                      "already on the finding")}
 
 
-@app.post("/api/findings/{fid}/remediate")
+@app.post("/api/findings/{fid}/remediate", dependencies=LLM_LIMITED)
 def remediate_finding(fid: str, _: None = Depends(require_approver)):
     """Draft a fix for a finding. Guarded, for two independent reasons: it appends
     a row to `remediation_revisions` -- a GOVERNANCE table (src/db.py), the thread
@@ -1709,7 +1714,7 @@ class RefineBody(BaseModel):
     prior_change: dict | None = None
 
 
-@app.post("/api/findings/{fid}/remediate/refine")
+@app.post("/api/findings/{fid}/remediate/refine", dependencies=LLM_LIMITED)
 def remediate_refine(fid: str, body: RefineBody, _: None = Depends(require_approver)):
     """Iterate on a remediation: fold the reviewer's comment into a revised draft,
     re-validate it deterministically, and append it to the finding's thread.
@@ -1746,7 +1751,7 @@ def campaign_get():
         return {"plan": load_campaign_plan(cur, sid())}
 
 
-@app.post("/api/campaign/plan")
+@app.post("/api/campaign/plan", dependencies=LLM_LIMITED)
 def campaign_plan(body: CampaignBody, _: None = Depends(require_approver)):
     """Plan + PROVE a worst-first remediation campaign across the whole snapshot:
     the agent drafts a fix for the worst open finding, the engine re-simulates on the
@@ -1771,7 +1776,7 @@ class CampaignSubmitBody(BaseModel):
     justification: str | None = None
 
 
-@app.post("/api/campaign/submit")
+@app.post("/api/campaign/submit", dependencies=LLM_LIMITED)
 def campaign_submit(body: CampaignSubmitBody, _: None = Depends(require_approver)):
     """Send every proven fix in the persisted campaign to the Change Gate. Each
     applied step becomes its own change request, re-evaluated and ruled on by the
@@ -2132,7 +2137,7 @@ class ClassifyBody(BaseModel):
     justification: str | None = None
 
 
-@app.post("/api/change/classify")
+@app.post("/api/change/classify", dependencies=LLM_LIMITED)
 def classify(body: ClassifyBody, _: None = Depends(require_approver)):
     """Evaluate a proposed change and rule on it.
 
@@ -2973,7 +2978,7 @@ def _ai_config_drift(body: AiTestBody, resolved: ai_config.Resolved) -> list[str
     return out
 
 
-@app.post("/api/admin/ai/test")
+@app.post("/api/admin/ai/test", dependencies=LLM_LIMITED)
 def ai_config_test(body: AiTestBody | None = None, _: None = Depends(require_admin)) -> dict:
     """Make ONE real call through the configured provider and report what happened.
 
@@ -3094,10 +3099,10 @@ def ai_config_test(body: AiTestBody | None = None, _: None = Depends(require_adm
 
 
 class AskBody(BaseModel):
-    question: str
+    question: str = Field(..., min_length=1, max_length=4000)
 
 
-@app.post("/api/agent/ask")
+@app.post("/api/agent/ask", dependencies=LLM_LIMITED)
 def agent(body: AskBody):
     _require_capability("assistant")
     result = agent_ask(engine(), body.question)
@@ -3193,7 +3198,7 @@ def report():
             **_analysis_block(e.snapshot_id)}
 
 
-@app.get("/api/report/narrative")
+@app.get("/api/report/narrative", dependencies=LLM_LIMITED)
 def report_narrative():
     """The slow, board-ready LLM narrative (bounded + fail-closed)."""
     _require_capability("report")
@@ -3203,10 +3208,12 @@ def report_narrative():
 
 
 class IntakeBody(BaseModel):
-    text: str
+    # A pasted change request or ticket. 20k characters is several pages; the
+    # cap bounds the prompt the model is sent, which is the cost.
+    text: str = Field(..., min_length=1, max_length=20000)
 
 
-@app.post("/api/intake")
+@app.post("/api/intake", dependencies=LLM_LIMITED)
 def intake(body: IntakeBody):
     _require_capability("intake")
     return intake_mod.extract(body.text)
@@ -3214,10 +3221,18 @@ def intake(body: IntakeBody):
 
 class ProposeBody(BaseModel):
     sample: dict
-    tool_hint: str = ""
+    tool_hint: str = Field("", max_length=200)
+
+    @field_validator("sample")
+    @classmethod
+    def _bounded_sample(cls, v: dict) -> dict:
+        # A sample export, not the export: it is pasted into a prompt.
+        if len(json.dumps(v, default=str)) > 64_000:
+            raise ValueError("sample must be at most 64 KB of JSON; send a representative excerpt")
+        return v
 
 
-@app.post("/api/connectors/propose")
+@app.post("/api/connectors/propose", dependencies=LLM_LIMITED)
 def propose_connector(body: ProposeBody):
     _require_capability("authoring")
     return authoring.propose_profile(body.sample, body.tool_hint)

@@ -263,6 +263,15 @@ def artifact_key() -> str:
 # How often each API replica checks the active-snapshot pointer, in seconds.
 NPR_SNAPSHOT_POLL_S: float = float(os.environ.get("NPR_SNAPSHOT_POLL_S", "5"))
 
+# --- Request limits ----------------------------------------------------------
+# Model-backed endpoints, per one-minute window (src/ratelimit.py): per signed-in
+# identity, and for the whole deployment across every replica.
+NPR_RATE_LLM_PER_IDENTITY: int = int(os.environ.get("NPR_RATE_LLM_PER_IDENTITY", "30"))
+NPR_RATE_LLM_PER_DEPLOYMENT: int = int(os.environ.get("NPR_RATE_LLM_PER_DEPLOYMENT", "600"))
+# Largest JSON request body the API accepts. Export uploads stream through their
+# own endpoint with their own cap.
+NPR_MAX_BODY_BYTES: int = int(os.environ.get("NPR_MAX_BODY_BYTES", str(1024 * 1024)))
+
 # --- Misc ------------------------------------------------------------------
 FRONTEND_ORIGIN: str = os.environ.get("FRONTEND_ORIGIN", "http://localhost:3000")
 DEFAULT_SNAPSHOT_LABEL: str = "seed-demo"
