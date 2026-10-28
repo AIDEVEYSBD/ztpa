@@ -14,6 +14,7 @@ _Last updated: 2026-10-28_
 
 | Date | Item(s) | Change |
 |---|---|---|
+| 2026-10-28 | 04.1 | UAT scenario script |
 | 2026-10-28 | PLAT-18 | Azure Front Door Premium WAF with origin lock |
 | 2026-10-28 | 01.1c, 01.1d, 03.1c | CMDB/IPAM and flow datasets; owners on every package item; flow-observed sources prefill narrowing; Context data screen |
 | 2026-10-28 | 03.1a, 05.4 (UI) | Effective-policy view and per-check reviewer feedback (agree / disagree / report missed) on the Rule review screen |
@@ -88,7 +89,7 @@ _Last updated: 2026-10-28_
 
 | ID | Item | Status | Where / note |
 |---|---|---|---|
-| 04.1 | UAT scenarios + expected outcomes | ⬜ | |
+| 04.1 | UAT scenarios + expected outcomes | ✅ | `docs/frr/UAT.md`: 30 scenarios across intake, register, package/agents, two-stage review and controls, per role, with pass criteria and a results sheet. The labelled test rulebase itself comes from the client (FRR-01.5) |
 | 04.2 | Internal functional + integration testing | 🟡 | 2,065 backend tests green against real Postgres 16 + pgvector locally; DB tests still skip in CI; 0 frontend tests |
 | 04.3 | Re-runnable eval suite incl. live-model evals | 🟡 | Deterministic eval suite re-runnable (`python -m src.frr.evals`). Live-model narrative checked manually on Vertex; automated narrative eval (groundedness / citation rate) not yet built |
 | 04.4 | False-positive / false-negative measurement and tuning | 🟡 | FP/FN measured per check with misses listed. Tuning signal found, **not applied pending reviewer labels**: engine rates broad internal admin access low (policy says medium) and internet-exposed database ports medium (policy says high) |
