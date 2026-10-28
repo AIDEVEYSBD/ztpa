@@ -14,6 +14,7 @@ _Last updated: 2026-10-28_
 
 | Date | Item(s) | Change |
 |---|---|---|
+| 2026-10-28 | 02.1, 02.4a-c, 01.4 | Five-agent orchestrated review run; validated, cited, versioned impact narratives (live on Vertex); knowledge base with full-text retrieval |
 | 2026-10-28 | 01.2, 03.1c, 03.1d, 03.2a, 03.2b | Change-package drafter with rollback, approver matrix, two-stage owner → approver review with four eyes, runbook export, FRR mode switch; shadowing refuted by install targets or recent hits |
 | 2026-10-28 | 01.1a, 02.2b-d, 02.3b-e, 03.1b, 03.1e | Check Point parser, export upload + intake job with checksum/age/shape checks, deterministic rule-risk register API; shadowing bucketed (~8x faster at 1k rules, near-linear to 20k); `migrate.py --check` made read-only |
 | 2026-10-28 | PLAT-11 | Deployment guides for both clouds, runbook, production checklist |
@@ -40,14 +41,14 @@ _Last updated: 2026-10-28_
 | 01.1d | CMDB / IPAM import (owner, app, zone tags) | ⬜ | Tags currently from mock exports |
 | 01.2 | Role-to-approver matrix (network owner, network security approver) | ✅ | `ztpa.frr_approvers` (migration 0013): duty `network_owner` / `security_approver` per principal (email or SSO subject) and scope (layer or `*`), admin-managed via `/api/admin/frr/approvers`, separate from product roles; every grant/revoke audited |
 | 01.3 | Process, integrations and data-flow documentation | 🟡 | Platform architecture and data flow: `docs/frr/ARCHITECTURE.md`. Client process walkthrough still to capture |
-| 01.4 | RAG sources: network standards, exceptions, change/rollback runbooks | ⬜ | No vector store or corpus |
+| 01.4 | RAG sources: network standards, exceptions, change/rollback runbooks | 🟡 | Knowledge base built: `backend/src/frr/knowledge.py` + migration 0014 (heading-aware chunking, Postgres full-text retrieval, identical on both clouds), `/api/knowledge` add/list/search/delete (admin), citations checked against what was retrieved. **The client's actual documents still to be loaded**; pgvector hybrid retrieval later |
 | 01.5 | Labelled test rulebase + metrics (check accuracy, severity agreement, time / 1,000 rules) | 🟡 | Time per 1,000 rules measured (synthetic Check Point, parse + review, laptop): 0.55 s at 1k, 0.79 s at 10k, 0.86 s at 20k (was 4.45 s at 1k / 82 s total at 10k before the shadowing index). Labelled set and accuracy metrics still to build |
 
 ## FRR-02 · Effective-policy reconstruction and risk workflow
 
 | ID | Item | Status | Where / note |
 |---|---|---|---|
-| 02.1 | Five agents + handoffs: orchestrator, intake parser, effective-policy checker, risk & impact assessor, change-package drafter | ⬜ | Existing agents (remediation, campaign, classify, authoring, ask) do other jobs |
+| 02.1 | Five agents + handoffs: orchestrator, intake parser, effective-policy checker, risk & impact assessor, change-package drafter | ✅ | `backend/src/frr/agents.py`: `frr.review_run` job sequences the five agents, records each step (inputs' identity, counts, prompt version, model) in `ztpa.frr_runs`, restarts idempotently, never replaces a package under review. `POST /api/exports/{id}/review-runs`, `GET /api/frr/runs/{id}`, `GET /api/frr/agents`. 12 tests incl. real-DB orchestrated run |
 | 02.2a | Rule / object normalisation | ✅ | `backend/src/models.py`, `backend/src/normalizers/` |
 | 02.2b | NAT parsing | 🟡 | Check Point NAT rules parsed with resolved original/translated address space (`NatRule`); not yet applied to effective policy |
 | 02.2c | Intake integrity: checksum, export age, schema validation, fail closed on wrong shape | ✅ | `backend/src/frr/intake.py`: sha256 recorded at upload and re-verified in the worker; export time required (file or declared), rejected if > `NPR_EXPORT_MAX_AGE_DAYS` (30) or in the future; non-rulebase / paginated-incomplete / rule-missing-fields exports rejected with a reason. Rejection is an outcome on the export row, never an empty estate. (The older `profile.py` path is unchanged) |
@@ -58,9 +59,9 @@ _Last updated: 2026-10-28_
 | 02.3d | Check: expired rules | ✅ | Time-object expiry in `RuleMeta.expires_at`; `expired` and `expiring_soon` (`NPR_FRR_EXPIRING_DAYS`) checks |
 | 02.3e | Check: unused rules via hit counts | ✅ | `unused` = zero hits or last hit older than `NPR_FRR_UNUSED_DAYS` (90); only when the export carries hits, else a limitation; plus `disabled` |
 | 02.3f | Change recommendation workflow with rollback | 🟡 | Remediation loop exists; rollback is a status flip |
-| 02.4a | LLM for impact narrative only; engine decides | 🟡 | LLM currently classifies auto-approve/escalate and ranks |
-| 02.4b | Versioned system prompts | ⬜ | `advisory/prompts/*.txt` + inline, unversioned |
-| 02.4c | Schema-validated model output | ⬜ | `parse_json` + hand checks |
+| 02.4a | LLM for impact narrative only; engine decides | ✅ | FRR path: model writes prose through a schema with no band/proposal/command/impact field (test proves injected fields are dropped); live-verified on Vertex `gemini-2.5-pro` (grounded, cited). Older console features still use the LLM for classify/rank (behind FRR mode, classify can no longer auto-approve) |
+| 02.4b | Versioned system prompts | ✅ | `backend/src/frr/prompts/impact.v1.md`, `package.v1.md`; version = name@sha256 recorded on every narrative and run step |
+| 02.4c | Schema-validated model output | ✅ | pydantic `ImpactNarrative` / `PackageNarrative` with length caps; invented citations, schema failures and provider errors fall back to labelled engine text (`by: engine_fallback`, `fallback_reason`). Top-N narration (`NPR_FRR_NARRATE_TOP`, 40) bounds cost |
 | 02.5 | Configuration smoke test + initial benchmark | 🟡 | `/api/admin/ai/test`; no benchmark on labelled data |
 
 ## FRR-03 · Screens, HITL gates and change package

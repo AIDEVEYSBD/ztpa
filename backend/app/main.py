@@ -125,6 +125,8 @@ from app.exports_api import router as _exports_router  # noqa: E402
 app.include_router(_exports_router)
 from app.packages_api import router as _packages_router  # noqa: E402
 app.include_router(_packages_router)
+from app.frr_api import router as _frr_router  # noqa: E402
+app.include_router(_frr_router)
 app.add_middleware(
     CORSMiddleware,
     # The local dev origin is allowed only in dev: a production API that accepts

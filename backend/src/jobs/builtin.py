@@ -17,4 +17,4 @@ def ping(ctx: JobContext) -> dict:
 
 
 # FRR intake: registering the module registers `export.ingest`.
-from ..frr import intake  # noqa: E402,F401
+from ..frr import agents, intake  # noqa: E402,F401
