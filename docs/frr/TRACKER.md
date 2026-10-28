@@ -14,6 +14,9 @@ _Last updated: 2026-10-28_
 
 | Date | Item(s) | Change |
 |---|---|---|
+| 2026-10-28 | PLAT-5 | Durable Postgres job queue + worker process + job status API |
+| 2026-10-28 | PLAT-3 | Object storage interface (local / GCS / Azure Blob) |
+| 2026-10-28 | PLAT-6, 01.3 | Production fail-closed boot checks; `docs/frr/ARCHITECTURE.md` |
 | 2026-10-28 | PLAT-12, PLAT-13 | `auto` prefers the host cloud's own AI service; BYOK keys reported by name; failed Vertex credential lookups cached 30s so they are not re-probed per request |
 | 2026-10-28 | PLAT-1 | Live Vertex call verified via ADC; default model set to `google/gemini-2.5-pro` (2.5-flash not enabled on the sandbox project) |
 | 2026-10-28 | PLAT-2 | Live call verified against the sandbox Azure AI Foundry account (`gpt-4.1-mini`, identity auth) |
@@ -28,7 +31,7 @@ _Last updated: 2026-10-28_
 | 01.1c | Cisco flow / Stealthwatch ingestion | ⬜ | Catalyst/Meraki inventory only |
 | 01.1d | CMDB / IPAM import (owner, app, zone tags) | ⬜ | Tags currently from mock exports |
 | 01.2 | Role-to-approver matrix (network owner, network security approver) | 🟡 | admin/analyst/viewer + `require_approver` (`backend/app/main.py`); no owner/approver split |
-| 01.3 | Process, integrations and data-flow documentation | ⬜ | `docs/frr/ARCHITECTURE.md` planned |
+| 01.3 | Process, integrations and data-flow documentation | 🟡 | Platform architecture and data flow: `docs/frr/ARCHITECTURE.md`. Client process walkthrough still to capture |
 | 01.4 | RAG sources: network standards, exceptions, change/rollback runbooks | ⬜ | No vector store or corpus |
 | 01.5 | Labelled test rulebase + metrics (check accuracy, severity agreement, time / 1,000 rules) | 🟡 | One golden fixture (`backend/scripts/verify_engine.py`), scale bench; no labels or metrics |
 
@@ -69,7 +72,7 @@ _Last updated: 2026-10-28_
 | ID | Item | Status | Where / note |
 |---|---|---|---|
 | 04.1 | UAT scenarios + expected outcomes | ⬜ | |
-| 04.2 | Internal functional + integration testing | 🟡 | ~2,000 backend tests; DB tests skip in CI; 0 frontend tests |
+| 04.2 | Internal functional + integration testing | 🟡 | 2,065 backend tests green against real Postgres 16 + pgvector locally; DB tests still skip in CI; 0 frontend tests |
 | 04.3 | Re-runnable eval suite incl. live-model evals | ⬜ | Agent tests stub the model |
 | 04.4 | False-positive / false-negative measurement and tuning | ⬜ | |
 | 04.5 | Eval gate in CI before UAT / release | ⬜ | |
@@ -93,12 +96,14 @@ _Last updated: 2026-10-28_
 | PLAT-12 | Native-platform AI by default: `auto` picks Vertex on GCP, AI Foundry on Azure (platform auto-detected, `NPR_PLATFORM` override) | ✅ | `backend/src/settings.py` (`platform`, `active_provider`); tests in `backend/tests/test_advisory_vertex.py` |
 | PLAT-13 | BYOK: OpenAI / Anthropic / Azure key / GCP service-account file, from the platform secret store, never the DB | 🟡 | Env-based keys work and are reported by name in `/api/health` (`byok_keys`); Secret Manager / Key Vault wiring is PLAT-3 |
 | PLAT-14 | Cross-cloud identity federation (e.g. GCP workload calling Azure OpenAI without a key) | ⬜ | Later; designed-for, not built |
-| PLAT-3 | Storage / secrets / identity interfaces (GCS + Blob, Secret Manager + Key Vault) | ⬜ | |
+| PLAT-3 | Storage / secrets / identity interfaces (GCS + Blob, Secret Manager + Key Vault) | 🟡 | Storage done: `backend/src/storage.py` (`file://`, `gs://`, `az://`, workload identity, streamed, atomic local writes), `tests/test_storage.py`. Secrets: injected as env by Cloud Run / Container Apps (deploy wiring, PLAT-9/10). Live bucket test pending deploy |
 | PLAT-4 | Stateless backend: engine state out of process memory and local disk | ⬜ | `_ENGINE` global (`app/main.py`) |
-| PLAT-5 | Job worker for recompute / review runs | ⬜ | Ad-hoc threads today |
-| PLAT-6 | Fail-closed proxy auth when `NPR_PROXY_SECRET` unset | ⬜ | `src/request_ctx.py` |
+| PLAT-5 | Job worker for recompute / review runs | ✅ | Postgres queue `db/migrations/0009_jobs.sql`, `backend/src/jobs/` (SKIP LOCKED claim, heartbeat lease, backoff retries, dead state, idempotency keys, per-kind stats); worker `python -m src.jobs.worker`; inline in API for dev; `/api/jobs/{id}`, `/api/admin/jobs/{stats,ping}`. 19 real-Postgres tests incl. 8-worker contention. Existing endpoints not yet moved onto it (PLAT-4) |
+| PLAT-6 | Fail-closed proxy auth when `NPR_PROXY_SECRET` unset | ✅ | `settings.production_startup_errors()`: staging/prod refuses to boot without proxy secret, DATABASE_URL or cloud storage; localhost CORS dev-only. `tests/test_production_startup.py` |
 | PLAT-7 | Rate limits + LLM input size caps | ⬜ | |
 | PLAT-8 | Pinned dependencies / lockfile; test deps out of prod image | ⬜ | |
 | PLAT-9 | Terraform: GCP (Cloud Run, Cloud SQL, GCS, Secret Manager, Artifact Registry) | ⬜ | |
 | PLAT-10 | Terraform: Azure (Container Apps, private PG, Blob, Key Vault, ACR) | ⬜ | `scripts/azure/deploy.sh` exists (CLI, public DB) |
+| PLAT-15 | Load-test suite (`loadtest/`) gating releases | ⬜ | |
+| PLAT-16 | One-step schema bootstrap for the migrate job (`schema.sql` + `auth_schema.sql` + `sso_schema.sql` + migrations) | ⬜ | Today three files must be applied in order by hand |
 | PLAT-11 | Deployment docs: `docs/frr/DEPLOY-GCP.md`, `docs/frr/DEPLOY-AZURE.md`, runbook, prod checklist | ⬜ | |

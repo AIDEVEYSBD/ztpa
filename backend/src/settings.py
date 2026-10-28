@@ -214,6 +214,18 @@ def production_startup_errors() -> list[str]:
     return errors
 
 
+def jobs_inline() -> bool:
+    """Run a job worker inside the API process. On by default in dev (one
+    process to start), off by default elsewhere, where workers are their own
+    service and scale on queue depth."""
+    v = os.environ.get("NPR_JOBS_INLINE", "").strip().lower()
+    if v in ("1", "true", "yes"):
+        return True
+    if v in ("0", "false", "no"):
+        return False
+    return not is_production()
+
+
 def byok_keys() -> list[str]:
     """Names (never values) of the bring-your-own-key secrets present."""
     names = ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "AZURE_AI_API_KEY",

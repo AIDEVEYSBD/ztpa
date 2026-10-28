@@ -124,10 +124,32 @@ async def _lifespan(_app: FastAPI):
                                                      "environment": settings.environment()})
         raise settings.StartupRefused("; ".join(errors))
     _warm_engine()
-    yield
+    inline = _start_inline_worker()
+    try:
+        yield
+    finally:
+        if inline is not None:
+            inline.stop(timeout=10)
+
+
+def _start_inline_worker():
+    """Dev convenience: consume the job queue inside the API process, through the
+    same `Worker` production runs as its own service."""
+    if not settings.jobs_inline():
+        return None
+    if not settings.DATABASE_URL:
+        log.info("inline job worker not started: no DATABASE_URL",
+                 extra={"event": "inline_worker_skipped"})
+        return None
+    from src.jobs import builtin  # noqa: F401  -- registers the shipped handlers
+    from src.jobs.worker import Worker
+    return Worker(concurrency=1).start()
 
 
 app = FastAPI(title="Network Policy Reviewer", version="1.0", lifespan=_lifespan)
+
+from app.jobs_api import router as _jobs_router  # noqa: E402
+app.include_router(_jobs_router)
 app.add_middleware(
     CORSMiddleware,
     # The local dev origin is allowed only in dev: a production API that accepts
