@@ -20,15 +20,15 @@ Claims that could **not** be verified in this environment are called out explici
 | **3** — Pilot-ready | Real ingestion path, bounded algorithms, analyzer coverage | ⬜ Next |
 | **Network Analyser** | Sources → Inventory → Topology → Resilience; multi-console reconstruction | ✅ Complete |
 | **Demo scenario set** | One estate per scenario: all ten exports written, a second cross-tool path, an anti-cheat, `partial` added, `multi_path` deleted | ✅ Complete |
-| **4** — Production hardening | Provider parity, cost/latency limits, full coverage, reproducible builds | ⬜ Not started |
+| **4** — Production hardening | Provider parity, cost/latency limits, full coverage, reproducible builds | 🟡 Platform half complete (branch `feat/frr-platform`) — see below |
 
 | Metric | Baseline | Now |
 |---|---|---|
-| Tests passing | 16 | **1,674** |
+| Tests passing | 16 | **2,083** (real Postgres, as the least-privilege role) |
 | Test suite runtime | 60.2s | **5.2s** |
 | Silent frontend catches (`.catch(() => {})`) | 11 | **0** |
 | Bare `except Exception:` (backend) | 29 | **9** |
-| CI | none | pytest + verify_engine + typecheck + lint |
+| CI | none | pytest (offline + real Postgres) + verify_engine + typecheck + lint + next build + image builds + Terraform validate |
 | Engine output | `snap_9909fd547587`, 17 findings | `snap_6f12b7b48a9c`, **30 findings** (see Phase 1 caveat) |
 
 ---
@@ -556,3 +556,35 @@ never as 126 boxes.
 **4. `Topology.subnets` is 0 on the reconstructed object** while the Inventory's
 gauge reads 8 from the VLAN pools. A bare zero on the screen that counts things
 is the empty-vs-unknown conflation appearing where it is least affordable.
+
+---
+
+## Phase 4 — Production hardening, platform half 🟡
+
+**Branch:** `feat/frr-platform` (from `main` at `8667c7e` + the UI design-system commits). Feature-level status lives in [frr/TRACKER.md](frr/TRACKER.md); design in [frr/ARCHITECTURE.md](frr/ARCHITECTURE.md).
+
+### Closed
+
+| Audit item | Fix | Evidence |
+|---|---|---|
+| D4 proxy boundary fails open | staging/prod refuse to boot without `NPR_PROXY_SECRET`, `DATABASE_URL`, artifact key, cloud storage; image preflight exits 1 | `tests/test_production_startup.py`; container run exits 1 |
+| Stateful single process | Active-snapshot pointer + HMAC-signed engine artifacts; replicas load instead of rebuild (0.09 s vs 2.03 s at 2,000 assets, measured) | `tests/test_snapshot_artifacts.py` |
+| No job queue | Postgres queue (SKIP LOCKED, leases, retries, dead state) + worker process | 22 real-DB tests incl. 8-worker contention |
+| No rate limits / unbounded LLM inputs | Shared per-identity + per-deployment limits on 11 model routes; 1 MB body cap incl. chunked; field caps | `tests/test_limits.py` |
+| Unpinned deps, pytest in prod | Hash-pinned `requirements.lock`; dev deps split; verified absent from image | CI `images` job |
+| App connects as DB admin | Runtime role with row access only; migrations as owner | full suite green as that role |
+| No GCP support | Vertex provider (ADC), native-platform routing | live call verified on sandbox |
+| Fragile schema setup (3 files by hand) | `migrate.py --bootstrap` + advisory lock | fresh DB → full suite green |
+
+### Real defects found on the way
+
+- Artifact publish skipped the upload when the key existed, so a corrupted object would never be repaired.
+- The body-size middleware first sat outside the request-id middleware (Starlette order), and a mid-read exception became a 400; both fixed and tested.
+- uvicorn's supervisor exits 0 when a worker refuses to boot; the preflight makes it exit 1.
+
+### ⚠️ Carried forward
+
+- Recompute, dataset switch and merge still rebuild on the request path (now published to all replicas); moving them onto jobs needs the frontend to poll (tracker PLAT-4).
+- Not yet applied to a real cloud: both Terraform roots are validated and planned read-only against the sandbox (GCP 68 resources, Azure 56), and the deploy workflows are linted but not yet run on GitHub.
+- Load testing (PLAT-15), Azure Front Door + WAF (PLAT-18), OpenTelemetry export.
+
