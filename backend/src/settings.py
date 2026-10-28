@@ -69,7 +69,11 @@ DB_SCHEMA: str = "ztpa"
 # fall back to the customer's OWN Azure AI Foundry deployment if one is
 # configured, and only then to a third-party hosted key — OpenAI, then
 # Anthropic. Force a single provider with
-# ADVISORY_PROVIDER=ollama|azure|openai|anthropic.
+# ADVISORY_PROVIDER=ollama|azure|vertex|openai|anthropic. On a cloud platform
+# (see `platform()`) `auto` prefers that platform's native provider first.
+# `vertex` is chosen by `auto` ONLY on GCP: ADC is present on every developer
+# machine with gcloud, so routing to it locally would move topology off the box
+# by accident.
 #
 # This is the DEFAULT, consulted when no configuration row has been stored; a
 # row selected through the Configuration page wins (see src/ai_config.py).
@@ -78,7 +82,7 @@ ADVISORY_PROVIDER: str = os.environ.get("ADVISORY_PROVIDER", "auto").strip().low
 # The providers that name one destination. `auto` is everything else: it is not
 # a provider, it is the instruction to pick one, and every branch that treats it
 # as a name has to be able to tell the difference.
-EXPLICIT_PROVIDERS: tuple[str, ...] = ("ollama", "azure", "anthropic", "openai")
+EXPLICIT_PROVIDERS: tuple[str, ...] = ("ollama", "azure", "vertex", "anthropic", "openai")
 
 OLLAMA_HOST: str = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
 OLLAMA_JUDGE_MODEL: str = os.environ.get("OLLAMA_JUDGE_MODEL", "qwen3-coder:30b")
@@ -133,6 +137,55 @@ AZURE_ARM_SCOPE: str = os.environ.get(
 # Which subscription discovery enumerates. Empty = ask ARM for the ones the
 # credential can see rather than guessing one.
 AZURE_SUBSCRIPTION_ID: str = os.environ.get("AZURE_SUBSCRIPTION_ID", "").strip()
+
+# --- Google Vertex AI ------------------------------------------------------
+# The GCP counterpart of the Azure block above: a model in the customer's OWN
+# project, reached with Application Default Credentials -- the Cloud Run service
+# account in a deployment, `gcloud auth application-default login` on a
+# developer machine. No key exists to store. Environment-only for now: the
+# stored configuration row selects the provider but holds no Vertex fields.
+#
+# VERTEX_PROJECT empty = the project ADC reports (GOOGLE_CLOUD_PROJECT, then the
+# gcloud config). VERTEX_LOCATION 'global' uses the global endpoint, which has
+# the widest model availability; a region pins data processing to it.
+VERTEX_PROJECT: str = os.environ.get("VERTEX_PROJECT", "").strip()
+VERTEX_LOCATION: str = os.environ.get("VERTEX_LOCATION", "global").strip() or "global"
+# Publisher-qualified, as Vertex's OpenAI-compatible endpoint expects.
+VERTEX_MODEL: str = os.environ.get("VERTEX_MODEL", "google/gemini-2.5-pro").strip()
+
+# --- Hosting platform ------------------------------------------------------
+# Which cloud this process runs on decides the NATIVE AI provider `auto` prefers:
+# Vertex AI on GCP, Azure AI Foundry on Azure. 'auto' detects it from the
+# variables each runtime injects; set NPR_PLATFORM to override (e.g. on GKE/AKS,
+# which inject neither). BYOK keys (OPENAI_API_KEY, ANTHROPIC_API_KEY,
+# AZURE_AI_API_KEY, or a service-account file in GOOGLE_APPLICATION_CREDENTIALS)
+# still work on any platform: an explicit ADVISORY_PROVIDER selects them, and
+# `auto` falls back to them when the native provider is not usable.
+NPR_PLATFORM: str = os.environ.get("NPR_PLATFORM", "auto").strip().lower() or "auto"
+PLATFORMS: tuple[str, ...] = ("gcp", "azure", "local")
+
+
+def platform() -> str:
+    if NPR_PLATFORM in PLATFORMS:
+        return NPR_PLATFORM
+    if os.environ.get("K_SERVICE") or os.environ.get("CLOUD_RUN_JOB"):
+        return "gcp"
+    if os.environ.get("CONTAINER_APP_NAME"):
+        return "azure"
+    return "local"
+
+
+def byok_keys() -> list[str]:
+    """Names (never values) of the bring-your-own-key secrets present."""
+    names = ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "AZURE_AI_API_KEY",
+             "GOOGLE_APPLICATION_CREDENTIALS")
+    return [n for n in names if os.environ.get(n, "").strip()]
+
+
+def _vertex_ok() -> bool:
+    from .advisory.client import vertex_ready   # late: client imports this module
+    return vertex_ready()[0]
+
 
 # --- Misc ------------------------------------------------------------------
 FRONTEND_ORIGIN: str = os.environ.get("FRONTEND_ORIGIN", "http://localhost:3000")
@@ -349,7 +402,16 @@ def active_provider() -> str:
             _AUTO_ROUTE["unusable"] = None
         return resolved.provider
 
-    if ollama_available():
+    plat = platform()
+    if plat == "gcp" and _vertex_ok():
+        # The platform's own model service, in the customer's own project. This
+        # is the one place `auto` may pick vertex: on Cloud Run, ADC is the
+        # service account somebody deliberately granted, not a developer's login.
+        chosen, why, warn = "vertex", "running on GCP; using the project's Vertex AI", False
+    elif plat == "azure" and azure_ok:
+        chosen, why, warn = ("azure", "running on Azure; using the subscription's AI Foundry "
+                             f"deployment ({resolved.azure_deployment})", False)
+    elif ollama_available():
         chosen, why, warn = "ollama", "a local model is reachable", False
     elif azure_ok:
         chosen, why, warn = ("azure",

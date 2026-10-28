@@ -1,0 +1,104 @@
+# Firewall Rule Review (FRR) — build tracker
+
+What exists, what is partial, what is still to build. Updated after every feature lands.
+Bar: **production grade** — scalable, load-tested, no per-request slow paths.
+Approach: **additive** — existing product capabilities stay; FRR is built alongside them.
+Where an existing behaviour conflicts with an FRR rule (device push, auto-approve), it is
+disabled by an FRR policy switch, not deleted.
+
+Status: ✅ done · 🟡 partial · ⬜ not started · 🔧 in progress
+
+_Last updated: 2026-10-28_
+
+## Changelog
+
+| Date | Item(s) | Change |
+|---|---|---|
+| 2026-10-28 | PLAT-12, PLAT-13 | `auto` prefers the host cloud's own AI service; BYOK keys reported by name; failed Vertex credential lookups cached 30s so they are not re-probed per request |
+| 2026-10-28 | PLAT-1 | Live Vertex call verified via ADC; default model set to `google/gemini-2.5-pro` (2.5-flash not enabled on the sandbox project) |
+| 2026-10-28 | PLAT-2 | Live call verified against the sandbox Azure AI Foundry account (`gpt-4.1-mini`, identity auth) |
+| 2026-10-28 | PLAT-1 | Google Vertex AI provider (ADC auth, OpenAI-compatible endpoint, never chosen by `auto`), migration 0008, Configuration-page option, 11 offline tests |
+
+## FRR-01 · Requirements, exports and evaluation rulebase
+
+| ID | Item | Status | Where / note |
+|---|---|---|---|
+| 01.1a | Check Point rulebase/objects/NAT parser | ⬜ | Only comment mentions today |
+| 01.1b | Skybox export parser | ⬜ | |
+| 01.1c | Cisco flow / Stealthwatch ingestion | ⬜ | Catalyst/Meraki inventory only |
+| 01.1d | CMDB / IPAM import (owner, app, zone tags) | ⬜ | Tags currently from mock exports |
+| 01.2 | Role-to-approver matrix (network owner, network security approver) | 🟡 | admin/analyst/viewer + `require_approver` (`backend/app/main.py`); no owner/approver split |
+| 01.3 | Process, integrations and data-flow documentation | ⬜ | `docs/frr/ARCHITECTURE.md` planned |
+| 01.4 | RAG sources: network standards, exceptions, change/rollback runbooks | ⬜ | No vector store or corpus |
+| 01.5 | Labelled test rulebase + metrics (check accuracy, severity agreement, time / 1,000 rules) | 🟡 | One golden fixture (`backend/scripts/verify_engine.py`), scale bench; no labels or metrics |
+
+## FRR-02 · Effective-policy reconstruction and risk workflow
+
+| ID | Item | Status | Where / note |
+|---|---|---|---|
+| 02.1 | Five agents + handoffs: orchestrator, intake parser, effective-policy checker, risk & impact assessor, change-package drafter | ⬜ | Existing agents (remediation, campaign, classify, authoring, ask) do other jobs |
+| 02.2a | Rule / object normalisation | ✅ | `backend/src/models.py`, `backend/src/normalizers/` |
+| 02.2b | NAT parsing | ⬜ | |
+| 02.2c | Intake integrity: checksum, export age, schema validation, fail closed on wrong shape | ⬜ | Wrong-shaped export currently reads as clean (`normalizers/profile.py`) |
+| 02.2d | Export upload + object storage (GCS / Blob) | ⬜ | Engine reads `backend/data/mock` only |
+| 02.3a | Effective policy: first-match per device/package, deny subtraction | 🟡 | Union-of-allows graph (`backend/src/graph/build.py`) |
+| 02.3b | Checks: any-any, exposed admin ports, broad sources | ✅ | `analyzers/over_permissive.py`, `analyzers/severity.py` |
+| 02.3c | Check: shadowed rules (per rulebase, bucketed) | 🟡 | Per source tool, O(n²) (`analyzers/shadowing.py`) |
+| 02.3d | Check: expired rules | ⬜ | No schedule/expiry field |
+| 02.3e | Check: unused rules via hit counts | ⬜ | |
+| 02.3f | Change recommendation workflow with rollback | 🟡 | Remediation loop exists; rollback is a status flip |
+| 02.4a | LLM for impact narrative only; engine decides | 🟡 | LLM currently classifies auto-approve/escalate and ranks |
+| 02.4b | Versioned system prompts | ⬜ | `advisory/prompts/*.txt` + inline, unversioned |
+| 02.4c | Schema-validated model output | ⬜ | `parse_json` + hand checks |
+| 02.5 | Configuration smoke test + initial benchmark | 🟡 | `/api/admin/ai/test`; no benchmark on labelled data |
+
+## FRR-03 · Screens, HITL gates and change package
+
+| ID | Item | Status | Where / note |
+|---|---|---|---|
+| 03.1a | Effective-policy model view | 🟡 | Explorer/graph UI; inherits 02.3a limit |
+| 03.1b | Rule-risk register with evidence | 🟡 | `/api/findings`, `RiskTodo.tsx`; not FRR-shaped |
+| 03.1c | Narrowed or time-bound rule proposals | ⬜ | |
+| 03.1d | Rollback plan artefact | ⬜ | |
+| 03.1e | Limitations section per review | 🟡 | Integrity/degraded markers only |
+| 03.2a | Two-stage HITL: owner validates findings + availability impact → approver reviews change package | 🟡 | Single approver stage |
+| 03.2b | FRR policy switch: no device write, no auto-approve, no automatic ITSM change | ⬜ | Push simulated (`change/staging.py`); auto-approve path exists |
+
+## FRR-04 · Evaluation, UAT and finetuning
+
+| ID | Item | Status | Where / note |
+|---|---|---|---|
+| 04.1 | UAT scenarios + expected outcomes | ⬜ | |
+| 04.2 | Internal functional + integration testing | 🟡 | ~2,000 backend tests; DB tests skip in CI; 0 frontend tests |
+| 04.3 | Re-runnable eval suite incl. live-model evals | ⬜ | Agent tests stub the model |
+| 04.4 | False-positive / false-negative measurement and tuning | ⬜ | |
+| 04.5 | Eval gate in CI before UAT / release | ⬜ | |
+
+## FRR-05 · Release and continuous finetuning
+
+| ID | Item | Status | Where / note |
+|---|---|---|---|
+| 05.1 | CI builds images once, deploys by digest | ⬜ | CI tests only; laptop deploys |
+| 05.2 | Post-deploy smoke test | 🟡 | `/api/live`, `/api/health` |
+| 05.3 | Runtime telemetry (OpenTelemetry export) | 🟡 | `ztpa.ai_metrics`, `advisory/trace.py`; no OTel |
+| 05.4 | Structured reviewer feedback (agree/disagree on severity) | 🟡 | Comment threads only |
+| 05.5 | Versioned, eval-gated prompt / retrieval / agent tuning | ⬜ | |
+
+## Platform (GCP + Azure multi-cloud)
+
+| ID | Item | Status | Where / note |
+|---|---|---|---|
+| PLAT-1 | Vertex AI (Gemini) provider via ADC | ✅ | `backend/src/advisory/client.py`, `db/migrations/0008_vertex_provider.sql`, `backend/tests/test_advisory_vertex.py`. Live-verified 2026-10-28 on the sandbox project: `gemini-2.5-pro` (default) and `gemini-3-flash-preview` answer with native JSON; `gemini-2.5-flash` and the other 3.x names 404 there |
+| PLAT-2 | Azure OpenAI / Foundry provider | ✅ | Pre-existing (`advisory/client.py`). Live-verified 2026-10-28: sandbox Foundry account, `gpt-4.1-mini`, managed-identity/`az login` auth, native JSON mode |
+| PLAT-12 | Native-platform AI by default: `auto` picks Vertex on GCP, AI Foundry on Azure (platform auto-detected, `NPR_PLATFORM` override) | ✅ | `backend/src/settings.py` (`platform`, `active_provider`); tests in `backend/tests/test_advisory_vertex.py` |
+| PLAT-13 | BYOK: OpenAI / Anthropic / Azure key / GCP service-account file, from the platform secret store, never the DB | 🟡 | Env-based keys work and are reported by name in `/api/health` (`byok_keys`); Secret Manager / Key Vault wiring is PLAT-3 |
+| PLAT-14 | Cross-cloud identity federation (e.g. GCP workload calling Azure OpenAI without a key) | ⬜ | Later; designed-for, not built |
+| PLAT-3 | Storage / secrets / identity interfaces (GCS + Blob, Secret Manager + Key Vault) | ⬜ | |
+| PLAT-4 | Stateless backend: engine state out of process memory and local disk | ⬜ | `_ENGINE` global (`app/main.py`) |
+| PLAT-5 | Job worker for recompute / review runs | ⬜ | Ad-hoc threads today |
+| PLAT-6 | Fail-closed proxy auth when `NPR_PROXY_SECRET` unset | ⬜ | `src/request_ctx.py` |
+| PLAT-7 | Rate limits + LLM input size caps | ⬜ | |
+| PLAT-8 | Pinned dependencies / lockfile; test deps out of prod image | ⬜ | |
+| PLAT-9 | Terraform: GCP (Cloud Run, Cloud SQL, GCS, Secret Manager, Artifact Registry) | ⬜ | |
+| PLAT-10 | Terraform: Azure (Container Apps, private PG, Blob, Key Vault, ACR) | ⬜ | `scripts/azure/deploy.sh` exists (CLI, public DB) |
+| PLAT-11 | Deployment docs: `docs/frr/DEPLOY-GCP.md`, `docs/frr/DEPLOY-AZURE.md`, runbook, prod checklist | ⬜ | |

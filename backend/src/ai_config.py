@@ -130,7 +130,7 @@ TABLE = "ai_config"
 # storable on purpose: it is how an operator says "go back to letting the
 # environment decide" without deleting the row and losing the record that they
 # said it.
-PROVIDERS: tuple[str, ...] = ("auto", "azure", "openai", "anthropic", "ollama")
+PROVIDERS: tuple[str, ...] = ("auto", "azure", "vertex", "openai", "anthropic", "ollama")
 AZURE_AUTH_MODES: tuple[str, ...] = ("identity", "key")
 
 # Azure OpenAI data-plane API version used when neither the row nor the

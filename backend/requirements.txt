@@ -31,6 +31,12 @@ openai>=1.40
 # chain, which silently changes WHICH identity authenticates), while leaving
 # patch releases of a credential library reachable. Verified on 1.25.3.
 azure-identity>=1.19,<2
+# GCP credentials only -- Application Default Credentials (the Cloud Run service
+# account, or `gcloud auth application-default login` locally) turned into a
+# bearer token for Vertex AI's OpenAI-compatible endpoint, which the openai
+# package above then calls. The [requests] extra is google-auth's refresh
+# transport. No Vertex SDK: it would be a second HTTP stack for the same call.
+google-auth[requests]>=2.30,<3
 # Postgres (Neon) — system of record
 psycopg[binary]>=3.1
 psycopg_pool>=3.2

@@ -403,7 +403,7 @@ export interface AdminMetrics {
  *  directly comparable. `auto` is a storable choice, not the absence of one: it
  *  is how an operator says "go back to letting the deployment decide" while
  *  still leaving a record that they said it. */
-export type AiProvider = "auto" | "azure" | "openai" | "anthropic" | "ollama";
+export type AiProvider = "auto" | "azure" | "vertex" | "openai" | "anthropic" | "ollama";
 
 /** 'identity' — the Container App's managed identity, no secret anywhere.
  *  'key'      — an API key read from the environment. Never from the database. */

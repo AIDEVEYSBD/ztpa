@@ -85,6 +85,7 @@ import { ErrorState, InlineError, Spinner } from "../ui/Feedback";
 const PROVIDERS: { id: AiProvider; label: string; note: string }[] = [
   { id: "auto", label: "Automatic", note: "Let the backend pick the best provider it can actually reach, in its built-in order. This is the shipped default." },
   { id: "azure", label: "Azure AI Foundry", note: "Call a model deployment on your own Azure AI / Cognitive Services account. Requires an endpoint and a deployment below." },
+  { id: "vertex", label: "Google Vertex AI", note: "A Gemini model in your own GCP project, authenticated with the deployment's service account. Project, location and model come from VERTEX_* environment variables." },
   { id: "openai", label: "OpenAI", note: "Hosted OpenAI. The key comes from this deployment's OPENAI_API_KEY, never from here." },
   { id: "anthropic", label: "Anthropic", note: "Hosted Anthropic. The key comes from this deployment's ANTHROPIC_API_KEY, never from here." },
   { id: "ollama", label: "Ollama (local)", note: "A local Ollama host. The only setting under which no prompt content leaves this machine." },

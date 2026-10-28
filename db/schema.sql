@@ -576,7 +576,7 @@ CREATE TABLE IF NOT EXISTS tool_settings (
 CREATE TABLE IF NOT EXISTS ai_config (
     id                 boolean PRIMARY KEY DEFAULT true CHECK (id),   -- singleton
     provider           text NOT NULL DEFAULT 'auto'
-                       CHECK (provider IN ('auto', 'azure', 'openai', 'anthropic', 'ollama')),
+                       CHECK (provider IN ('auto', 'azure', 'vertex', 'openai', 'anthropic', 'ollama')),
     azure_endpoint     text,                    -- https://<account>.cognitiveservices.azure.com/
     azure_deployment   text,                    -- the DEPLOYMENT name, not the model name
     azure_api_version  text,                    -- NULL -> ai_config.DEFAULT_AZURE_API_VERSION

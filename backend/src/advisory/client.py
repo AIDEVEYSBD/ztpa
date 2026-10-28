@@ -139,6 +139,8 @@ def model_for(provider: str, role: str) -> str:
         # Empty when nothing is configured, which `_azure_complete` turns into
         # an ok=False naming the missing piece rather than a call to a blank URL.
         return settings.azure_target().azure_deployment
+    if provider == "vertex":
+        return settings.VERTEX_MODEL
     return settings.OLLAMA_JUDGE_MODEL
 
 
@@ -216,6 +218,113 @@ def _openai_complete(system, user, model, temperature, expect_json) -> LLMRespon
     )
     usage = getattr(resp, "usage", None)
     return LLMResponse(text=resp.choices[0].message.content or "", provider="openai", model=model,
+                       prompt_tokens=int(getattr(usage, "prompt_tokens", 0) or 0),
+                       completion_tokens=int(getattr(usage, "completion_tokens", 0) or 0))
+
+
+# --- Google Vertex AI: the customer's own GCP project ----------------------
+# Served by the `openai` package against Vertex's OpenAI-compatible endpoint,
+# for the same reason the Azure path is: one HTTP stack and one response shape
+# for every hosted provider. The only GCP dependency is `google-auth`, which
+# turns Application Default Credentials into a short-lived bearer token.
+#
+# The token lasts about an hour, and an `OpenAI` client fixes its api_key at
+# construction, so the client is rebuilt whenever the credential refreshes
+# rather than once per process.
+
+_VERTEX_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
+_VERTEX_LOCK = threading.Lock()
+_VERTEX_STATE: dict[str, Any] = {"credentials": None, "project": None, "token": None,
+                                 "client": None, "failed": None}
+
+
+def _vertex_credentials():
+    """(credentials, project) from ADC, refreshed if expired. Raises when ADC is
+    absent -- `complete()` turns that into ok=False with the reason."""
+    import google.auth
+    from google.auth.transport.requests import Request
+
+    with _VERTEX_LOCK:
+        creds, project = _VERTEX_STATE["credentials"], _VERTEX_STATE["project"]
+        if creds is None:
+            creds, project = google.auth.default(scopes=[_VERTEX_SCOPE])
+            _VERTEX_STATE["credentials"], _VERTEX_STATE["project"] = creds, project
+        if not creds.valid:
+            creds.refresh(Request())
+        return creds, settings.VERTEX_PROJECT or project
+
+
+def _vertex_base_url(project: str, location: str) -> str:
+    host = "aiplatform.googleapis.com" if location == "global" else f"{location}-aiplatform.googleapis.com"
+    return f"https://{host}/v1/projects/{project}/locations/{location}/endpoints/openapi"
+
+
+def _get_vertex_client():
+    creds, project = _vertex_credentials()
+    if not project:
+        raise RuntimeError("no GCP project: set VERTEX_PROJECT or GOOGLE_CLOUD_PROJECT, "
+                           "or run `gcloud config set project`")
+    with _VERTEX_LOCK:
+        if _VERTEX_STATE["client"] is None or _VERTEX_STATE["token"] != creds.token:
+            from openai import OpenAI
+
+            _VERTEX_STATE["client"] = OpenAI(
+                api_key=creds.token, base_url=_vertex_base_url(project, settings.VERTEX_LOCATION),
+                timeout=_LLM_TIMEOUT, max_retries=_LLM_RETRIES)
+            _VERTEX_STATE["token"] = creds.token
+        return _VERTEX_STATE["client"]
+
+
+def reset_vertex_caches() -> None:
+    with _VERTEX_LOCK:
+        _VERTEX_STATE.update(credentials=None, project=None, token=None, client=None, failed=None)
+
+
+# A failed ADC lookup is remembered this long. `auto` asks on every model call
+# when running on GCP, and an absent credential is not cheap to rediscover:
+# google-auth probes the metadata server, which can take seconds to time out.
+_VERTEX_FAIL_TTL = 30.0
+
+
+def vertex_ready() -> tuple[bool, str | None]:
+    """Whether ADC resolves to a credential and a project. A success costs a
+    lock and a validity check (a refresh at most hourly); a failure is cached
+    for `_VERTEX_FAIL_TTL` so it is not re-probed per request."""
+    failed = _VERTEX_STATE.get("failed")
+    if failed and time.monotonic() - failed[0] < _VERTEX_FAIL_TTL:
+        return False, failed[1]
+    try:
+        _, project = _vertex_credentials()
+        reason = None if project else "no GCP project: set VERTEX_PROJECT or GOOGLE_CLOUD_PROJECT"
+    except Exception as e:  # noqa: BLE001 — google-auth's hierarchy, imported lazily
+        reason = _error_reason(e)
+    _VERTEX_STATE["failed"] = (time.monotonic(), reason) if reason else None
+    return (reason is None), reason
+
+
+def _vertex_complete(system, user, model, temperature, expect_json) -> LLMResponse:
+    client = _get_vertex_client()
+    kwargs = {"response_format": {"type": "json_object"}} if expect_json else {}
+    resp = client.chat.completions.create(
+        model=model, temperature=temperature,
+        messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+        **kwargs,
+    )
+    choice = resp.choices[0]
+    usage = getattr(resp, "usage", None)
+    finish = getattr(choice, "finish_reason", None)
+    text = choice.message.content or ""
+    # The same rule as the Azure path: a truncated or filtered 200 is not an
+    # answer, and its fragment is dropped rather than passed on as whole.
+    incomplete = _AZURE_INCOMPLETE.get(finish or "")
+    if incomplete or not text:
+        return LLMResponse(text="", provider="vertex", model=model, ok=False,
+                           error=incomplete or "Vertex returned an empty completion",
+                           finish_reason=finish,
+                           prompt_tokens=int(getattr(usage, "prompt_tokens", 0) or 0),
+                           completion_tokens=int(getattr(usage, "completion_tokens", 0) or 0))
+    return LLMResponse(text=text, provider="vertex", model=model, finish_reason=finish,
+                       json_mode="native" if expect_json else None,
                        prompt_tokens=int(getattr(usage, "prompt_tokens", 0) or 0),
                        completion_tokens=int(getattr(usage, "completion_tokens", 0) or 0))
 
@@ -648,6 +757,8 @@ def complete(*, system: str, user: str, role: str = "judge", temperature: float 
             res = _openai_complete(system, user, model, temperature, expect_json)
         elif provider == "azure":
             res = _azure_complete(system, user, model, temperature, expect_json, timeout)
+        elif provider == "vertex":
+            res = _vertex_complete(system, user, model, temperature, expect_json)
         else:
             res = _ollama_complete(system, user, model, temperature, expect_json, timeout)
     except Exception as e:  # noqa: BLE001 — fail closed, never crash the pipeline
@@ -897,6 +1008,15 @@ def _azure_status(target, ready: bool, reason: str | None, active: str) -> dict:
     }
 
 
+def _vertex_status(active: str) -> dict:
+    """Probed only when vertex is the selected provider, so a deployment that
+    never uses GCP does not read ADC from /api/health."""
+    ready, reason = vertex_ready() if active == "vertex" else (None, "not checked: vertex is not selected")
+    return {"project": settings.VERTEX_PROJECT or _VERTEX_STATE["project"],
+            "location": settings.VERTEX_LOCATION, "model": settings.VERTEX_MODEL,
+            "identity": "Application Default Credentials", "ready": ready, "reason": reason}
+
+
 def provider_status() -> dict:
     # Late, and only here: `ai_config` reaches psycopg, and this module must
     # stay importable by scripts that never touch a database.
@@ -908,6 +1028,8 @@ def provider_status() -> dict:
     azure_ok, azure_why = ai_config.azure_ready(azure_target)
     return {
         "active_provider": active,
+        "platform": settings.platform(),
+        "byok_keys": settings.byok_keys(),
         "judge_model": model_for(active, "judge"),
         "prose_model": model_for(active, "prose"),
         "embed_model": settings.OLLAMA_EMBED_MODEL,
@@ -920,6 +1042,7 @@ def provider_status() -> dict:
         # cannot disagree.
         "azure_available": azure_ok,
         "azure": _azure_status(azure_target, azure_ok, azure_why, active),
+        "vertex": _vertex_status(active),
         # Azure is "hosted": the topology does leave this box. It leaves it for
         # the CUSTOMER'S OWN subscription rather than a third party's, which is
         # why `auto` prefers it over OpenAI/Anthropic (settings.active_provider)
