@@ -15,6 +15,7 @@ analyst. Who may read: any signed-in role.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import os
@@ -143,6 +144,14 @@ def list_exports(limit: int = Query(50, ge=1, le=200), before: str | None = Quer
     return {"items": rows, "next_before": rows[-1]["uploaded_at"] if len(rows) == limit else None}
 
 
+@functools.lru_cache(maxsize=16)
+def _review_doc(review_key: str) -> dict:
+    """The stored review, parsed once per process. Safe to cache: review keys are
+    content-addressed (exports/<sha256>/review.json) and never rewritten, so a
+    cached copy cannot go stale. Bounded so a busy replica holds at most 16."""
+    return json.loads(storage.store().get_bytes(review_key))
+
+
 def _get(export_id: str) -> dict:
     with get_conn() as conn, conn.cursor() as cur:
         try:
@@ -172,7 +181,7 @@ def get_review(export_id: str, band: str | None = Query(None, pattern="^(critica
     if row["status"] != "accepted":
         raise HTTPException(409, f"export is {row['status']}"
                                  + (f": {row['rejection_reason']}" if row.get("rejection_reason") else ""))
-    doc = json.loads(storage.store().get_bytes(row["review_key"]))
+    doc = _review_doc(row["review_key"])
     entries = doc["register"]
     if flagged_only:
         entries = [e for e in entries if e["checks"]]
