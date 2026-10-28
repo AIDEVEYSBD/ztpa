@@ -45,6 +45,9 @@ from . import knowledge, package as package_mod, workflow
 log = logging.getLogger("npr.api.frr_agents")
 
 NARRATE_TOP = int(os.environ.get("NPR_FRR_NARRATE_TOP", "40"))
+# Concurrent model calls per run. Bounded so one run cannot exhaust the
+# provider's quota; the per-deployment API rate limit does not apply to jobs.
+NARRATE_PARALLEL = int(os.environ.get("NPR_FRR_NARRATE_PARALLEL", "6"))
 _PROMPTS = Path(__file__).with_name("prompts")
 
 
@@ -203,18 +206,29 @@ def review_run(ctx: JobContext, *, llm: Optional[Callable[..., Any]] = None) -> 
     impact_prompt, pkg_prompt = prompt("impact.v1"), prompt("package.v1")
     narratives: dict[str, dict] = {}
     narrated = fallbacks = 0
-    for i, item in enumerate(drafted["items"]):
-        if i >= NARRATE_TOP:
-            narratives[item["item_id"]] = _fallback_impact(item) | {"fallback_reason": "outside top-N"}
-            continue
-        context = knowledge.search(cur, _query_for(item), k=3)
-        n = assess_item(item, context, impact_prompt, llm)
-        narratives[item["item_id"]] = n
-        narrated += n["by"] != "engine_fallback"
-        fallbacks += n["by"] == "engine_fallback"
-        if i % 5 == 4:
-            ctx.progress(step="impact_assessor", done=i + 1, of=min(len(drafted["items"]), NARRATE_TOP))
-            ctx.check()
+    # Retrieval first, in order: it uses this job's one database cursor. Then the
+    # model calls in parallel, bounded: they are I/O (seconds each on a large
+    # model), and run one by one a 40-item package took minutes. Results are
+    # collected by item id, so ordering and outcome do not depend on timing.
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    top = drafted["items"][:NARRATE_TOP]
+    for item in drafted["items"][NARRATE_TOP:]:
+        narratives[item["item_id"]] = _fallback_impact(item) | {"fallback_reason": "outside top-N"}
+    contexts = {item["item_id"]: knowledge.search(cur, _query_for(item), k=3) for item in top}
+    done = 0
+    with ThreadPoolExecutor(max_workers=max(1, NARRATE_PARALLEL)) as pool:
+        futures = {pool.submit(assess_item, item, contexts[item["item_id"]], impact_prompt, llm): item
+                   for item in top}
+        for fut in as_completed(futures):
+            item = futures[fut]
+            n = fut.result()                       # assess_item never raises: it falls back
+            narratives[item["item_id"]] = n
+            narrated += n["by"] != "engine_fallback"
+            fallbacks += n["by"] == "engine_fallback"
+            done += 1
+            if done % 5 == 0:
+                ctx.progress(step="impact_assessor", done=done, of=len(top))
+                ctx.check()
     _step(cur, run_id, "impact_assessor", "done", prompt=impact_prompt.version, narrated=narrated,
           fallbacks=fallbacks, deterministic=max(0, len(drafted["items"]) - NARRATE_TOP))
 

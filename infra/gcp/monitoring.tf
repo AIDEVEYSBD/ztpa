@@ -21,7 +21,7 @@ resource "google_monitoring_alert_policy" "api_5xx" {
         | filter resource.service_name == '${google_cloud_run_v2_service.api.name}'
         | align rate(1m)
         | every 1m
-        | group_by [], [errors: sum(if(metric.response_code_class == '5xx', val(), 0)), total: sum(val())]
+        | group_by [], [errors: sum(if(metric.response_code_class == '5xx', val(), 0.0)), total: sum(val())]
         | value [ratio: errors / total]
         | condition ratio > 0.02
       EOT

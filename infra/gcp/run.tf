@@ -186,7 +186,9 @@ resource "google_cloud_run_v2_job" "migrate" {
       timeout         = "900s"
 
       vpc_access {
-        egress = "PRIVATE_RANGES_ONLY"
+        # ALL traffic through the VPC: the smoke test runs in this job and calls
+        # the API's run.app URL, which internal ingress only admits from the VPC.
+        egress = "ALL_TRAFFIC"
         network_interfaces {
           network    = google_compute_network.vpc.id
           subnetwork = google_compute_subnetwork.run.id
