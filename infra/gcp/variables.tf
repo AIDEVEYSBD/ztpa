@@ -169,3 +169,9 @@ variable "edge_rate_limit_per_minute" {
   type        = number
   default     = 600
 }
+
+variable "frr_mode" {
+  description = "Firewall Rule Review rules: no auto-approval and no device push anywhere (NPR_FRR_MODE)."
+  type        = bool
+  default     = true
+}

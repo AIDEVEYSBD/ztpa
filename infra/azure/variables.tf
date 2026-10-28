@@ -159,3 +159,9 @@ variable "alert_emails" {
   type    = list(string)
   default = []
 }
+
+variable "frr_mode" {
+  description = "Firewall Rule Review rules: no auto-approval and no device push anywhere (NPR_FRR_MODE)."
+  type        = bool
+  default     = true
+}

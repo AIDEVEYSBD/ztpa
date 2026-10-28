@@ -14,6 +14,7 @@ _Last updated: 2026-10-28_
 
 | Date | Item(s) | Change |
 |---|---|---|
+| 2026-10-28 | 01.2, 03.1c, 03.1d, 03.2a, 03.2b | Change-package drafter with rollback, approver matrix, two-stage owner → approver review with four eyes, runbook export, FRR mode switch; shadowing refuted by install targets or recent hits |
 | 2026-10-28 | 01.1a, 02.2b-d, 02.3b-e, 03.1b, 03.1e | Check Point parser, export upload + intake job with checksum/age/shape checks, deterministic rule-risk register API; shadowing bucketed (~8x faster at 1k rules, near-linear to 20k); `migrate.py --check` made read-only |
 | 2026-10-28 | PLAT-11 | Deployment guides for both clouds, runbook, production checklist |
 | 2026-10-28 | PLAT-10, 05.1, 05.2 | Azure Terraform (planned against sandbox: 56 resources); deploy pipelines for both clouds; in-network smoke test; CI runs real-DB tests as the runtime role |
@@ -37,7 +38,7 @@ _Last updated: 2026-10-28_
 | 01.1b | Skybox export parser | ⬜ | |
 | 01.1c | Cisco flow / Stealthwatch ingestion | ⬜ | Catalyst/Meraki inventory only |
 | 01.1d | CMDB / IPAM import (owner, app, zone tags) | ⬜ | Tags currently from mock exports |
-| 01.2 | Role-to-approver matrix (network owner, network security approver) | 🟡 | admin/analyst/viewer + `require_approver` (`backend/app/main.py`); no owner/approver split |
+| 01.2 | Role-to-approver matrix (network owner, network security approver) | ✅ | `ztpa.frr_approvers` (migration 0013): duty `network_owner` / `security_approver` per principal (email or SSO subject) and scope (layer or `*`), admin-managed via `/api/admin/frr/approvers`, separate from product roles; every grant/revoke audited |
 | 01.3 | Process, integrations and data-flow documentation | 🟡 | Platform architecture and data flow: `docs/frr/ARCHITECTURE.md`. Client process walkthrough still to capture |
 | 01.4 | RAG sources: network standards, exceptions, change/rollback runbooks | ⬜ | No vector store or corpus |
 | 01.5 | Labelled test rulebase + metrics (check accuracy, severity agreement, time / 1,000 rules) | 🟡 | Time per 1,000 rules measured (synthetic Check Point, parse + review, laptop): 0.55 s at 1k, 0.79 s at 10k, 0.86 s at 20k (was 4.45 s at 1k / 82 s total at 10k before the shadowing index). Labelled set and accuracy metrics still to build |
@@ -68,11 +69,11 @@ _Last updated: 2026-10-28_
 |---|---|---|---|
 | 03.1a | Effective-policy model view | 🟡 | Explorer/graph UI; inherits 02.3a limit |
 | 03.1b | Rule-risk register with evidence | 🟡 | API done: `GET /api/exports/{id}/review` — per-rule checks with engine evidence, worst band (forced-critical preserved), filters by band/check, paginated. UI screen not built |
-| 03.1c | Narrowed or time-bound rule proposals | ⬜ | |
-| 03.1d | Rollback plan artefact | ⬜ | |
+| 03.1c | Narrowed or time-bound rule proposals | ✅ | `backend/src/frr/package.py`: deterministic proposal per check (remove / disable-then-remove / reorder / time-bound-and-narrow / revisit-after), availability impact per item, owner input required for narrowing (no flow data yet to derive it). Guards against outages: never moves a cleanup rule, never removes a rule shadowed by one being narrowed. 8 tests |
+| 03.1d | Rollback plan artefact | ✅ | Every item carries Check Point `mgmt_cli` change and exact rollback (restores rule as exported); `GET /api/change-packages/{id}/runbook` (approved only) emits accepted items with rollback under the approval record |
 | 03.1e | Limitations section per review | 🟡 | Review-level and per-rule limitations produced and served (negation, apps, unresolved objects, expansion cap, missing hits/age, degraded analyzers). UI not built |
-| 03.2a | Two-stage HITL: owner validates findings + availability impact → approver reviews change package | 🟡 | Single approver stage |
-| 03.2b | FRR policy switch: no device write, no auto-approve, no automatic ITSM change | ⬜ | Push simulated (`change/staging.py`); auto-approve path exists |
+| 03.2a | Two-stage HITL: owner validates findings + availability impact → approver reviews change package | ✅ | `backend/src/frr/workflow.py` + `app/packages_api.py`: owner decides each item (accept/reject-with-note/modify-with-input) then validates; a different security approver approves/rejects (four eyes enforced in code and as a DB CHECK); state-conditional updates; all transitions audited. 6 end-to-end tests as the runtime role |
+| 03.2b | FRR policy switch: no device write, no auto-approve, no automatic ITSM change | ✅ | `NPR_FRR_MODE` (on by default in both Terraform roots): the older change gate escalates everything, staging needs explicit approval, simulated push refused (403). FRR packages have no device or ITSM code path at all (test asserts no network client imports). 3 tests |
 
 ## FRR-04 · Evaluation, UAT and finetuning
 

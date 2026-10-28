@@ -20,6 +20,7 @@ locals {
 
   backend_env = {
     NPR_ENV                               = var.env
+    NPR_FRR_MODE                          = tostring(var.frr_mode)
     NPR_PLATFORM                          = "azure"
     NPR_JOBS_INLINE                       = "false"
     NPR_STORAGE_URL                       = "az://${azurerm_storage_account.data.name}/${azurerm_storage_container.data.name}/frr"

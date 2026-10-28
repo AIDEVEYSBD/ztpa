@@ -123,6 +123,8 @@ from app.limits import LLM_LIMITED, BodyLimitMiddleware  # noqa: E402
 app.include_router(_jobs_router)
 from app.exports_api import router as _exports_router  # noqa: E402
 app.include_router(_exports_router)
+from app.packages_api import router as _packages_router  # noqa: E402
+app.include_router(_packages_router)
 app.add_middleware(
     CORSMiddleware,
     # The local dev origin is allowed only in dev: a production API that accepts
@@ -2259,6 +2261,9 @@ def _rule_remediation(finding_id: str, change: dict, revision_id: str | None = N
     crit = {"resolves": resolves, "no_new_criticals": not new_crit}
     trig = ("introduces new critical findings: " + ", ".join(new_crit)) if new_crit else (
         None if resolves else "the fix does not resolve the finding")
+    if settings.frr_mode() and decision == "auto_approve":
+        # FRR rule (03.2b): no rule change is proposed without owner review.
+        decision, trig = "escalate", "FRR mode: every change requires human approval"
     return {
         "finding_id": finding_id, "revision_id": revision_id, "origin": origin,
         "request_row": {
@@ -2344,7 +2349,9 @@ def stage_change(body: StageBody, _: None = Depends(require_approver)):
                 raise HTTPException(400, "escalated change requires manual approval to stage")
             staged_decision = "manual_approved"
         else:
-            staged_decision = "auto_approve"
+            if settings.frr_mode() and not body.manual_approve:
+                raise HTTPException(400, "FRR mode: staging requires explicit manual approval")
+            staged_decision = "manual_approved" if settings.frr_mode() else "auto_approve"
         proposed = row["proposed"] or {}
         target = body.target_tool or proposed.get("target_tool") or "algosec"
         staged_id = det_id("stage", body.request_id)
@@ -2371,7 +2378,13 @@ def staging_list():
 @app.post("/api/staging/{staged_id}/push")
 def staging_push(staged_id: str, _: None = Depends(require_operator)):
     """Simulated, stepped push. Conflicts are detected with real engine math and
-    resolved deterministically; the UI animates the returned steps."""
+    resolved deterministically; the UI animates the returned steps.
+
+    Refused in FRR mode: that product makes no device write of any kind, simulated
+    or not -- an approved change package yields a runbook a person executes."""
+    if settings.frr_mode():
+        raise HTTPException(403, "FRR mode: pushing changes is disabled; use the approved "
+                                 "change package's runbook")
     with get_conn() as conn, conn.cursor() as cur:
         row = fetch_one(cur, "SELECT * FROM ztpa.staged_changes WHERE staged_id=%s", [staged_id])
         if not row:

@@ -217,6 +217,13 @@ def production_startup_errors() -> list[str]:
     return errors
 
 
+def frr_mode() -> bool:
+    """Firewall Rule Review deployment rules (FRR-03): no auto-approval and no
+    device push anywhere in the product, including the older change gate. Off by
+    default so the existing product behaves as before; the FRR Terraform sets it."""
+    return os.environ.get("NPR_FRR_MODE", "").strip().lower() in ("1", "true", "yes")
+
+
 def jobs_inline() -> bool:
     """Run a job worker inside the API process. On by default in dev (one
     process to start), off by default elsewhere, where workers are their own

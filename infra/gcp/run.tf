@@ -1,6 +1,7 @@
 locals {
   backend_env = {
     NPR_ENV              = var.env
+    NPR_FRR_MODE         = tostring(var.frr_mode)
     NPR_PLATFORM         = "gcp"
     NPR_JOBS_INLINE      = "false"
     NPR_STORAGE_URL      = "gs://${google_storage_bucket.data.name}/frr"

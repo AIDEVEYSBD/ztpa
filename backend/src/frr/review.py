@@ -149,6 +149,30 @@ def _classify_over_permissive(sig: dict) -> str:
     return "over_permissive"
 
 
+_ALL_TARGETS = {"policy targets", "any", "all"}
+
+
+def _shadowing_refuted(later: Optional[RuleMeta], earlier: Optional[RuleMeta],
+                       ref: datetime) -> Optional[str]:
+    """Why the engine's "never matches" must not be reported for this pair, or None.
+
+    The engine compares grants within one rulebase; a firewall applies a rule
+    only on the gateways it is installed on. And the firewall's own hit counter
+    is direct evidence: a rule hit recently DOES match traffic somewhere."""
+    if later is None or earlier is None:
+        return None
+    e_targets = {t.lower() for t in earlier.install_on}
+    l_targets = {t.lower() for t in later.install_on}
+    if e_targets and not (e_targets & _ALL_TARGETS) and not (l_targets <= e_targets):
+        return (f"not reported as shadowed: rule {earlier.number} covers it but is installed on "
+                f"{', '.join(earlier.install_on)}, not on all of this rule's targets")
+    if later.hit_count and later.last_hit and later.last_hit >= ref - timedelta(days=UNUSED_DAYS):
+        return (f"not reported as shadowed: rule {earlier.number} appears to cover it, but the "
+                f"firewall counted {later.hit_count} hits (last {later.last_hit.date()}); check "
+                "install targets and inline layers")
+    return None
+
+
 def _inventory_checks(r: RuleMeta, ref: datetime) -> list[Check]:
     out: list[Check] = []
     if r.expires_at and r.expires_at <= ref:
@@ -192,6 +216,7 @@ def review(parsed: ParsedRulebase, *, now: Optional[datetime] = None) -> Review:
         by_uid[r.uid] = e
 
     number = {r.uid: r.number for r in parsed.rules}
+    meta = {r.uid: r for r in parsed.rules}
     for f in findings:
         sig = dict(f.signals or {})
         if f.type == "over_permissive":
@@ -202,6 +227,11 @@ def review(parsed: ParsedRulebase, *, now: Optional[datetime] = None) -> Review:
             # can never match, with the rule that covers it as the evidence.
             entry = by_uid.get(sig.get("shadowed_ref"))
             covering = sig.get("shadowing_ref")
+            refuted = _shadowing_refuted(meta.get(sig.get("shadowed_ref")), meta.get(covering), ref)
+            if refuted and entry is not None:
+                if refuted not in entry.limitations:
+                    entry.limitations.append(refuted)
+                continue
             kind = "shadowed"
             title = f"never matched: rule {number.get(covering, covering)} above it already covers it"
             sig["covered_by_rule"] = number.get(covering)
