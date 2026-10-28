@@ -273,6 +273,30 @@ const COLD_START_BACKOFF_MS = 600;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
+ * The same wrapper, exported for the feature modules that live beside this file
+ * (lib/frr.ts). One wrapper means one definition of "failed": a module that
+ * hand-rolled its own fetch would also hand-roll its own idea of what a dead
+ * backend looks like, and that is the bug `looksLikeDeadUpstream` exists to fix.
+ */
+export const requestJson = j;
+
+/**
+ * For the few endpoints that answer text rather than JSON (a runbook). Same
+ * failure classification as `j()` — a non-2xx rejects with ApiError, it never
+ * resolves to an empty string that would download as an empty file.
+ */
+export async function requestText(url: string, init?: RequestInit): Promise<string> {
+  let r: Response;
+  try {
+    r = await fetch(url, { cache: "no-store", ...init });
+  } catch (e) {
+    throw new ApiError(0, e instanceof Error && e.message ? e.message : "The request could not be sent.", url);
+  }
+  if (!r.ok) throw await readFailure(r, url);
+  return r.text();
+}
+
+/**
  * `/api/health` with its degraded fields. The backend's payload is additive, and
  * only this call reads the extra keys, so they are declared here rather than
  * widening the shared `Health` type.

@@ -24,6 +24,13 @@ import { ToolsAdmin } from "@/components/admin/ToolsAdmin";
 import { MetricsAdmin } from "@/components/admin/MetricsAdmin";
 import { AuditAdmin } from "@/components/admin/AuditAdmin";
 import { AiConfigAdmin } from "@/components/admin/AiConfigAdmin";
+import { ExportsScreen } from "@/components/frr/ExportsScreen";
+import { ReviewScreen } from "@/components/frr/ReviewScreen";
+import { PackageScreen } from "@/components/frr/PackageScreen";
+import { ApproversAdmin } from "@/components/frr/ApproversAdmin";
+import { KnowledgeAdmin } from "@/components/frr/KnowledgeAdmin";
+import { NoExportSelected } from "@/components/frr/bits";
+import { useFrrSelection } from "@/components/frr/selection";
 import { ErrorState } from "@/components/ui/Feedback";
 import { Button } from "@/components/ui/Button";
 import { PanelHealthProvider, useScreenFailures } from "@/components/PanelHealth";
@@ -43,6 +50,11 @@ const META: Record<ScreenId, { title: string; sub: string }> = {
   metrics: { title: "Metrics & Cost", sub: "Application-wide KPIs, token usage and estimated cost (admin)" },
   audit: { title: "Audit trail", sub: "Every recorded action, who performed it and when (admin)" },
   config: { title: "Configuration", sub: "Which AI provider this deployment uses, and whether it can actually call it (admin)" },
+  frr_exports: { title: "Exports", sub: "Upload a firewall policy export and pick the one to review" },
+  frr_review: { title: "Rule review", sub: "The deterministic rule-risk register for the selected export, and what it cannot prove" },
+  frr_package: { title: "Change package", sub: "Proposed changes with rollback, decided by the network owner and approved by a security approver" },
+  frr_approvers: { title: "Approvers", sub: "Who holds the network owner and security approver duties, per policy layer (admin)" },
+  frr_knowledge: { title: "Knowledge", sub: "Standards, exceptions and runbooks the impact assessor retrieves and cites (admin)" },
 };
 
 /**
@@ -89,6 +101,15 @@ export default function Dashboard() {
   const [attempt, setAttempt] = useState(0);                                 // bumped by Retry
 
   const retry = useCallback(() => setAttempt((n) => n + 1), []);
+  // The Rule Review screens share one selected export (and the run/package this
+  // browser last tied to it), so it lives here rather than in any one screen.
+  const frrSel = useFrrSelection();
+  const frrSetLink = frrSel.setLink;
+  const frrExportId = frrSel.exportId;
+  const frrPatchLink = useCallback(
+    (patch: { runId?: string; packageId?: string }) => { if (frrExportId) frrSetLink(frrExportId, patch); },
+    [frrExportId, frrSetLink],
+  );
 
   useEffect(() => {
     let live = true;
@@ -247,6 +268,20 @@ export default function Dashboard() {
                 {screen === "metrics" && <MetricsAdmin />}
                 {screen === "audit" && <AuditAdmin />}
                 {screen === "config" && <AiConfigAdmin />}
+                {screen === "frr_exports" && (
+                  <ExportsScreen selectedId={frrSel.exportId} onSelect={frrSel.select}
+                    onOpenReview={() => setScreen("frr_review")}
+                    onRunStarted={(exportId, runId) => { frrSel.setLink(exportId, { runId }); setScreen("frr_package"); }} />
+                )}
+                {screen === "frr_review" && (frrSel.exportId
+                  ? <ReviewScreen exportId={frrSel.exportId} onGoToExports={() => setScreen("frr_exports")} />
+                  : <NoExportSelected what="rule-risk register" onGoToExports={() => setScreen("frr_exports")} />)}
+                {screen === "frr_package" && (frrSel.exportId
+                  ? <PackageScreen key={frrSel.exportId} exportId={frrSel.exportId} link={frrSel.link} setLink={frrPatchLink}
+                      onGoToExports={() => setScreen("frr_exports")} />
+                  : <NoExportSelected what="change package" onGoToExports={() => setScreen("frr_exports")} />)}
+                {screen === "frr_approvers" && <ApproversAdmin />}
+                {screen === "frr_knowledge" && <KnowledgeAdmin />}
               </motion.div>
             </AnimatePresence>
           </div>

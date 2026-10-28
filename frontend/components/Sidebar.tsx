@@ -4,13 +4,14 @@ import { useSession } from "next-auth/react";
 import {
   Network, ListChecks, GitBranch, MessageSquare, FileText, Plug,
   LogOut, History, Rocket, SlidersHorizontal, BarChart3, ScrollText, Cog,
-  Boxes,
+  Boxes, FileJson, ClipboardCheck, FileStack, UserCheck, BookOpen,
 } from "lucide-react";
 import { Brand, cn, Button } from "./ui";
 import { SurfaceGrain } from "./ui/Material";
 import { ThemeToggle } from "./theme";
 
-export type ScreenId = "explorer" | "inventory" | "sources" | "risks" | "change" | "staging" | "ask" | "report" | "connectors" | "snapshots" | "tools" | "metrics" | "audit" | "config";
+export type ScreenId = "explorer" | "inventory" | "sources" | "risks" | "change" | "staging" | "ask" | "report" | "connectors" | "snapshots" | "tools" | "metrics" | "audit" | "config"
+  | "frr_exports" | "frr_review" | "frr_package" | "frr_approvers" | "frr_knowledge";
 
 type NavDef = { id: ScreenId; label: string; icon: typeof Network };
 
@@ -44,6 +45,21 @@ const CONSOLE: NavDef[] = [
   { id: "ask", label: "Ask the Network", icon: MessageSquare },
   { id: "report", label: "Posture Report", icon: FileText },
 ];
+// Firewall rule review: an uploaded policy export, its deterministic rule-risk
+// register, and the change package a network owner and a security approver
+// sign off. In review order. The last two are admin-only (the matrix of who may
+// sign, and the documents the impact assessor cites) and render only for admin,
+// like the ADMIN group below; their APIs are admin-only too.
+const RULE_REVIEW: NavDef[] = [
+  { id: "frr_exports", label: "Exports", icon: FileJson },
+  { id: "frr_review", label: "Rule review", icon: ClipboardCheck },
+  { id: "frr_package", label: "Change package", icon: FileStack },
+];
+const RULE_REVIEW_ADMIN: NavDef[] = [
+  { id: "frr_approvers", label: "Approvers", icon: UserCheck },
+  { id: "frr_knowledge", label: "Knowledge", icon: BookOpen },
+];
+
 const REFERENCE: NavDef[] = [
   { id: "connectors", label: "Connectors", icon: Plug },
 ];
@@ -131,6 +147,10 @@ export function Sidebar({ active, onSelect, counts }: {
         {CONSOLE.map((it) =>
           navItem(it, it.id === "risks" ? counts.findings : undefined, it.id === "risks" && counts.critical > 0),
         )}
+
+        <div className="px-2 pt-[18px] pb-1.5 text-[11px] font-medium tracking-[0.08em] text-faint uppercase">Rule Review</div>
+        {RULE_REVIEW.map((it) => navItem(it))}
+        {role === "admin" && RULE_REVIEW_ADMIN.map((it) => navItem(it))}
 
         <div className="px-2 pt-[18px] pb-1.5 text-[11px] font-medium tracking-[0.08em] text-faint uppercase">Reference</div>
         {REFERENCE.map((it) => navItem(it))}

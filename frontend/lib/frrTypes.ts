@@ -1,0 +1,267 @@
+/**
+ * Firewall Rule Review (FRR) wire types.
+ *
+ * These mirror the backend's FRR endpoints (backend/app/exports_api.py,
+ * packages_api.py, frr_api.py) field for field. Nullable fields stay nullable:
+ * a `hit_count` of null means the export carried no hit counters, which is a
+ * different fact from zero hits and must render as "unknown".
+ */
+
+import type { Band } from "./types";
+
+export type FrrDuty = "network_owner" | "security_approver";
+
+export interface FrrMe {
+  email: string | null;
+  role: string | null;
+  duties: { duty: FrrDuty; scope: string }[];
+  can_upload: boolean;
+  is_admin: boolean;
+}
+
+export type ExportStatus = "received" | "accepted" | "rejected";
+
+export type CheckKind =
+  | "any_any"
+  | "admin_port_exposed"
+  | "broad_source"
+  | "over_permissive"
+  | "shadowed"
+  | "expired"
+  | "expiring_soon"
+  | "disabled"
+  | "unused";
+
+export const CHECK_KINDS: CheckKind[] = [
+  "any_any", "admin_port_exposed", "broad_source", "over_permissive", "shadowed",
+  "expired", "expiring_soon", "disabled", "unused",
+];
+
+export type BandCounts = Partial<Record<Band, number>>;
+
+export interface ReviewStats {
+  rules: number;
+  rules_with_findings: number;
+  by_check: Partial<Record<CheckKind | string, number>>;
+  by_band: BandCounts;
+  grants_analysed?: number;
+}
+
+export interface ExportSummary {
+  rules: number;
+  rules_enabled: number;
+  grants: number;
+  nat_rules: number;
+  layers: string[];
+  hit_counts_present: boolean;
+  exported_at: string | null;
+  review?: ReviewStats;
+  limitations_total?: number;
+}
+
+export interface FrrExport {
+  export_id: string;
+  sha256: string;
+  source_type: string;
+  filename: string | null;
+  size_bytes: number;
+  declared_exported_at: string | null;
+  exported_at: string | null;
+  uploaded_by: string | null;
+  uploaded_at: string;
+  status: ExportStatus;
+  rejection_reason: string | null;
+  summary: ExportSummary | null;
+  job_id: string | null;
+  updated_at: string | null;
+}
+
+export interface ExportList {
+  items: FrrExport[];
+  next_before: string | null;
+}
+
+export interface UploadResult {
+  export: FrrExport;
+  job?: unknown;
+  duplicate: boolean;
+}
+
+export interface RuleCheck {
+  check: CheckKind | string;
+  severity: number;
+  band: Band;
+  title: string;
+  evidence: Record<string, unknown>;
+  finding_id: string;
+}
+
+export interface RegisterEntry {
+  rule_uid: string;
+  layer: string;
+  number: number | null;
+  name: string | null;
+  section: string | null;
+  action: string;
+  enabled: boolean;
+  sources: string[];
+  destinations: string[];
+  services: string[];
+  hit_count: number | null;
+  last_hit: string | null;
+  expires_at: string | null;
+  checks: RuleCheck[];
+  limitations: string[];
+  severity: number | null;
+  band: Band | null;
+}
+
+export interface ReviewPage {
+  export_id?: string;
+  stats: ReviewStats;
+  limitations: string[];
+  reference_time: string | null;
+  total: number;
+  items: RegisterEntry[];
+  limit: number;
+  offset: number;
+}
+
+export interface ReviewQuery {
+  band?: Band;
+  check?: string;
+  flagged_only?: boolean;
+  limit?: number;
+  offset?: number;
+}
+
+export type RunStatus = "queued" | "running" | "succeeded" | "failed";
+
+export const FRR_AGENTS = [
+  "orchestrator", "intake_parser", "policy_checker", "impact_assessor", "package_drafter",
+] as const;
+export type FrrAgent = (typeof FRR_AGENTS)[number];
+
+export interface RunStep {
+  agent: FrrAgent | string;
+  status: string;
+  at: string;
+  [detail: string]: unknown;
+}
+
+export interface FrrRun {
+  run_id: string;
+  export_id: string;
+  package_id: string | null;
+  status: RunStatus;
+  steps: RunStep[];
+  created_by: string | null;
+  created_at: string;
+  finished_at: string | null;
+}
+
+export type PackageStatus = "draft" | "owner_validated" | "approved" | "rejected" | "superseded";
+
+export type Proposal = "remove" | "disable_then_remove" | "reorder" | "time_bound_and_narrow" | "revisit_after";
+
+export type AvailabilityImpact = "none" | "possible" | "likely" | "changes_behaviour";
+
+export type OwnerDecision = "accept" | "reject" | "modify";
+
+export interface ItemNarrative {
+  summary: string;
+  availability_note?: string;
+  owner_questions?: string[];
+  cites?: string[];
+  by: string;
+  fallback_reason?: string;
+}
+
+export interface PackageItem {
+  item_id: string;
+  rule_uid: string;
+  layer: string;
+  rule_number: number | null;
+  rule_name: string | null;
+  check_kind: CheckKind | string;
+  band: Band;
+  proposal: Proposal | string;
+  rationale: string;
+  availability_impact: AvailabilityImpact | string;
+  requires_owner_input: string[] | null;
+  commands: string[] | null;
+  rollback: string[] | null;
+  evidence: Record<string, unknown> | null;
+  narrative: ItemNarrative | null;
+  owner_decision: OwnerDecision | null;
+  owner_input: Record<string, unknown> | null;
+  owner_note: string | null;
+  decided_by: string | null;
+  decided_at: string | null;
+}
+
+export interface PackageNarrative {
+  summary: string;
+  key_risks?: string[];
+  limitations_note?: string;
+  by: string;
+}
+
+export interface ChangePackage {
+  package_id: string;
+  export_id: string;
+  status: PackageStatus;
+  summary: {
+    items: number;
+    by_impact?: Record<string, number>;
+    by_proposal?: Record<string, number>;
+  } | null;
+  limitations: string[] | null;
+  notes: string[] | null;
+  narrative: PackageNarrative | null;
+  created_by: string | null;
+  created_at: string;
+  validated_by: string | null;
+  validated_at: string | null;
+  validation_note: string | null;
+  decided_by: string | null;
+  decided_at: string | null;
+  decision_note: string | null;
+  items: PackageItem[];
+}
+
+export interface OwnerInput {
+  allowed_sources?: string[];
+  allowed_services?: string[];
+  business_justification?: string;
+}
+
+export interface ApproverGrant {
+  principal: string;
+  duty: FrrDuty;
+  scope: string;
+  granted_by?: string | null;
+  granted_at?: string | null;
+}
+
+export type KnowledgeKind = "standard" | "exception" | "runbook";
+
+export interface KnowledgeDoc {
+  doc_id: string;
+  kind: KnowledgeKind;
+  title: string;
+  uploaded_by: string | null;
+  uploaded_at: string;
+  chunks: number;
+}
+
+export interface KnowledgeHit {
+  doc_id: string;
+  kind: KnowledgeKind;
+  title: string;
+  ord: number;
+  heading: string | null;
+  body: string;
+  rank: number;
+  cite: string;
+}
