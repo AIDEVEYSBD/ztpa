@@ -188,3 +188,9 @@ variable "breakglass_password_hash" {
   default     = ""
   sensitive   = true
 }
+
+variable "web_invokers" {
+  description = "Principals allowed to invoke the frontend directly, e.g. [\"group:frr-users@example.com\"]. With the load balancer, grant IAP's service agent instead."
+  type        = list(string)
+  default     = []
+}

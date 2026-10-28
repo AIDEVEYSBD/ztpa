@@ -1,0 +1,14 @@
+# Source uploaded by `gcloud builds submit`: only what the Dockerfiles need.
+.git/
+*.bundle
+**/node_modules/
+frontend/.next/
+backend/.venv/
+**/__pycache__/
+.pytest_cache/
+backend/data/store/
+backend/data/scratch/
+infra/**/.terraform/
+.claude/
+.env
+.env.*

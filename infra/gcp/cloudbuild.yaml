@@ -1,0 +1,16 @@
+# Build both images inside GCP and push them to Artifact Registry.
+#   gcloud builds submit --config infra/gcp/cloudbuild.yaml \
+#     --substitutions=_REPO=<region>-docker.pkg.dev/<project>/frr-<env>,_TAG=<git sha> .
+# For when a workstation cannot push large layers reliably; CI uses the deploy
+# workflow instead. Images are referenced by digest afterwards, never by tag.
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ["build", "-f", "backend/Dockerfile", "-t", "${_REPO}/backend:${_TAG}", "."]
+  - name: gcr.io/cloud-builders/docker
+    args: ["build", "-t", "${_REPO}/frontend:${_TAG}", "frontend"]
+images:
+  - "${_REPO}/backend:${_TAG}"
+  - "${_REPO}/frontend:${_TAG}"
+options:
+  machineType: E2_HIGHCPU_8
+timeout: 1800s

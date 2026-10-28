@@ -17,7 +17,27 @@ const { auth } = NextAuth(authConfig);
 
 type SessionUser = { id?: string; role?: string | null; email?: string | null };
 
-export default auth((req) => {
+// Cloud Run invoker IAM on the API (orgs commonly enforce it): the request must
+// carry a Google ID token for the API's URL. Minted from the metadata server as
+// the frontend's service account, cached until five minutes before expiry, and
+// sent as X-Serverless-Authorization, which Cloud Run checks and strips without
+// touching the app's own headers. Only when NPR_BACKEND_AUDIENCE is set.
+let idToken: { value: string; audience: string; exp: number } | null = null;
+
+async function backendIdToken(audience: string): Promise<string> {
+  const now = Date.now() / 1000;
+  if (idToken && idToken.audience === audience && idToken.exp - 300 > now) return idToken.value;
+  const url = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity"
+    + `?audience=${encodeURIComponent(audience)}&format=full`;
+  const r = await fetch(url, { headers: { "Metadata-Flavor": "Google" }, cache: "no-store" });
+  if (!r.ok) throw new Error(`metadata server answered ${r.status} for an identity token`);
+  const value = (await r.text()).trim();
+  const payload = JSON.parse(atob(value.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))) as { exp?: number };
+  idToken = { value, audience, exp: payload.exp ?? now + 600 };
+  return value;
+}
+
+export default auth(async (req) => {
   const { pathname, search } = req.nextUrl;
 
   // Edge lock. When the app sits behind a WAF edge that cannot be enforced at
@@ -71,6 +91,18 @@ export default auth((req) => {
   // whole app over a trailing newline in a dashboard secret.
   const proxySecret = process.env.NPR_PROXY_SECRET?.trim();
   if (proxySecret) headers.set("x-npr-proxy-secret", proxySecret);
+  const audience = process.env.NPR_BACKEND_AUDIENCE?.trim();
+  if (audience && pathname.startsWith("/api/")) {
+    try {
+      headers.set("x-serverless-authorization", `Bearer ${await backendIdToken(audience)}`);
+    } catch (e) {
+      // Fail closed and say why: an API call without the token would be a 403
+      // from Cloud Run that the console could only report as "forbidden".
+      console.error(JSON.stringify({ event: "backend_id_token_failed", error: String(e) }));
+      return NextResponse.json({ detail: "the frontend could not obtain a credential for the API; retry shortly",
+                                 error: "backend credential unavailable" }, { status: 503 });
+    }
+  }
   return NextResponse.next({ request: { headers } });
 });
 

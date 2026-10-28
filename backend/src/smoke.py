@@ -33,12 +33,23 @@ def _say(check: str, ok: bool, **detail) -> bool:
     return ok
 
 
+def _id_token_headers(api_url: str) -> dict:
+    """A Google ID token for a Cloud Run API with invoker IAM on, minted as this
+    job's service account. Nothing elsewhere (local runs, Container Apps)."""
+    if ".run.app" not in api_url:
+        return {}
+    from google.auth.transport.requests import Request
+    from google.oauth2 import id_token
+    return {"X-Serverless-Authorization": f"Bearer {id_token.fetch_id_token(Request(), api_url.rstrip('/'))}"}
+
+
 def check_api(api_url: str) -> bool:
     try:
-        with urllib.request.urlopen(f"{api_url.rstrip('/')}/api/live", timeout=10) as r:
+        req = urllib.request.Request(f"{api_url.rstrip('/')}/api/live", headers=_id_token_headers(api_url))
+        with urllib.request.urlopen(req, timeout=10) as r:
             return _say("api_live", r.status == 200, status=r.status)
-    except OSError as e:
-        return _say("api_live", False, error=str(e))
+    except Exception as e:  # noqa: BLE001 — any failure is a failed check, reported as one
+        return _say("api_live", False, error=f"{type(e).__name__}: {e}")
 
 
 def check_migrations() -> bool:

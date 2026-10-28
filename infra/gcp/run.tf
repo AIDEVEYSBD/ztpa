@@ -25,12 +25,15 @@ locals {
 
 # --- API: internal only; reached by the frontend through the VPC -------------
 resource "google_cloud_run_v2_service" "api" {
-  name                 = "${local.n}-api"
-  location             = var.region
-  ingress              = "INGRESS_TRAFFIC_INTERNAL_ONLY"
-  invoker_iam_disabled = true # network-restricted to the VPC; identity is the proxy secret + SSO headers
-  deletion_protection  = false
-  labels               = local.labels
+  name                = "${local.n}-api"
+  location            = var.region
+  ingress             = "INGRESS_TRAFFIC_INTERNAL_ONLY"
+  deletion_protection = false
+  # Invoker IAM stays ON (many orgs enforce run.managed.requireInvokerIam): only
+  # the frontend and migrate service accounts may call the API, with Google ID
+  # tokens (frontend/middleware.ts, src/smoke.py), on top of internal ingress
+  # and the proxy secret.
+  labels = local.labels
 
   template {
     service_account                  = google_service_account.backend.email
@@ -223,12 +226,13 @@ resource "google_cloud_run_v2_job" "migrate" {
 
 # --- frontend: the one public entry ------------------------------------------
 resource "google_cloud_run_v2_service" "frontend" {
-  name                 = "${local.n}-web"
-  location             = var.region
-  ingress              = local.frontend_ingress
-  invoker_iam_disabled = true
-  deletion_protection  = false
-  labels               = local.labels
+  name                = "${local.n}-web"
+  location            = var.region
+  ingress             = local.frontend_ingress
+  deletion_protection = false
+  # Invoker IAM on: callers need run.invoker (web_invokers below, or IAP on the
+  # load balancer). Staging testers can use `gcloud run services proxy`.
+  labels = local.labels
 
   template {
     service_account                  = google_service_account.frontend.email
@@ -259,13 +263,15 @@ resource "google_cloud_run_v2_service" "frontend" {
 
       dynamic "env" {
         for_each = merge({
-          BACKEND_URL     = google_cloud_run_v2_service.api.uri
-          AUTH_URL        = var.app_url
-          APP_URL         = var.app_url
-          AUTH_TRUST_HOST = "true"
-          SSO_ISSUER      = var.sso_issuer
-          SSO_CLIENT_ID   = var.sso_client_id
-          SSO_ROLE_MAP    = var.sso_role_map
+          BACKEND_URL = google_cloud_run_v2_service.api.uri
+          # The audience of the ID token the middleware attaches for the API's invoker IAM.
+          NPR_BACKEND_AUDIENCE = google_cloud_run_v2_service.api.uri
+          AUTH_URL             = var.app_url
+          APP_URL              = var.app_url
+          AUTH_TRUST_HOST      = "true"
+          SSO_ISSUER           = var.sso_issuer
+          SSO_CLIENT_ID        = var.sso_client_id
+          SSO_ROLE_MAP         = var.sso_role_map
           }, var.breakglass_email == "" ? {} : {
           AUTH_LOCAL_LOGIN           = "true"
           BREAKGLASS_EMAIL           = var.breakglass_email
@@ -303,4 +309,24 @@ resource "google_cloud_run_v2_service" "frontend" {
   }
 
   depends_on = [google_secret_manager_secret_iam_member.frontend, google_compute_router_nat.nat]
+}
+
+# --- who may invoke what ------------------------------------------------------------
+resource "google_cloud_run_v2_service_iam_member" "api_invokers" {
+  for_each = {
+    frontend = google_service_account.frontend.email
+    migrate  = google_service_account.migrate.email # the post-deploy smoke test calls /api/live
+  }
+  name     = google_cloud_run_v2_service.api.name
+  location = var.region
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${each.value}"
+}
+
+resource "google_cloud_run_v2_service_iam_member" "web_invokers" {
+  for_each = toset(var.web_invokers)
+  name     = google_cloud_run_v2_service.frontend.name
+  location = var.region
+  role     = "roles/run.invoker"
+  member   = each.value
 }
