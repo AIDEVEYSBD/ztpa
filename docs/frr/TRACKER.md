@@ -14,6 +14,7 @@ _Last updated: 2026-10-28_
 
 | Date | Item(s) | Change |
 |---|---|---|
+| 2026-10-28 | PLAT-10, 05.1, 05.2 | Azure Terraform (planned against sandbox: 56 resources); deploy pipelines for both clouds; in-network smoke test; CI runs real-DB tests as the runtime role |
 | 2026-10-28 | PLAT-9, PLAT-17 | GCP Terraform (validated + planned against sandbox); runtime DB role without DDL rights; worker health port for Cloud Run |
 | 2026-10-28 | PLAT-8, PLAT-16 | Hash-pinned lockfile, multi-process image with preflight, shared JSON logging; one-command database bootstrap with advisory lock |
 | 2026-10-28 | PLAT-7 | Shared rate limits on model-backed routes; request body and field caps |
@@ -85,8 +86,8 @@ _Last updated: 2026-10-28_
 
 | ID | Item | Status | Where / note |
 |---|---|---|---|
-| 05.1 | CI builds images once, deploys by digest | ⬜ | CI tests only; laptop deploys |
-| 05.2 | Post-deploy smoke test | 🟡 | `/api/live`, `/api/health` |
+| 05.1 | CI builds images once, deploys by digest | ✅ | `.github/workflows/deploy-gcp.yml`, `deploy-azure.yml`: manual per-environment, workload identity federation (no stored cloud keys), build+push once with provenance/SBOM, digests flow to migrate -> terraform -> smoke. CI (`ci.yml`) adds real-Postgres tests as the runtime role, image builds, prod-boot refusal, no-pytest-in-image, `terraform validate`, `next build`. actionlint clean. Not yet run on GitHub |
+| 05.2 | Post-deploy smoke test | ✅ | `python -m src.smoke`: runs inside the private network as a one-off of the migrate job; checks API liveness, migrations current, and a worker completing a `system.ping` job. 2 real-DB tests |
 | 05.3 | Runtime telemetry (OpenTelemetry export) | 🟡 | `ztpa.ai_metrics`, `advisory/trace.py`; no OTel |
 | 05.4 | Structured reviewer feedback (agree/disagree on severity) | 🟡 | Comment threads only |
 | 05.5 | Versioned, eval-gated prompt / retrieval / agent tuning | ⬜ | |
@@ -107,7 +108,7 @@ _Last updated: 2026-10-28_
 | PLAT-7 | Rate limits + LLM input size caps | ✅ | `backend/src/ratelimit.py` + migration 0011: per-identity and per-deployment per-minute ceilings on all 11 model-backed routes, shared across replicas (in-process fallback in dev), 429 + Retry-After, fails open loudly. `backend/app/limits.py`: 1 MB body cap incl. chunked bodies (413); field caps on ask/intake/connector sample. `tests/test_limits.py` |
 | PLAT-8 | Pinned dependencies / lockfile; test deps out of prod image | ✅ | `backend/requirements.lock` (59 hash-pinned packages, linux/amd64 py3.12, via `uv pip compile`); image installs `--require-hashes`; pytest moved to `requirements-dev.txt` (verified absent from image); image runs `$WEB_CONCURRENCY` uvicorn processes on `$PORT`; `src.preflight` makes a refused boot exit 1; API and worker share JSON logs with Cloud Logging `severity`. Image built and smoke-tested: API + separate worker container round-tripped a job |
 | PLAT-9 | Terraform: GCP (Cloud Run, Cloud SQL, GCS, Secret Manager, Artifact Registry) | ✅ | `infra/gcp/`: private VPC + Cloud NAT; Cloud SQL PG16 private IP, PITR, optional HA; GCS (versioned, no public access); Secret Manager with generated internal secrets; per-role service accounts, no keys; Cloud Run API (internal-only), worker (always-on), frontend, migrate job; images by digest only (validated); optional HTTPS LB + managed cert + Cloud Armor; baseline alerts. `terraform validate` clean; read-only `plan` against the sandbox project: 68 resources, no errors. Not yet applied |
-| PLAT-10 | Terraform: Azure (Container Apps, private PG, Blob, Key Vault, ACR) | ⬜ | `scripts/azure/deploy.sh` exists (CLI, public DB) |
+| PLAT-10 | Terraform: Azure (Container Apps, private PG, Blob, Key Vault, ACR) | ✅ | `infra/azure/`: VNet + private endpoints/DNS; PG Flexible private access (optional ZR HA, pgvector allowed); Blob with shared keys and public access off; Key Vault (RBAC, purge protection) via managed identities; ACR; Container Apps API (internal), worker (KEDA PostgreSQL queue-depth scaling), frontend; migrate job as its own identity; alerts. Validated; read-only plan against the sandbox: 56 resources, no errors. Not yet applied |
 | PLAT-15 | Load-test suite (`loadtest/`) gating releases | ⬜ | |
 | PLAT-16 | One-step schema bootstrap for the migrate job (`schema.sql` + `auth_schema.sql` + `sso_schema.sql` + migrations) | ✅ | `python db/migrate.py --bootstrap`; advisory lock serialises concurrent runs; verified on an empty database, re-run is a no-op, full suite (2,082) green against it |
 | PLAT-17 | Least-privilege runtime DB role | ✅ | `db/migrate.py --ensure-app-role`: runtime role has row access to `ztpa` only (CREATE/ALTER/DROP and ledger writes refused, verified); migrate runs as owner. Full suite (2,083) passes connecting as the restricted role |

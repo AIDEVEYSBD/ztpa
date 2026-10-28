@@ -1,0 +1,148 @@
+# Deploy to Google Cloud. Manual, per environment; prod should require a
+# reviewer through the GitHub environment's protection rules.
+#
+# Build once, deploy by digest: the images are built and pushed here, and only
+# their sha256 digests flow forward -- into the migrate job, into Terraform and
+# into the smoke test -- so what was tested is byte-for-byte what runs.
+#
+# Order: push -> migrate (on the new image) -> terraform apply (services roll)
+#        -> smoke test inside the VPC -> public check.
+# Rollback: re-run this workflow on the previous commit, or
+#   gcloud run services update-traffic <svc> --to-revisions=<prev>=100
+#
+# Repository / environment configuration (see docs/frr/DEPLOY-GCP.md):
+#   vars:    GCP_PROJECT_ID, GCP_REGION, GCP_WIF_PROVIDER, GCP_DEPLOY_SA, TF_STATE_BUCKET
+#   vars:    TFVARS            (contents of <env>.tfvars without images/secrets)
+#   secrets: SSO_CLIENT_SECRET, optional BYOK_SECRETS_JSON ({"OPENAI_API_KEY":"..."})
+name: Deploy (GCP)
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: staging or prod
+        type: choice
+        options: [staging, prod]
+        required: true
+
+concurrency:
+  group: deploy-gcp-${{ inputs.environment }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write # workload identity federation: no long-lived keys
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: gcp-${{ inputs.environment }}
+    env:
+      ENV: ${{ inputs.environment }}
+      REGION: ${{ vars.GCP_REGION }}
+      PROJECT: ${{ vars.GCP_PROJECT_ID }}
+      PREFIX: frr-${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Registry login
+        run: gcloud auth configure-docker "$REGION-docker.pkg.dev" --quiet
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push backend
+        id: backend
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: backend/Dockerfile
+          platforms: linux/amd64
+          push: true
+          provenance: true
+          sbom: true
+          tags: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT }}/${{ env.PREFIX }}/backend:${{ github.sha }}
+
+      - name: Build and push frontend
+        id: frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: frontend
+          file: frontend/Dockerfile
+          platforms: linux/amd64
+          push: true
+          provenance: true
+          sbom: true
+          tags: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT }}/${{ env.PREFIX }}/frontend:${{ github.sha }}
+
+      - name: Resolve digests
+        run: |
+          repo="$REGION-docker.pkg.dev/$PROJECT/$PREFIX"
+          echo "BACKEND_IMAGE=$repo/backend@${{ steps.backend.outputs.digest }}" >> "$GITHUB_ENV"
+          echo "FRONTEND_IMAGE=$repo/frontend@${{ steps.frontend.outputs.digest }}" >> "$GITHUB_ENV"
+
+      # Migrations run on the NEW image before any service rolls, so a new
+      # revision never starts against a schema older than its code. Skipped on
+      # the very first deploy (the job does not exist until Terraform creates it).
+      - name: Migrate (existing environment)
+        id: premigrate
+        run: |
+          if gcloud run jobs describe "$PREFIX-migrate" --region "$REGION" >/dev/null 2>&1; then
+            gcloud run jobs update "$PREFIX-migrate" --region "$REGION" --image "$BACKEND_IMAGE" --quiet
+            gcloud run jobs execute "$PREFIX-migrate" --region "$REGION" --wait
+            echo "ran=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ran=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+          terraform_wrapper: false
+
+      - name: Terraform apply
+        working-directory: infra/gcp
+        env:
+          TF_VAR_sso_client_secret: ${{ secrets.SSO_CLIENT_SECRET }}
+          TF_VAR_byok_secrets: ${{ secrets.BYOK_SECRETS_JSON || '{}' }}
+        run: |
+          printf '%s\n' "${{ vars.TFVARS }}" > env.auto.tfvars
+          terraform init -input=false \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" -backend-config="prefix=frr/$ENV"
+          terraform apply -input=false -auto-approve \
+            -var "project_id=$PROJECT" -var "region=$REGION" -var "env=$ENV" \
+            -var "backend_image=$BACKEND_IMAGE" -var "frontend_image=$FRONTEND_IMAGE"
+          echo "API_URL=$(terraform output -raw api_url)" >> "$GITHUB_ENV"
+          echo "FRONTEND_URL=$(terraform output -raw frontend_url)" >> "$GITHUB_ENV"
+          rm -f env.auto.tfvars
+
+      - name: Migrate (first deploy)
+        if: steps.premigrate.outputs.ran == 'false'
+        run: gcloud run jobs execute "$PREFIX-migrate" --region "$REGION" --wait
+
+      # Inside the VPC: API liveness, migrations current, a worker completing a job.
+      - name: Smoke test
+        run: |
+          gcloud run jobs execute "$PREFIX-migrate" --region "$REGION" --wait \
+            --args="-m,src.smoke,--api-url,$API_URL"
+
+      - name: Public endpoint answers
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "$FRONTEND_URL/")
+          echo "frontend: $code"
+          case "$code" in 200|302|303|307) ;; *) echo "::error::frontend returned $code"; exit 1;; esac
+
+      - name: Summary
+        run: |
+          {
+            echo "### Deployed to GCP ($ENV)"
+            echo "- backend: \`$BACKEND_IMAGE\`"
+            echo "- frontend: \`$FRONTEND_IMAGE\`"
+            echo "- url: $FRONTEND_URL"
+          } >> "$GITHUB_STEP_SUMMARY"

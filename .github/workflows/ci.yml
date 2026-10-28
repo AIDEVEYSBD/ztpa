@@ -1,11 +1,13 @@
-# CI for Network Policy Reviewer.
+# CI for Network Policy Reviewer / Firewall Rule Review.
 #
-# Hard requirement: this pipeline runs FULLY OFFLINE. No secrets, no database
-# service container, no model endpoint. That is possible because the engine is
-# deterministic (it builds its own fixtures) and backend/conftest.py blanks
-# DATABASE_URL and stubs record_metric + ollama_probe for the whole suite. If a
-# job here ever needs a secret, something has grown a hidden dependency on the
-# network and that is the bug to fix — not this file.
+# Hard requirement: this pipeline needs NO SECRETS and no cloud access. The
+# offline suite blanks DATABASE_URL and stubs the network seams (see
+# backend/conftest.py). The `backend-db` job adds a throwaway Postgres service
+# container -- a dependency CI owns, not a secret -- so the queue, snapshot and
+# governance tests run against a real database, connected as the
+# least-privilege runtime role the product uses in production. If a job here
+# ever needs a secret, something has grown a hidden dependency on the network
+# and that is the bug to fix -- not this file.
 name: CI
 
 on:
@@ -48,8 +50,106 @@ jobs:
       - name: Engine self-check
         run: python backend/scripts/verify_engine.py
 
+  backend-db:
+    name: backend (real Postgres, least-privilege role)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: npr
+          POSTGRES_PASSWORD: nprdev
+          POSTGRES_DB: npr
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U npr -d npr" --health-interval 2s
+          --health-timeout 5s --health-retries 30
+    env:
+      APP_DB_PASSWORD: ci-runtime-role-password-0123456789
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+      - run: pip install --disable-pip-version-check -r backend/requirements-dev.txt
+
+      # Exactly what the deploy's migrate job runs, on an empty database.
+      - name: Bootstrap schema + runtime role
+        env:
+          DATABASE_URL: postgresql://npr:nprdev@localhost:5432/npr
+          NPR_APP_DB_PASSWORD: ${{ env.APP_DB_PASSWORD }}
+        run: python db/migrate.py --bootstrap --ensure-app-role
+
+      - name: Migrations are current
+        env:
+          DATABASE_URL: postgresql://npr:nprdev@localhost:5432/npr
+        run: python db/migrate.py --check
+
+      - name: Tests as the runtime role
+        env:
+          NPR_TEST_DATABASE_URL: postgresql://npr_app:${{ env.APP_DB_PASSWORD }}@localhost:5432/npr
+        run: python -m pytest
+
+  images:
+    name: images (build, preflight, IaC validate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      # The backend image installs the hash-pinned lockfile, so this step also
+      # fails if requirements.lock drifted from a resolvable, hash-matching set.
+      - name: Build backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: backend/Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: npr-backend:ci
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+
+      - name: Build frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: frontend
+          file: frontend/Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: npr-frontend:ci
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+
+      - name: Production config refuses to boot open
+        run: |
+          set +e
+          docker run --rm -e NPR_ENV=prod npr-backend:ci
+          code=$?
+          set -e
+          test "$code" -ne 0 || { echo "::error::a prod container started without its secrets"; exit 1; }
+
+      - name: No test tooling in the image
+        run: |
+          if docker run --rm npr-backend:ci python -c "import pytest" 2>/dev/null; then
+            echo "::error::pytest is installed in the production image"; exit 1
+          fi
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+      - name: Terraform fmt + validate
+        run: |
+          for d in infra/gcp infra/azure; do
+            terraform -chdir=$d fmt -check -recursive
+            terraform -chdir=$d init -backend=false -input=false >/dev/null
+            terraform -chdir=$d validate
+          done
+
   frontend:
-    name: frontend (typecheck + lint)
+    name: frontend (typecheck + lint + build)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -78,6 +178,9 @@ jobs:
 
       - name: Lint
         run: npm run lint
+
+      - name: Build
+        run: npm run build
 
       # Belt and braces on the one invariant that was declared met and then
       # refuted: a swallowed rejection renders as a zero, and a zero is a claim

@@ -189,8 +189,11 @@ resource "google_cloud_run_v2_job" "migrate" {
       }
 
       containers {
-        image   = var.backend_image
-        command = ["python", "/app/db/migrate.py", "--bootstrap", "--ensure-app-role"]
+        image = var.backend_image
+        # Command and args split so a one-off execution can override the args:
+        # CI runs the post-deploy smoke test as `--args=-m,src.smoke,...`.
+        command = ["python"]
+        args    = ["/app/db/migrate.py", "--bootstrap", "--ensure-app-role"]
         env {
           name = "DATABASE_URL"
           value_source {

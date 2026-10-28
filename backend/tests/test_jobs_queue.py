@@ -365,3 +365,50 @@ def test_worker_health_endpoint_reflects_stopping() -> None:
     finally:
         srv.shutdown()
         srv.server_close()
+
+
+def test_smoke_passes_against_a_live_api_and_worker(monkeypatch, capsys) -> None:
+    """The post-deploy smoke test, end to end: a real HTTP liveness endpoint,
+    the migration check and a worker completing the ping."""
+    import socket
+    import urllib.error
+
+    from src import smoke
+    from src.jobs import builtin  # noqa: F401
+    from src.jobs.worker import _serve_health
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    w = Worker(kinds=["system.ping"], concurrency=1, connect=connect)
+    srv = _serve_health(port, w)            # stands in for the API's /api/live
+    import http.server
+
+    class Live(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200 if self.path == "/api/live" else 404)
+            self.end_headers()
+
+        def log_message(self, *_a):
+            return
+
+    srv.RequestHandlerClass = Live
+    monkeypatch.setenv("DATABASE_URL", _URL)
+    w.start()
+    try:
+        assert smoke.main(["--api-url", f"http://127.0.0.1:{port}", "--worker-timeout", "20"]) == 0
+    finally:
+        w.stop(timeout=10)
+        srv.shutdown()
+        srv.server_close()
+    out = capsys.readouterr().out
+    assert out.count('"ok": true') == 3
+
+
+def test_smoke_fails_when_no_worker_is_running(monkeypatch) -> None:
+    from src import smoke
+    monkeypatch.setenv("DATABASE_URL", _URL)
+    assert smoke.check_worker(timeout_s=2) is False
+    with connect() as c, c.cursor() as cur:            # leave no orphan ping behind
+        cur.execute("DELETE FROM ztpa.jobs WHERE created_by = 'smoke' AND status = 'queued'")
+        c.commit()

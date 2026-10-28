@@ -1,0 +1,158 @@
+# Deploy to Azure. Manual, per environment; prod should require a reviewer
+# through the GitHub environment's protection rules.
+#
+# Build once, deploy by digest (see deploy-gcp.yml for the reasoning).
+# Order: push -> migrate job (new image) -> terraform apply -> smoke job -> public check.
+# Rollback: re-run on the previous commit, or
+#   az containerapp revision activate / ingress traffic set to the previous revision.
+#
+# Repository / environment configuration (see docs/frr/DEPLOY-AZURE.md):
+#   vars:    AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID   (federated credential)
+#   vars:    TF_STATE_RG, TF_STATE_ACCOUNT, TF_STATE_CONTAINER, ACR_NAME, RESOURCE_GROUP
+#   vars:    TFVARS            (contents of <env>.tfvars without images/secrets)
+#   secrets: SSO_CLIENT_SECRET, optional BYOK_SECRETS_JSON
+name: Deploy (Azure)
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: staging or prod
+        type: choice
+        options: [staging, prod]
+        required: true
+
+concurrency:
+  group: deploy-azure-${{ inputs.environment }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: azure-${{ inputs.environment }}
+    env:
+      ENV: ${{ inputs.environment }}
+      PREFIX: frr-${{ inputs.environment }}
+      RG: ${{ vars.RESOURCE_GROUP }}
+      ACR: ${{ vars.ACR_NAME }}
+      ARM_USE_OIDC: "true"
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      # The workflow identity must reach Key Vault's data plane during apply.
+      - name: Runner IP for Key Vault
+        run: echo "RUNNER_IP=$(curl -s https://api.ipify.org)/32" >> "$GITHUB_ENV"
+
+      - name: Registry login
+        run: az acr login --name "$ACR"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push backend
+        id: backend
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: backend/Dockerfile
+          platforms: linux/amd64
+          push: true
+          provenance: true
+          sbom: true
+          tags: ${{ env.ACR }}.azurecr.io/backend:${{ github.sha }}
+
+      - name: Build and push frontend
+        id: frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: frontend
+          file: frontend/Dockerfile
+          platforms: linux/amd64
+          push: true
+          provenance: true
+          sbom: true
+          tags: ${{ env.ACR }}.azurecr.io/frontend:${{ github.sha }}
+
+      - name: Resolve digests
+        run: |
+          echo "BACKEND_IMAGE=$ACR.azurecr.io/backend@${{ steps.backend.outputs.digest }}" >> "$GITHUB_ENV"
+          echo "FRONTEND_IMAGE=$ACR.azurecr.io/frontend@${{ steps.frontend.outputs.digest }}" >> "$GITHUB_ENV"
+
+      - name: Migrate (existing environment)
+        id: premigrate
+        run: |
+          job="caj-$PREFIX-migrate"
+          if az containerapp job show -n "$job" -g "$RG" >/dev/null 2>&1; then
+            exec_name=$(az containerapp job start -n "$job" -g "$RG" --image "$BACKEND_IMAGE" \
+              --command python --args "/app/db/migrate.py --bootstrap --ensure-app-role" --query name -o tsv)
+            ./scripts/azure/wait-job.sh "$RG" "$job" "$exec_name"
+            echo "ran=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ran=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+          terraform_wrapper: false
+
+      - name: Terraform apply
+        working-directory: infra/azure
+        env:
+          TF_VAR_sso_client_secret: ${{ secrets.SSO_CLIENT_SECRET }}
+          TF_VAR_byok_secrets: ${{ secrets.BYOK_SECRETS_JSON || '{}' }}
+        run: |
+          printf '%s\n' "${{ vars.TFVARS }}" > env.auto.tfvars
+          terraform init -input=false \
+            -backend-config="resource_group_name=${{ vars.TF_STATE_RG }}" \
+            -backend-config="storage_account_name=${{ vars.TF_STATE_ACCOUNT }}" \
+            -backend-config="container_name=${{ vars.TF_STATE_CONTAINER }}" \
+            -backend-config="key=frr/$ENV.tfstate" -backend-config="use_azuread_auth=true"
+          terraform apply -input=false -auto-approve \
+            -var "subscription_id=$ARM_SUBSCRIPTION_ID" -var "env=$ENV" \
+            -var "operator_ip_cidrs=[\"$RUNNER_IP\"]" \
+            -var "backend_image=$BACKEND_IMAGE" -var "frontend_image=$FRONTEND_IMAGE"
+          echo "API_FQDN=$(terraform output -raw api_internal_fqdn)" >> "$GITHUB_ENV"
+          echo "FRONTEND_URL=$(terraform output -raw frontend_url)" >> "$GITHUB_ENV"
+          rm -f env.auto.tfvars
+
+      - name: Migrate (first deploy)
+        if: steps.premigrate.outputs.ran == 'false'
+        run: |
+          job="caj-$PREFIX-migrate"
+          exec_name=$(az containerapp job start -n "$job" -g "$RG" --query name -o tsv)
+          ./scripts/azure/wait-job.sh "$RG" "$job" "$exec_name"
+
+      - name: Smoke test
+        run: |
+          job="caj-$PREFIX-migrate"
+          exec_name=$(az containerapp job start -n "$job" -g "$RG" --image "$BACKEND_IMAGE" \
+            --command python --args "-m src.smoke --api-url https://$API_FQDN" --query name -o tsv)
+          ./scripts/azure/wait-job.sh "$RG" "$job" "$exec_name"
+
+      - name: Public endpoint answers
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "$FRONTEND_URL/")
+          echo "frontend: $code"
+          case "$code" in 200|302|303|307) ;; *) echo "::error::frontend returned $code"; exit 1;; esac
+
+      - name: Summary
+        run: |
+          {
+            echo "### Deployed to Azure ($ENV)"
+            echo "- backend: \`$BACKEND_IMAGE\`"
+            echo "- frontend: \`$FRONTEND_IMAGE\`"
+            echo "- url: $FRONTEND_URL"
+          } >> "$GITHUB_STEP_SUMMARY"
