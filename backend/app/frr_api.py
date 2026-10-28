@@ -30,6 +30,21 @@ def _actor() -> str | None:
     return a.sub or a.email
 
 
+@router.get("/api/frr/me")
+def my_duties():
+    """The caller's FRR duties, so the UI offers only the actions they can take.
+    Display only: every action is still checked server-side."""
+    from src.frr import workflow
+    with get_conn() as conn, conn.cursor() as cur:
+        p = workflow.principals()
+        cur.execute("SELECT duty, scope FROM ztpa.frr_approvers WHERE principal = ANY(%s) "
+                    "ORDER BY duty, scope", [p or [""]])
+        duties = cur.fetchall()
+    a = request_ctx.current()
+    return {"email": a.email, "role": a.role, "duties": duties,
+            "can_upload": a.role in ("admin", "analyst"), "is_admin": a.role == "admin"}
+
+
 @router.get("/api/frr/agents")
 def list_agents():
     out = []
