@@ -191,4 +191,5 @@ def get_review(export_id: str, band: str | None = Query(None, pattern="^(critica
         entries = [e for e in entries if any(c["check"] == check for c in e["checks"])]
     return {"export_id": export_id, "stats": doc["stats"], "limitations": doc["limitations"],
             "reference_time": doc["reference_time"], "total": len(entries),
+            "effective_policy": doc.get("effective_policy", []),
             "items": entries[offset:offset + limit], "limit": limit, "offset": offset}

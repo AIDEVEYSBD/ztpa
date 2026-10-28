@@ -14,6 +14,7 @@ _Last updated: 2026-10-28_
 
 | Date | Item(s) | Change |
 |---|---|---|
+| 2026-10-28 | 02.3a, 02.3c, 03.1a | Shadowing computed per (layer, gateway); per-gateway effective-policy model served with the register |
 | 2026-10-28 | PLAT-15 | Load test suite and first measured baseline; immutable review documents cached per process |
 | 2026-10-28 | 05.4 | Reviewer feedback with false-positive / missed-finding semantics; reviews export as eval labels |
 | 2026-10-28 | 01.5, 04.3-04.5 | Labelled evaluation suite, metrics and CI gate; first severity-tuning signal recorded |
@@ -56,9 +57,9 @@ _Last updated: 2026-10-28_
 | 02.2b | NAT parsing | 🟡 | Check Point NAT rules parsed with resolved original/translated address space (`NatRule`); not yet applied to effective policy |
 | 02.2c | Intake integrity: checksum, export age, schema validation, fail closed on wrong shape | ✅ | `backend/src/frr/intake.py`: sha256 recorded at upload and re-verified in the worker; export time required (file or declared), rejected if > `NPR_EXPORT_MAX_AGE_DAYS` (30) or in the future; non-rulebase / paginated-incomplete / rule-missing-fields exports rejected with a reason. Rejection is an outcome on the export row, never an empty estate. (The older `profile.py` path is unchanged) |
 | 02.2d | Export upload + object storage (GCS / Blob) | ✅ | `POST /api/exports` streams to storage (100 MB cap, content-addressed, duplicate = same export), `ztpa.exports` (migration 0012), `export.ingest` job; `GET /api/exports[/{id}[/review]]`. 11 end-to-end tests as the runtime role. Uploaded exports do not yet feed the main console engine (they feed the FRR register) |
-| 02.3a | Effective policy: first-match per device/package, deny subtraction | 🟡 | Union-of-allows graph (`backend/src/graph/build.py`) |
+| 02.3a | Effective policy: first-match per device/package, deny subtraction | 🟡 | Per (layer, gateway) model in the review: rules installed on each gateway in order → effective allows, shadowed, denies, inactive (`effective_policy` in `GET /api/exports/{id}/review`). Partitions with identical rule sets computed once. Full packet-space subtraction (partial overlaps) and NAT application not done |
 | 02.3b | Checks: any-any, exposed admin ports, broad sources | ✅ | Engine `over_permissive` run over the uploaded rulebase; classified per FRR check in `backend/src/frr/review.py` |
-| 02.3c | Check: shadowed rules (per rulebase, bucketed) | 🟡 | Bucketed: destination-supernet + service index replaces the O(n²) scan, proven identical on 12 randomised rulebases (`tests/test_shadowing_index.py`). Still per source tool, not per layer (stated as a limitation when >1 layer) |
+| 02.3c | Check: shadowed rules (per rulebase, bucketed) | ✅ | Bucketed index (identical to the O(n²) scan on randomised rulebases) and now computed per (layer, gateway): a rule is shadowed only when covered on every gateway it is installed on; recent hit counts still refute. 20,000 rules reviewed in 11 s |
 | 02.3d | Check: expired rules | ✅ | Time-object expiry in `RuleMeta.expires_at`; `expired` and `expiring_soon` (`NPR_FRR_EXPIRING_DAYS`) checks |
 | 02.3e | Check: unused rules via hit counts | ✅ | `unused` = zero hits or last hit older than `NPR_FRR_UNUSED_DAYS` (90); only when the export carries hits, else a limitation; plus `disabled` |
 | 02.3f | Change recommendation workflow with rollback | 🟡 | Remediation loop exists; rollback is a status flip |
@@ -71,7 +72,7 @@ _Last updated: 2026-10-28_
 
 | ID | Item | Status | Where / note |
 |---|---|---|---|
-| 03.1a | Effective-policy model view | 🟡 | Explorer/graph UI; inherits 02.3a limit |
+| 03.1a | Effective-policy model view | 🟡 | API: per-gateway effective policy served with the register. UI screen pending |
 | 03.1b | Rule-risk register with evidence | 🟡 | API done: `GET /api/exports/{id}/review` — per-rule checks with engine evidence, worst band (forced-critical preserved), filters by band/check, paginated. UI screen not built |
 | 03.1c | Narrowed or time-bound rule proposals | ✅ | `backend/src/frr/package.py`: deterministic proposal per check (remove / disable-then-remove / reorder / time-bound-and-narrow / revisit-after), availability impact per item, owner input required for narrowing (no flow data yet to derive it). Guards against outages: never moves a cleanup rule, never removes a rule shadowed by one being narrowed. 8 tests |
 | 03.1d | Rollback plan artefact | ✅ | Every item carries Check Point `mgmt_cli` change and exact rollback (restores rule as exported); `GET /api/change-packages/{id}/runbook` (approved only) emits accepted items with rollback under the approval record |

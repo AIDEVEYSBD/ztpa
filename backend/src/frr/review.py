@@ -92,11 +92,13 @@ class Review:
     reviewed_at: str
     reference_time: str
     stats: dict
+    effective_policy: list = field(default_factory=list)
 
     def to_jsonable(self) -> dict[str, Any]:
         return {"stats": self.stats, "limitations": self.limitations,
                 "degraded_analyzers": self.degraded_analyzers,
                 "reviewed_at": self.reviewed_at, "reference_time": self.reference_time,
+                "effective_policy": self.effective_policy,
                 "register": [{**asdict(e), "severity": e.severity, "band": e.band}
                              for e in self.register]}
 
@@ -106,7 +108,7 @@ log = logging.getLogger("npr.api.review")
 # The engine analyzers a rule review needs. cidr_overlap (pairwise redundancy,
 # tens of thousands of findings on a large rulebase), path_trace (cross-tool
 # paths) and transport_exposure (QUIC) answer other questions.
-REVIEW_ANALYZERS = ("over_permissive", "shadowing")
+REVIEW_ANALYZERS = ("over_permissive",)      # shadowing runs per gateway: see _shadowing_by_gateway
 
 
 def _run_review_analyzers(records, graph, alias_map):
@@ -161,16 +163,71 @@ def _shadowing_refuted(later: Optional[RuleMeta], earlier: Optional[RuleMeta],
     is direct evidence: a rule hit recently DOES match traffic somewhere."""
     if later is None or earlier is None:
         return None
-    e_targets = {t.lower() for t in earlier.install_on}
-    l_targets = {t.lower() for t in later.install_on}
-    if e_targets and not (e_targets & _ALL_TARGETS) and not (l_targets <= e_targets):
-        return (f"not reported as shadowed: rule {earlier.number} covers it but is installed on "
-                f"{', '.join(earlier.install_on)}, not on all of this rule's targets")
     if later.hit_count and later.last_hit and later.last_hit >= ref - timedelta(days=UNUSED_DAYS):
         return (f"not reported as shadowed: rule {earlier.number} appears to cover it, but the "
                 f"firewall counted {later.hit_count} hits (last {later.last_hit.date()}); check "
                 "install targets and inline layers")
     return None
+
+
+ALL_GATEWAYS = "(all gateways)"
+
+
+def _gateways_of(r: RuleMeta) -> set[str]:
+    t = {x.lower() for x in r.install_on}
+    return {ALL_GATEWAYS} if (not t or t & _ALL_TARGETS) else t
+
+
+def _shadowing_by_gateway(parsed: ParsedRulebase, graph, alias_map, ref: datetime):
+    """Shadowing computed where it actually happens: per (layer, gateway), over
+    the rules installed on that gateway, in order. A rule installed on every
+    gateway ('Policy Targets') belongs to each partition.
+
+    Returns ({uid: {partition: (coverer_uid, finding)}}, effective_policy,
+    degraded). Partitions with the same rule set share one computation, so a
+    hundred gateways running one policy cost the same as one."""
+    from ..analyzers import shadowing
+
+    explicit = sorted({g for r in parsed.rules for g in _gateways_of(r)} - {ALL_GATEWAYS})
+    gateways = explicit or [ALL_GATEWAYS]
+    by_rule_records: dict[str, list] = {}
+    for rec in parsed.result.records:
+        by_rule_records.setdefault(rec.raw_ref, []).append(rec)
+    memo: dict[frozenset, list] = {}
+    covered: dict[str, dict] = {}
+    effective: list[dict] = []
+    degraded: list[dict] = []
+    gw_of = {r.uid: _gateways_of(r) for r in parsed.rules}
+    for layer in parsed.layers:
+        rules = [r for r in parsed.rules if r.layer == layer]
+        for g in gateways:
+            here = [r for r in rules if g in gw_of[r.uid] or ALL_GATEWAYS in gw_of[r.uid]]
+            key = frozenset(r.uid for r in here)
+            if key not in memo:
+                recs = [x for r in here for x in by_rule_records.get(r.uid, ())]
+                try:
+                    memo[key] = shadowing.analyze(recs, graph, alias_map)
+                except Exception as exc:  # noqa: BLE001 — isolation boundary, recorded
+                    log.error("shadowing failed", exc_info=True,
+                              extra={"event": "review_analyzer_degraded", "analyzer": "shadowing"})
+                    degraded.append({"analyzer": "shadowing", "error": type(exc).__name__,
+                                     "message": str(exc)})
+                    memo[key] = []
+            shadowed_here = set()
+            for f in memo[key]:
+                uid = f.signals.get("shadowed_ref")
+                covered.setdefault(uid, {})[(layer, g)] = (f.signals.get("shadowing_ref"), f)
+                shadowed_here.add(uid)
+            live = [r for r in here if r.enabled and not (r.expires_at and r.expires_at <= ref)]
+            live_uids = {r.uid for r in live}
+            effective.append({
+                "layer": layer, "gateway": g, "rules_installed": len(here),
+                "effective_allow": [r.number for r in live if r.action == "allow" and r.uid not in shadowed_here],
+                "shadowed": [r.number for r in live if r.uid in shadowed_here],
+                "deny": [r.number for r in live if r.action == "deny" and r.uid not in shadowed_here],
+                "inactive": [r.number for r in here if r.uid not in live_uids],
+            })
+    return covered, effective, degraded
 
 
 def _inventory_checks(r: RuleMeta, ref: datetime) -> list[Check]:
@@ -204,6 +261,8 @@ def review(parsed: ParsedRulebase, *, now: Optional[datetime] = None) -> Review:
     idr = resolve_identities(res.entities, [])
     graph = build_graph(res.records, idr.assets, idr.alias_map)
     findings, degraded = _run_review_analyzers(res.records, graph, idr.alias_map)
+    covered, effective, shadow_degraded = _shadowing_by_gateway(parsed, graph, idr.alias_map, ref)
+    degraded += shadow_degraded
 
     by_uid: dict[str, RegisterEntry] = {}
     for r in parsed.rules:
@@ -222,25 +281,40 @@ def review(parsed: ParsedRulebase, *, now: Optional[datetime] = None) -> Review:
         if f.type == "over_permissive":
             entry = by_uid.get(sig.get("raw_ref") or (f.raw_refs or [None])[0])
             kind, title = _classify_over_permissive(sig), f.title
-        elif f.type == "shadowed_rule":
-            # The finding names both rules; the check belongs to the one that
-            # can never match, with the rule that covers it as the evidence.
-            entry = by_uid.get(sig.get("shadowed_ref"))
-            covering = sig.get("shadowing_ref")
-            refuted = _shadowing_refuted(meta.get(sig.get("shadowed_ref")), meta.get(covering), ref)
-            if refuted and entry is not None:
-                if refuted not in entry.limitations:
-                    entry.limitations.append(refuted)
-                continue
-            kind = "shadowed"
-            title = f"never matched: rule {number.get(covering, covering)} above it already covers it"
-            sig["covered_by_rule"] = number.get(covering)
         else:
             continue                                   # cross-tool paths etc. are not per-rule checks
         if entry is None or any(c.finding_id == f.id for c in entry.checks):
             continue
         band = "critical" if f.forced_critical else f.severity_band
         entry.checks.append(Check(kind, f.severity, band, title, sig, f.id))
+
+    # Shadowing: reported only when the rule is covered on EVERY gateway it is
+    # installed on, and the firewall's own hit counter does not contradict it.
+    for uid, where in covered.items():
+        entry, rm = by_uid.get(uid), meta.get(uid)
+        if entry is None or rm is None:
+            continue
+        mine = {(rm.layer, g) for g in (_gateways_of(rm) if ALL_GATEWAYS not in _gateways_of(rm)
+                                         else {e["gateway"] for e in effective if e["layer"] == rm.layer})}
+        missing = sorted(g for (_l, g) in mine - set(where))
+        coverers = sorted({number.get(c, c) for c, _f in where.values()}, key=lambda x: (x is None, x))
+        if missing:
+            entry.limitations.append(
+                f"covered by rule {', '.join(map(str, coverers))} on some gateways but effective on "
+                f"{', '.join(missing)}")
+            continue
+        refuted = _shadowing_refuted(rm, meta.get(next(iter(where.values()))[0]), ref)
+        if refuted:
+            if refuted not in entry.limitations:
+                entry.limitations.append(refuted)
+            continue
+        cov_uid, f = next(iter(where.values()))
+        sig = dict(f.signals or {})
+        sig["covered_by_rule"] = number.get(cov_uid)
+        sig["gateways"] = sorted(g for (_l, g) in where)
+        entry.checks.append(Check("shadowed", f.severity, f.severity_band,
+                                  f"never matched: rule {number.get(cov_uid, cov_uid)} above it already "
+                                  "covers it", sig, f.id))
 
     # Several grants of one rule can raise the same check (one per service in
     # a group); the register keeps the worst of each kind per rule.
@@ -271,7 +345,6 @@ def review(parsed: ParsedRulebase, *, now: Optional[datetime] = None) -> Review:
     if degraded:
         limitations.append("analysis incomplete: " + ", ".join(d["analyzer"] for d in degraded)
                            + " failed; their checks are missing from this register")
-    if len(parsed.layers) > 1:
-        limitations.append("shadowing is evaluated across all layers together, not per layer")
     return Review(register=register, limitations=limitations, degraded_analyzers=degraded,
-                  reviewed_at=now.isoformat(), reference_time=ref.isoformat(), stats=stats)
+                  reviewed_at=now.isoformat(), reference_time=ref.isoformat(), stats=stats,
+                  effective_policy=effective)

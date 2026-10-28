@@ -79,3 +79,38 @@ def test_register_is_serialisable_with_limitations(register) -> None:
     assert out["register"][0]["band"] == "critical"
     assert out["stats"]["by_check"]["any_any"] == 1
     assert any("negated" in l for l in next(r for r in out["register"] if r["number"] == 5)["limitations"])
+
+
+# --- shadowing is per gateway ------------------------------------------------------
+def _gateway_export(rule2_on, rule3_on):
+    e = fx.export()
+    e["access_layers"][0]["objects-dictionary"].append({"uid": "gw-2", "name": "edge-gw-2",
+                                                        "type": "simple-gateway"})
+    sections = e["access_layers"][0]["rulebase"]
+    sections[0]["rulebase"][0]["enabled"] = False                  # take the any-any out of play
+    sections[1]["rulebase"][0]["install-on"] = rule2_on            # rule 2: web-farm https
+    sections[1]["rulebase"][1]["install-on"] = rule3_on            # rule 3: web-01 https (0 hits)
+    sections[2]["rulebase"][0]["install-on"] = ["gw-2"]            # makes gw-2 a gateway
+    return e
+
+
+def test_a_rule_covered_on_one_gateway_but_live_on_another_is_not_shadowed() -> None:
+    reg = {x.number: x for x in rv.review(cp.parse(_gateway_export(["gw-1"], ["pt"]))).register}
+    assert "shadowed" not in {c.check for c in reg[3].checks}
+    assert any("effective on edge-gw-2" in l for l in reg[3].limitations)
+
+
+def test_a_rule_covered_on_every_gateway_it_is_installed_on_is_shadowed() -> None:
+    reg = {x.number: x for x in rv.review(cp.parse(_gateway_export(["gw-1"], ["gw-1"]))).register}
+    c = {c.check: c for c in reg[3].checks}["shadowed"]
+    assert c.evidence["covered_by_rule"] == 2 and c.evidence["gateways"] == ["edge-gw-1"]
+
+
+def test_the_effective_policy_model_is_per_gateway() -> None:
+    out = rv.review(cp.parse(_gateway_export(["gw-1"], ["pt"])))
+    ep = {(e["layer"], e["gateway"]): e for e in out.effective_policy}
+    assert set(ep) == {("Network", "edge-gw-1"), ("Network", "edge-gw-2")}
+    gw1, gw2 = ep[("Network", "edge-gw-1")], ep[("Network", "edge-gw-2")]
+    assert 2 in gw1["effective_allow"] and 2 not in gw2["effective_allow"]
+    assert 3 in gw1["shadowed"] and 3 in gw2["effective_allow"]
+    assert 1 in gw1["inactive"] and 6 in gw1["inactive"] and 7 in gw1["inactive"]
