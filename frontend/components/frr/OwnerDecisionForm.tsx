@@ -29,8 +29,15 @@ const INPUT_LABEL: Record<string, { label: string; hint: string }> = {
 export const splitList = (s: string): string[] =>
   s.split(/[\n,]/).map((x) => x.trim()).filter(Boolean);
 
+/** The owner's earlier input, else the flow-based suggestion the drafter
+ *  attached (`evidence.suggested_input`) as a prefill to confirm or edit. */
+function suggestion(item: PackageItem, key: string): unknown {
+  const s = (item.evidence as Record<string, unknown> | null | undefined)?.suggested_input;
+  return s && typeof s === "object" ? (s as Record<string, unknown>)[key] : undefined;
+}
+
 function initialText(item: PackageItem, key: string): string {
-  const v = item.owner_input?.[key];
+  const v = item.owner_input?.[key] ?? suggestion(item, key);
   if (Array.isArray(v)) return v.join("\n");
   return typeof v === "string" ? v : "";
 }
@@ -88,6 +95,12 @@ export function OwnerDecisionForm({ pkgId, item, onDecided }: {
         {item.owner_decision && <span className="text-[11px] text-faint">Re-deciding replaces the recorded {item.owner_decision}.</span>}
       </div>
 
+      {needsInput && !item.owner_input && suggestion(item, "allowed_sources") !== undefined && (
+        <p className="text-[11.5px] text-dim">
+          Sources and services are prefilled from observed flows. Flows show use, not need: remove anything that
+          should not have access, and add anything legitimate that was quiet in the window.
+        </p>
+      )}
       {needsInput && (
         <div className="grid gap-3 md:grid-cols-2">
           {required.map((k) => {

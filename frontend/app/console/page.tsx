@@ -29,6 +29,7 @@ import { ReviewScreen } from "@/components/frr/ReviewScreen";
 import { PackageScreen } from "@/components/frr/PackageScreen";
 import { ApproversAdmin } from "@/components/frr/ApproversAdmin";
 import { KnowledgeAdmin } from "@/components/frr/KnowledgeAdmin";
+import { ContextScreen } from "@/components/frr/ContextScreen";
 import { NoExportSelected } from "@/components/frr/bits";
 import { useFrrSelection } from "@/components/frr/selection";
 import { ErrorState } from "@/components/ui/Feedback";
@@ -54,6 +55,7 @@ const META: Record<ScreenId, { title: string; sub: string }> = {
   frr_review: { title: "Rule review", sub: "The deterministic rule-risk register for the selected export, and what it cannot prove" },
   frr_package: { title: "Change package", sub: "Proposed changes with rollback, decided by the network owner and approved by a security approver" },
   frr_approvers: { title: "Approvers", sub: "Who holds the network owner and security approver duties, per policy layer (admin)" },
+  frr_context: { title: "Context data", sub: "CMDB/IPAM ownership and observed flows that ground owners and narrowing proposals" },
   frr_knowledge: { title: "Knowledge", sub: "Standards, exceptions and runbooks the impact assessor retrieves and cites (admin)" },
 };
 
@@ -282,6 +284,7 @@ export default function Dashboard() {
                   : <NoExportSelected what="change package" onGoToExports={() => setScreen("frr_exports")} />)}
                 {screen === "frr_approvers" && <ApproversAdmin />}
                 {screen === "frr_knowledge" && <KnowledgeAdmin />}
+                {screen === "frr_context" && <ContextScreen />}
               </motion.div>
             </AnimatePresence>
           </div>

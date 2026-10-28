@@ -197,6 +197,9 @@ def review_run(ctx: JobContext, *, llm: Optional[Callable[..., Any]] = None) -> 
     ctx.check()
 
     drafted = package_mod.draft(review, parsed)
+    from . import context
+    ctx_counts = context.enrich_package(cur, drafted, parsed)
+    _step(cur, run_id, "impact_assessor", "context", **ctx_counts)
     impact_prompt, pkg_prompt = prompt("impact.v1"), prompt("package.v1")
     narratives: dict[str, dict] = {}
     narrated = fallbacks = 0

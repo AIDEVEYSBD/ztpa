@@ -65,9 +65,14 @@ def draft_package(export_id: str, supersede: bool = Query(False)):
     if row["status"] != "accepted":
         raise HTTPException(409, f"export is {row['status']}; only an accepted export has a register")
     store = storage.store()
-    drafted = package_mod.draft(json.loads(store.get_bytes(row["review_key"])),
-                                json.loads(store.get_bytes(row["parsed_key"])))
-    pkg = _run(wf.create, export_id, drafted, supersede=supersede)
+    parsed = json.loads(store.get_bytes(row["parsed_key"]))
+    drafted = package_mod.draft(json.loads(store.get_bytes(row["review_key"])), parsed)
+
+    def _create(cur):
+        from src.frr import context
+        context.enrich_package(cur, drafted, parsed)
+        return wf.create(cur, export_id, drafted, supersede=supersede)
+    pkg = _run(_create)
     return _jsonable(_run(wf.get, str(pkg["package_id"])))
 
 

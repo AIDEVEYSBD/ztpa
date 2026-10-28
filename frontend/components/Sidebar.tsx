@@ -4,14 +4,14 @@ import { useSession } from "next-auth/react";
 import {
   Network, ListChecks, GitBranch, MessageSquare, FileText, Plug,
   LogOut, History, Rocket, SlidersHorizontal, BarChart3, ScrollText, Cog,
-  Boxes, FileJson, ClipboardCheck, FileStack, UserCheck, BookOpen,
+  Boxes, FileJson, ClipboardCheck, FileStack, UserCheck, BookOpen, Database,
 } from "lucide-react";
 import { Brand, cn, Button } from "./ui";
 import { SurfaceGrain } from "./ui/Material";
 import { ThemeToggle } from "./theme";
 
 export type ScreenId = "explorer" | "inventory" | "sources" | "risks" | "change" | "staging" | "ask" | "report" | "connectors" | "snapshots" | "tools" | "metrics" | "audit" | "config"
-  | "frr_exports" | "frr_review" | "frr_package" | "frr_approvers" | "frr_knowledge";
+  | "frr_exports" | "frr_review" | "frr_package" | "frr_context" | "frr_approvers" | "frr_knowledge";
 
 type NavDef = { id: ScreenId; label: string; icon: typeof Network };
 
@@ -54,6 +54,7 @@ const RULE_REVIEW: NavDef[] = [
   { id: "frr_exports", label: "Exports", icon: FileJson },
   { id: "frr_review", label: "Rule review", icon: ClipboardCheck },
   { id: "frr_package", label: "Change package", icon: FileStack },
+  { id: "frr_context", label: "Context data", icon: Database },
 ];
 const RULE_REVIEW_ADMIN: NavDef[] = [
   { id: "frr_approvers", label: "Approvers", icon: UserCheck },

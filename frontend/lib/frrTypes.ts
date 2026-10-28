@@ -298,3 +298,18 @@ export interface KnowledgeHit {
   rank: number;
   cite: string;
 }
+
+export type ContextKind = "cmdb" | "flows";
+
+export interface ContextDataset {
+  dataset_id: string;
+  kind: ContextKind;
+  filename: string | null;
+  size_bytes: number;
+  status: "received" | "accepted" | "rejected";
+  rejection_reason: string | null;
+  summary: Record<string, unknown> | null;
+  uploaded_by: string | null;
+  uploaded_at: string;
+  active: boolean;
+}

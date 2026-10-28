@@ -9,7 +9,7 @@ import { requestJson as j, requestText } from "./api";
 import type {
   ApproverGrant, ChangePackage, ExportList, FrrExport, FrrMe, FrrRun, KnowledgeDoc, KnowledgeHit,
   KnowledgeKind, OwnerDecision, OwnerInput, PackageItem, ReviewPage, ReviewQuery, UploadResult,
-  FrrDuty, FeedbackBand, FeedbackList, FeedbackRow, FeedbackVerdict,
+  FrrDuty, FeedbackBand, FeedbackList, FeedbackRow, FeedbackVerdict, ContextDataset, ContextKind,
 } from "./frrTypes";
 
 const enc = encodeURIComponent;
@@ -62,6 +62,13 @@ export const frr = {
   decide: (pkgId: string, decision: "approve" | "reject", note?: string) =>
     j<ChangePackage>(`/api/change-packages/${enc(pkgId)}/decision`, postJson({ decision, note: note || undefined })),
   runbook: (pkgId: string) => requestText(`/api/change-packages/${enc(pkgId)}/runbook`),
+
+  // ── context datasets (CMDB/IPAM, flows) ──────────────────────────────────
+  contextDatasets: () => j<{ items: ContextDataset[] }>("/api/context"),
+  uploadContext: (kind: ContextKind, file: Blob, filename: string) =>
+    j<{ dataset: ContextDataset; duplicate: boolean }>(`/api/context/${kind}${query({ filename })}`, {
+      method: "POST", headers: { "content-type": "text/csv" }, body: file,
+    }),
 
   // ── reviewer feedback ─────────────────────────────────────────────────────
   feedback: (exportId: string) => j<FeedbackList>(`/api/exports/${enc(exportId)}/feedback`),

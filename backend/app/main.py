@@ -129,6 +129,8 @@ from app.frr_api import router as _frr_router  # noqa: E402
 app.include_router(_frr_router)
 from app.feedback_api import router as _feedback_router  # noqa: E402
 app.include_router(_feedback_router)
+from app.context_api import router as _context_router  # noqa: E402
+app.include_router(_context_router)
 app.add_middleware(
     CORSMiddleware,
     # The local dev origin is allowed only in dev: a production API that accepts

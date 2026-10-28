@@ -5,6 +5,7 @@ import { ChevronDown, ChevronRight, HelpCircle, Sparkles } from "lucide-react";
 import type { PackageItem } from "@/lib/frrTypes";
 import { Chip, SeverityPill, cn } from "../ui";
 import { AuthorChip, CodeBlock, EvidenceList, authorLabel, checkLabel, impactMeta, proposalLabel, when } from "./bits";
+import { ItemContext } from "./ItemContext";
 import { OwnerDecisionForm } from "./OwnerDecisionForm";
 
 const DECISION_VARIANT = { accept: "ok", modify: "info", reject: "danger" } as const;
@@ -82,6 +83,8 @@ export function PackageItemCard({ pkgId, item, canDecide, decideNote, onDecided 
             )}
           </div>
         )}
+
+        <ItemContext item={item} />
 
         <div className="grid gap-2 lg:grid-cols-2">
           <CodeBlock title="Commands" lines={item.commands ?? []} />

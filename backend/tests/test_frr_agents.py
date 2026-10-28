@@ -163,10 +163,11 @@ def test_an_orchestrated_run_hands_off_through_all_five_agents(runner) -> None:
     assert run.status_code == 202
     done = _wait_run(c, run.json()["run_id"])
     assert done["status"] == "succeeded", done
-    agents_seen = [s["agent"] for s in done["steps"]]
+    agents_seen = [a for i, a in enumerate(s["agent"] for s in done["steps"])
+                   if i == 0 or a != done["steps"][i - 1]["agent"]]
     assert agents_seen == ["orchestrator", "intake_parser", "policy_checker", "impact_assessor",
                            "package_drafter", "orchestrator"]
-    assessor = next(s for s in done["steps"] if s["agent"] == "impact_assessor")
+    assessor = next(s for s in done["steps"] if s["agent"] == "impact_assessor" and s["status"] == "done")
     assert assessor["narrated"] == 7 and assessor["prompt"].startswith("impact.v1@")
 
     pkg = c.get(f"/api/change-packages/{done['package_id']}", headers=ANALYST).json()

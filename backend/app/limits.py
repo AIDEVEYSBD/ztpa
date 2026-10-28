@@ -17,7 +17,7 @@ from fastapi import Depends, HTTPException
 
 from src import ratelimit, request_ctx, settings
 
-STREAMED_PATH_PREFIXES: tuple[str, ...] = ("/api/exports",)
+STREAMED_PATH_PREFIXES: tuple[str, ...] = ("/api/exports", "/api/context/")
 
 
 def _reject(limit: int) -> tuple[dict, bytes]:
