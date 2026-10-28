@@ -175,6 +175,42 @@ def platform() -> str:
     return "local"
 
 
+# dev | staging | prod. Unset means "dev" on a laptop and "prod" on a detected
+# cloud platform, so a cloud deployment that forgets to say what it is gets the
+# strict behaviour rather than the permissive one.
+NPR_ENV: str = os.environ.get("NPR_ENV", "").strip().lower()
+
+
+def environment() -> str:
+    if NPR_ENV in ("dev", "staging", "prod"):
+        return NPR_ENV
+    return "dev" if platform() == "local" else "prod"
+
+
+def is_production() -> bool:
+    """staging and prod are both held to production rules: a staging that is
+    looser than prod tests nothing about prod's failure modes."""
+    return environment() != "dev"
+
+
+class StartupRefused(RuntimeError):
+    """A production process configured so it would fail OPEN. Raised at boot so
+    the platform reports a failed revision instead of serving traffic."""
+
+
+def production_startup_errors() -> list[str]:
+    """What would make this process unsafe to serve in production. Empty in dev."""
+    if not is_production():
+        return []
+    errors = []
+    if not os.environ.get("NPR_PROXY_SECRET", "").strip():
+        errors.append("NPR_PROXY_SECRET is not set: the API would trust identity headers "
+                      "from any caller that can reach it")
+    if not DATABASE_URL:
+        errors.append("DATABASE_URL is not set: there is no system of record")
+    return errors
+
+
 def byok_keys() -> list[str]:
     """Names (never values) of the bring-your-own-key secrets present."""
     names = ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "AZURE_AI_API_KEY",

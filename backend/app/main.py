@@ -113,14 +113,27 @@ async def _lifespan(_app: FastAPI):
     """Startup/shutdown. A lifespan handler rather than @app.on_event, which is
     deprecated (and, with warnings-as-errors in pyproject.toml, fails the suite
     on import). The body resolves _warm_engine at call time, so it can live where
-    it reads best -- next to engine()."""
+    it reads best -- next to engine().
+
+    In staging/prod a configuration that would fail OPEN refuses to boot, so
+    the platform marks the revision failed and keeps the previous one serving."""
+    errors = settings.production_startup_errors()
+    if errors:
+        for e in errors:
+            log.critical("refusing to start", extra={"event": "startup_refused", "reason": e,
+                                                     "environment": settings.environment()})
+        raise settings.StartupRefused("; ".join(errors))
     _warm_engine()
     yield
 
 
 app = FastAPI(title="Network Policy Reviewer", version="1.0", lifespan=_lifespan)
 app.add_middleware(
-    CORSMiddleware, allow_origins=[settings.FRONTEND_ORIGIN, "http://localhost:3000"],
+    CORSMiddleware,
+    # The local dev origin is allowed only in dev: a production API that accepts
+    # credentialed calls from localhost accepts them from any developer laptop.
+    allow_origins=[settings.FRONTEND_ORIGIN] + ([] if settings.is_production()
+                                                else ["http://localhost:3000"]),
     allow_methods=["*"], allow_headers=["*"],
     # `x-npr-result-truncated*` rides on the Azure discovery listings: their body is
     # the bare array the shared contract specifies, which has no room to say "there
@@ -707,6 +720,8 @@ def health() -> JSONResponse:
                      "rejected_snapshot": _ENGINE_STATE.get("rejected_snapshot")},
         # False = the x-npr-* identity headers are trusted with no shared secret.
         "proxy_auth": request_ctx.proxy_auth_enabled(),
+        "environment": settings.environment(),
+        "platform": settings.platform(),
         "degraded_reasons": reasons,
         "request_id": request_ctx.request_id(),
     }
