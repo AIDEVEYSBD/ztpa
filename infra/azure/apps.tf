@@ -333,6 +333,8 @@ resource "azurerm_container_app" "frontend" {
           SSO_ISSUER      = var.sso_issuer
           SSO_CLIENT_ID   = var.sso_client_id
           SSO_ROLE_MAP    = var.sso_role_map
+          # Only Front Door's own requests are served when it is in front (frontend/middleware.ts).
+          NPR_EDGE_ID = var.domain == "" ? "" : azurerm_cdn_frontdoor_profile.fd[0].resource_guid
         }
         content {
           name  = env.key

@@ -14,6 +14,7 @@ _Last updated: 2026-10-28_
 
 | Date | Item(s) | Change |
 |---|---|---|
+| 2026-10-28 | PLAT-18 | Azure Front Door Premium WAF with origin lock |
 | 2026-10-28 | 01.1c, 01.1d, 03.1c | CMDB/IPAM and flow datasets; owners on every package item; flow-observed sources prefill narrowing; Context data screen |
 | 2026-10-28 | 03.1a, 05.4 (UI) | Effective-policy view and per-check reviewer feedback (agree / disagree / report missed) on the Rule review screen |
 | 2026-10-28 | UI-1, 03.1b, 03.1e | FRR screens in the console |
@@ -124,5 +125,5 @@ _Last updated: 2026-10-28_
 | PLAT-16 | One-step schema bootstrap for the migrate job (`schema.sql` + `auth_schema.sql` + `sso_schema.sql` + migrations) | ✅ | `python db/migrate.py --bootstrap`; advisory lock serialises concurrent runs; verified on an empty database, re-run is a no-op, full suite (2,082) green against it |
 | UI-1 | FRR screens: Exports, Context data, Rule review (register + effective policy + reviewer feedback), Change package (agent run steps, AI/engine summary, items with commands + rollback, owner decisions, validate, approve, runbook), Approvers and Knowledge (admin) | 🟡 | `frontend/components/frr/*`, `lib/frr.ts`, `lib/frrTypes.ts`; typecheck, lint, `next build` and the swallowed-catch grep clean. **Not yet exercised in a browser** (needs an SSO session) |
 | PLAT-17 | Least-privilege runtime DB role | ✅ | `db/migrate.py --ensure-app-role`: runtime role has row access to `ztpa` only (CREATE/ALTER/DROP and ledger writes refused, verified); migrate runs as owner. Full suite (2,083) passes connecting as the restricted role |
-| PLAT-18 | Azure Front Door + WAF in Terraform | ⬜ | |
+| PLAT-18 | Azure Front Door + WAF in Terraform | ✅ | `infra/azure/front_door.tf`: Front Door Premium, managed DRS 2.1 + bot rules in Prevention, per-IP rate limit, HTTPS only, managed certificate; origin locked by `NPR_EDGE_ID` (frontend middleware 404s requests without this profile's `X-Azure-FDID`). Planned read-only against the sandbox: 65 resources |
 | PLAT-11 | Deployment docs: `docs/frr/DEPLOY-GCP.md`, `docs/frr/DEPLOY-AZURE.md`, runbook, prod checklist | ✅ | `docs/frr/DEPLOY-GCP.md`, `DEPLOY-AZURE.md` (one-time setup with keyless CI identity, GitHub environment config, release flow, first-release checks, capacity and connection budget), `RUNBOOK.md`, `PRODUCTION-CHECKLIST.md` |

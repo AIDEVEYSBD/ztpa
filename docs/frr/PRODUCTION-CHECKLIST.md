@@ -26,8 +26,8 @@ Go-live gate for an environment. ✅ = enforced in code or CI; ☐ = to verify p
 - ☐ Break-glass procedure tested and its secret held offline ([../BREAKGLASS.md](../BREAKGLASS.md)).
 - ☐ Database HA on (prod); a point-in-time restore rehearsed.
 - ☐ Alerts route to a monitored channel; a test alert received.
-- ☐ Custom domain with TLS; WAF in front of the frontend (GCP: Cloud Armor via `domain`;
-  Azure: tracker PLAT-18).
+- ☐ Custom domain with TLS; WAF in front of the frontend (GCP: Cloud Armor, Azure: Front Door
+  Premium WAF — both via `domain`).
 - ☐ Model provider test passes from Admin → AI configuration; data-residency of the chosen
   provider/location accepted by the security owner.
 - ☐ Load test run against this environment's size (tracker PLAT-15) and the connection
@@ -36,6 +36,5 @@ Go-live gate for an environment. ✅ = enforced in code or CI; ☐ = to verify p
 
 ## Not yet in place (tracked)
 
-See [TRACKER.md](TRACKER.md): load-test suite (PLAT-15), Azure Front Door + WAF (PLAT-18),
-OpenTelemetry traces (05.3), and the FRR feature work (intake, effective policy, agents,
-two-stage approval).
+See [TRACKER.md](TRACKER.md): OpenTelemetry traces (05.3), Skybox ingestion (01.1b), NAT
+applied to effective policy (02.2b), and validation against real client exports.

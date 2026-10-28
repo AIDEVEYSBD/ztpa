@@ -120,8 +120,8 @@ IP is added to Key Vault's allow-list for the apply only.
 - [ ] `terraform output frontend_url` opens the sign-in page; SSO round-trip works.
 - [ ] Admin → AI configuration shows provider **azure** with the identity credential OK.
 - [ ] `/api/health` reports `environment: <env>`, `platform: azure`, no degraded reasons.
-- [ ] Bind the custom domain and certificate to `-web`
-      (`az containerapp hostname add` / `bind`), then set `app_url` to it.
+- [ ] With `domain` set: DNS CNAME + TXT validation done, `app_url` = `https://<domain>`, and a
+      request to the `-web` hostname directly returns 404.
 - [ ] Alerts route to the on-call address.
 
 ## Capacity and cost levers
@@ -137,7 +137,14 @@ The connection budget is the same as on GCP: keep
 `api replicas × api_processes × 8 + worker replicas × worker_concurrency × 2` within the
 server's `max_connections` for the chosen SKU, or enable the server's built-in PgBouncer.
 
-## Known gaps
+## Edge: Front Door + WAF
 
-- Front Door with WAF in front of `-web` is not yet in Terraform (tracker PLAT-18). Until
-  then the frontend's public ingress has no WAF; the API is never public.
+Set `domain` to put Azure Front Door Premium in front of `-web`: managed OWASP rules and bot
+protection in Prevention mode, a per-client-IP rate limit (`edge_rate_limit_per_minute`),
+HTTPS only. CNAME the domain to the `front_door_endpoint` output and add the TXT validation
+record Front Door shows for the custom domain; the managed certificate follows.
+
+Container Apps ingress cannot restrict callers to Front Door's service tag, so the frontend
+itself refuses any request without this profile's `X-Azure-FDID` (`NPR_EDGE_ID`, set by
+Terraform), with a 404. Static assets and `/api/auth` are excluded from the middleware and
+therefore from that check; everything that reaches the API passes through it.

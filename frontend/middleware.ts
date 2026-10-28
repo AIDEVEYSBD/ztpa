@@ -19,6 +19,16 @@ type SessionUser = { id?: string; role?: string | null; email?: string | null };
 
 export default auth((req) => {
   const { pathname, search } = req.nextUrl;
+
+  // Edge lock. When the app sits behind a WAF edge that cannot be enforced at
+  // the network layer (Azure Front Door in front of Container Apps, whose
+  // ingress cannot filter by service tag), only requests carrying THIS edge's id
+  // are served; a direct hit on the app's own hostname bypasses the WAF and gets
+  // a 404. Unset (local, GCP behind its own load balancer) = no check.
+  const edgeId = process.env.NPR_EDGE_ID?.trim();
+  if (edgeId && req.headers.get(process.env.NPR_EDGE_HEADER?.trim() || "x-azure-fdid") !== edgeId) {
+    return new NextResponse("Not found", { status: 404 });
+  }
   const user = (req.auth as { user?: SessionUser } | null)?.user;
 
   // Public paths pass through unmodified, headers and all. That is safe only
