@@ -14,6 +14,7 @@ _Last updated: 2026-10-28_
 
 | Date | Item(s) | Change |
 |---|---|---|
+| 2026-10-28 | PLAT-9, PLAT-17 | GCP Terraform (validated + planned against sandbox); runtime DB role without DDL rights; worker health port for Cloud Run |
 | 2026-10-28 | PLAT-8, PLAT-16 | Hash-pinned lockfile, multi-process image with preflight, shared JSON logging; one-command database bootstrap with advisory lock |
 | 2026-10-28 | PLAT-7 | Shared rate limits on model-backed routes; request body and field caps |
 | 2026-10-28 | PLAT-4 | Replicas serve one published snapshot: active pointer + signed artifacts; cold start loads rather than rebuilds; fixed artifact publish that could keep a corrupted object |
@@ -105,8 +106,10 @@ _Last updated: 2026-10-28_
 | PLAT-6 | Fail-closed proxy auth when `NPR_PROXY_SECRET` unset | ✅ | `settings.production_startup_errors()`: staging/prod refuses to boot without proxy secret, DATABASE_URL or cloud storage; localhost CORS dev-only. `tests/test_production_startup.py` |
 | PLAT-7 | Rate limits + LLM input size caps | ✅ | `backend/src/ratelimit.py` + migration 0011: per-identity and per-deployment per-minute ceilings on all 11 model-backed routes, shared across replicas (in-process fallback in dev), 429 + Retry-After, fails open loudly. `backend/app/limits.py`: 1 MB body cap incl. chunked bodies (413); field caps on ask/intake/connector sample. `tests/test_limits.py` |
 | PLAT-8 | Pinned dependencies / lockfile; test deps out of prod image | ✅ | `backend/requirements.lock` (59 hash-pinned packages, linux/amd64 py3.12, via `uv pip compile`); image installs `--require-hashes`; pytest moved to `requirements-dev.txt` (verified absent from image); image runs `$WEB_CONCURRENCY` uvicorn processes on `$PORT`; `src.preflight` makes a refused boot exit 1; API and worker share JSON logs with Cloud Logging `severity`. Image built and smoke-tested: API + separate worker container round-tripped a job |
-| PLAT-9 | Terraform: GCP (Cloud Run, Cloud SQL, GCS, Secret Manager, Artifact Registry) | ⬜ | |
+| PLAT-9 | Terraform: GCP (Cloud Run, Cloud SQL, GCS, Secret Manager, Artifact Registry) | ✅ | `infra/gcp/`: private VPC + Cloud NAT; Cloud SQL PG16 private IP, PITR, optional HA; GCS (versioned, no public access); Secret Manager with generated internal secrets; per-role service accounts, no keys; Cloud Run API (internal-only), worker (always-on), frontend, migrate job; images by digest only (validated); optional HTTPS LB + managed cert + Cloud Armor; baseline alerts. `terraform validate` clean; read-only `plan` against the sandbox project: 68 resources, no errors. Not yet applied |
 | PLAT-10 | Terraform: Azure (Container Apps, private PG, Blob, Key Vault, ACR) | ⬜ | `scripts/azure/deploy.sh` exists (CLI, public DB) |
 | PLAT-15 | Load-test suite (`loadtest/`) gating releases | ⬜ | |
 | PLAT-16 | One-step schema bootstrap for the migrate job (`schema.sql` + `auth_schema.sql` + `sso_schema.sql` + migrations) | ✅ | `python db/migrate.py --bootstrap`; advisory lock serialises concurrent runs; verified on an empty database, re-run is a no-op, full suite (2,082) green against it |
+| PLAT-17 | Least-privilege runtime DB role | ✅ | `db/migrate.py --ensure-app-role`: runtime role has row access to `ztpa` only (CREATE/ALTER/DROP and ledger writes refused, verified); migrate runs as owner. Full suite (2,083) passes connecting as the restricted role |
+| PLAT-18 | Azure Front Door + WAF in Terraform | ⬜ | |
 | PLAT-11 | Deployment docs: `docs/frr/DEPLOY-GCP.md`, `docs/frr/DEPLOY-AZURE.md`, runbook, prod checklist | ⬜ | |

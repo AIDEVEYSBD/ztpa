@@ -340,3 +340,28 @@ def test_stats_and_ping_are_admin_only(api, conn) -> None:
     with conn.cursor() as cur:
         cur.execute("DELETE FROM ztpa.jobs WHERE job_id = %s", [job_id])
     conn.commit()
+
+
+def test_worker_health_endpoint_reflects_stopping() -> None:
+    import socket
+    import urllib.error
+    import urllib.request
+
+    from src.jobs.worker import _serve_health
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    w = Worker(kinds=["unused"], connect=connect)
+    srv = _serve_health(port, w)
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=3) as r:
+            assert r.status == 200
+        w._stop.set()
+        with pytest.raises(urllib.error.HTTPError) as e:
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=3)
+        e.value.close()
+        assert e.value.code == 503
+    finally:
+        srv.shutdown()
+        srv.server_close()

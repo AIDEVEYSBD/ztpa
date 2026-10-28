@@ -202,6 +202,30 @@ class Worker:
                     pass
 
 
+def _serve_health(port: int, worker: "Worker"):
+    """A minimal liveness endpoint for platforms that require a listening port
+    (Cloud Run services). 200 while the worker runs, 503 once it is stopping.
+    Not readiness: a worker has nothing to be ready FOR beyond running."""
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class _Health(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 — http.server's naming
+            ok = not worker.stopping
+            body = b'{"status":"ok"}' if ok else b'{"status":"stopping"}'
+            self.send_response(200 if ok else 503)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_a):                # probes every few seconds; not news
+            return
+
+    srv = ThreadingHTTPServer(("0.0.0.0", port), _Health)
+    threading.Thread(target=srv.serve_forever, name="worker-health", daemon=True).start()
+    return srv
+
+
 def _register_builtin_handlers() -> None:
     """Import the modules that declare handlers, so a bare worker knows them."""
     from . import builtin  # noqa: F401
@@ -213,12 +237,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--kinds", default=os.environ.get("NPR_WORKER_KINDS", ""),
                    help="comma-separated job kinds (default: all registered)")
     p.add_argument("--lease", type=int, default=int(os.environ.get("NPR_JOB_LEASE_S", "60")))
+    p.add_argument("--health-port", type=int,
+                   default=int(os.environ.get("NPR_WORKER_HEALTH_PORT", "0") or 0),
+                   help="serve GET liveness on this port (Cloud Run needs one); 0 = off")
     args = p.parse_args(argv)
     from ..logjson import configure
     configure()                                    # same JSON lines as the API
     _register_builtin_handlers()
     w = Worker(kinds=[k for k in args.kinds.split(",") if k] or None,
                concurrency=args.concurrency, lease_s=args.lease).start()
+    if args.health_port:
+        _serve_health(args.health_port, w)
     stop = threading.Event()
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: stop.set())

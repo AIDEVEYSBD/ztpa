@@ -39,6 +39,9 @@ Usage:
     python db/migrate.py --migrations-only  # skip the baseline (deploy/preDeploy step)
     python db/migrate.py --bootstrap        # every baseline in dependency order, then
                                             # migrations: the one command a deploy runs
+    python db/migrate.py --bootstrap --ensure-app-role
+                                            # ...then create/refresh the least-privilege
+                                            # runtime role from NPR_APP_DB_ROLE / _PASSWORD
     python db/migrate.py --status           # report applied vs pending, change nothing
     python db/migrate.py --check            # exit 1 if anything is pending (CI / pre-deploy gate)
 
@@ -52,6 +55,7 @@ from __future__ import annotations
 import hashlib
 import os
 import pathlib
+import re
 import sys
 
 import psycopg
@@ -172,9 +176,47 @@ BOOTSTRAP_BASELINES = (HERE / "schema.sql", HERE / "auth_schema.sql", HERE / "ss
 _LOCK_ID = 0x6E70726D  # "nprm"
 
 
+def ensure_app_role(conn: psycopg.Connection, role: str, password: str) -> None:
+    """The role the API, worker and frontend connect as: row access to the
+    product schema and nothing else. It cannot create, alter or drop anything,
+    so a compromised runtime cannot rewrite the schema or the migration ledger,
+    and migrations keep running as the owner (DATABASE_URL here).
+
+    Idempotent: creates the role once, then on every run resets its password
+    (so rotating the secret and re-running the job is the whole rotation) and
+    re-applies grants, including on tables a new migration just added."""
+    from psycopg import sql
+
+    if not re.fullmatch(r"[a-z_][a-z0-9_]{0,62}", role):
+        raise ValueError(f"invalid role name {role!r}")
+    r = sql.Identifier(role)
+    with conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", [role])
+        if cur.fetchone() is None:
+            cur.execute(sql.SQL("CREATE ROLE {} LOGIN").format(r))
+        cur.execute(sql.SQL("ALTER ROLE {} WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE "
+                            "PASSWORD {}").format(r, sql.Literal(password)))
+        cur.execute(sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(
+            sql.Identifier(conn.info.dbname), r))
+        cur.execute(sql.SQL("GRANT USAGE ON SCHEMA {} TO {}").format(sql.Identifier(SCHEMA), r))
+        cur.execute(sql.SQL("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA {} TO {}")
+                    .format(sql.Identifier(SCHEMA), r))
+        cur.execute(sql.SQL("GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA {} TO {}")
+                    .format(sql.Identifier(SCHEMA), r))
+        # The ledger is the owner's: the runtime may read it, never rewrite history.
+        cur.execute(sql.SQL("REVOKE INSERT, UPDATE, DELETE ON {}.schema_migrations FROM {}")
+                    .format(sql.Identifier(SCHEMA), r))
+        cur.execute(sql.SQL("ALTER DEFAULT PRIVILEGES IN SCHEMA {} GRANT SELECT, INSERT, UPDATE, "
+                            "DELETE ON TABLES TO {}").format(sql.Identifier(SCHEMA), r))
+        cur.execute(sql.SQL("ALTER DEFAULT PRIVILEGES IN SCHEMA {} GRANT USAGE, SELECT, UPDATE "
+                            "ON SEQUENCES TO {}").format(sql.Identifier(SCHEMA), r))
+    conn.commit()
+
+
 def main(argv: list[str] | None = None) -> int:
     args = list(argv if argv is not None else sys.argv[1:])
     bootstrap = "--bootstrap" in args
+    app_role = "--ensure-app-role" in args
     check_only = "--check" in args
     status_only = "--status" in args or check_only
     skip_baseline = "--migrations-only" in args
@@ -250,6 +292,16 @@ def main(argv: list[str] | None = None) -> int:
             )
             conn.commit()
             print(f"applied migration {f.name}")
+
+        if app_role:
+            role = os.environ.get("NPR_APP_DB_ROLE", "npr_app").strip()
+            password = os.environ.get("NPR_APP_DB_PASSWORD", "")
+            if len(password) < 20:
+                print("ERROR: --ensure-app-role needs NPR_APP_DB_PASSWORD (>= 20 chars).",
+                      file=sys.stderr)
+                return 2
+            ensure_app_role(conn, role, password)
+            print(f"ensured runtime role {role} (row access to schema {SCHEMA} only)")
 
     if not pending:
         print("no pending migrations")

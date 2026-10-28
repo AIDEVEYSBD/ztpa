@@ -1,0 +1,16 @@
+# Copy to <env>.tfvars (not committed) and fill in.
+project_id = "<gcp-project-id>"
+region     = "europe-west4"
+env        = "staging"
+
+# Pinned by digest; CI prints these after pushing.
+backend_image  = "europe-west4-docker.pkg.dev/<gcp-project-id>/frr-staging/backend@sha256:<digest>"
+frontend_image = "europe-west4-docker.pkg.dev/<gcp-project-id>/frr-staging/frontend@sha256:<digest>"
+
+app_url       = "https://frr-staging.example.com"
+domain        = "frr-staging.example.com"   # "" to use the run.app URL with no load balancer
+sso_issuer    = "https://login.example.com/oauth2"
+sso_client_id = "<client-id>"
+# sso_client_secret: pass with TF_VAR_sso_client_secret, never in a file.
+
+db_high_availability = false   # true for prod
