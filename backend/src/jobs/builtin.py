@@ -14,3 +14,7 @@ def ping(ctx: JobContext) -> dict:
     """Round-trip check used by the post-deploy smoke test: proves a worker is
     running, can reach the database and can record an outcome."""
     return {"pong": True, "worker": ctx.worker_id, "echo": ctx.payload.get("echo")}
+
+
+# FRR intake: registering the module registers `export.ingest`.
+from ..frr import intake  # noqa: E402,F401

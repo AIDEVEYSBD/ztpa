@@ -121,6 +121,8 @@ app = FastAPI(title="Network Policy Reviewer", version="1.0", lifespan=_lifespan
 from app.jobs_api import router as _jobs_router  # noqa: E402
 from app.limits import LLM_LIMITED, BodyLimitMiddleware  # noqa: E402
 app.include_router(_jobs_router)
+from app.exports_api import router as _exports_router  # noqa: E402
+app.include_router(_exports_router)
 app.add_middleware(
     CORSMiddleware,
     # The local dev origin is allowed only in dev: a production API that accepts

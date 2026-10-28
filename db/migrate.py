@@ -248,11 +248,17 @@ def main(argv: list[str] | None = None) -> int:
     # once its ledger row is written, so a migration and the record of it can
     # never disagree.
     with psycopg.connect(url) as conn:
-        if not status_only:
+        if status_only:
+            # Read-only: --check/--status must work as the runtime role (the
+            # post-deploy smoke test runs it), which may not create anything.
+            ledger = conn.execute("SELECT to_regclass(%s) IS NOT NULL",
+                                  [f"{SCHEMA}.schema_migrations"]).fetchone()[0]
+            applied = _applied(conn) if ledger else {}
+        else:
             conn.execute("SELECT pg_advisory_lock(%s)", [_LOCK_ID])
             conn.commit()
-        _ensure_ledger(conn)
-        applied = _applied(conn)
+            _ensure_ledger(conn)
+            applied = _applied(conn)
 
         drift = _drifted(files, applied)
         if drift:

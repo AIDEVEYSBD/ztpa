@@ -14,6 +14,7 @@ _Last updated: 2026-10-28_
 
 | Date | Item(s) | Change |
 |---|---|---|
+| 2026-10-28 | 01.1a, 02.2b-d, 02.3b-e, 03.1b, 03.1e | Check Point parser, export upload + intake job with checksum/age/shape checks, deterministic rule-risk register API; shadowing bucketed (~8x faster at 1k rules, near-linear to 20k); `migrate.py --check` made read-only |
 | 2026-10-28 | PLAT-11 | Deployment guides for both clouds, runbook, production checklist |
 | 2026-10-28 | PLAT-10, 05.1, 05.2 | Azure Terraform (planned against sandbox: 56 resources); deploy pipelines for both clouds; in-network smoke test; CI runs real-DB tests as the runtime role |
 | 2026-10-28 | PLAT-9, PLAT-17 | GCP Terraform (validated + planned against sandbox); runtime DB role without DDL rights; worker health port for Cloud Run |
@@ -32,14 +33,14 @@ _Last updated: 2026-10-28_
 
 | ID | Item | Status | Where / note |
 |---|---|---|---|
-| 01.1a | Check Point rulebase/objects/NAT parser | ⬜ | Only comment mentions today |
+| 01.1a | Check Point rulebase/objects/NAT parser | ✅ | `backend/src/normalizers/checkpoint.py`: Management API JSON (`show-access-rulebase` / `show-nat-rulebase`, objects dictionary, sections, hits). Hosts, networks, ranges, nested groups, service groups, time objects, negation (read as any, limited), app-sites (broadened, limited), disabled/expired rules kept in inventory but not as grants, unknown hits ≠ zero. 24 tests on a synthetic export. **Needs validating against a real sanitised export** |
 | 01.1b | Skybox export parser | ⬜ | |
 | 01.1c | Cisco flow / Stealthwatch ingestion | ⬜ | Catalyst/Meraki inventory only |
 | 01.1d | CMDB / IPAM import (owner, app, zone tags) | ⬜ | Tags currently from mock exports |
 | 01.2 | Role-to-approver matrix (network owner, network security approver) | 🟡 | admin/analyst/viewer + `require_approver` (`backend/app/main.py`); no owner/approver split |
 | 01.3 | Process, integrations and data-flow documentation | 🟡 | Platform architecture and data flow: `docs/frr/ARCHITECTURE.md`. Client process walkthrough still to capture |
 | 01.4 | RAG sources: network standards, exceptions, change/rollback runbooks | ⬜ | No vector store or corpus |
-| 01.5 | Labelled test rulebase + metrics (check accuracy, severity agreement, time / 1,000 rules) | 🟡 | One golden fixture (`backend/scripts/verify_engine.py`), scale bench; no labels or metrics |
+| 01.5 | Labelled test rulebase + metrics (check accuracy, severity agreement, time / 1,000 rules) | 🟡 | Time per 1,000 rules measured (synthetic Check Point, parse + review, laptop): 0.55 s at 1k, 0.79 s at 10k, 0.86 s at 20k (was 4.45 s at 1k / 82 s total at 10k before the shadowing index). Labelled set and accuracy metrics still to build |
 
 ## FRR-02 · Effective-policy reconstruction and risk workflow
 
@@ -47,14 +48,14 @@ _Last updated: 2026-10-28_
 |---|---|---|---|
 | 02.1 | Five agents + handoffs: orchestrator, intake parser, effective-policy checker, risk & impact assessor, change-package drafter | ⬜ | Existing agents (remediation, campaign, classify, authoring, ask) do other jobs |
 | 02.2a | Rule / object normalisation | ✅ | `backend/src/models.py`, `backend/src/normalizers/` |
-| 02.2b | NAT parsing | ⬜ | |
-| 02.2c | Intake integrity: checksum, export age, schema validation, fail closed on wrong shape | ⬜ | Wrong-shaped export currently reads as clean (`normalizers/profile.py`) |
-| 02.2d | Export upload + object storage (GCS / Blob) | ⬜ | Engine reads `backend/data/mock` only |
+| 02.2b | NAT parsing | 🟡 | Check Point NAT rules parsed with resolved original/translated address space (`NatRule`); not yet applied to effective policy |
+| 02.2c | Intake integrity: checksum, export age, schema validation, fail closed on wrong shape | ✅ | `backend/src/frr/intake.py`: sha256 recorded at upload and re-verified in the worker; export time required (file or declared), rejected if > `NPR_EXPORT_MAX_AGE_DAYS` (30) or in the future; non-rulebase / paginated-incomplete / rule-missing-fields exports rejected with a reason. Rejection is an outcome on the export row, never an empty estate. (The older `profile.py` path is unchanged) |
+| 02.2d | Export upload + object storage (GCS / Blob) | ✅ | `POST /api/exports` streams to storage (100 MB cap, content-addressed, duplicate = same export), `ztpa.exports` (migration 0012), `export.ingest` job; `GET /api/exports[/{id}[/review]]`. 11 end-to-end tests as the runtime role. Uploaded exports do not yet feed the main console engine (they feed the FRR register) |
 | 02.3a | Effective policy: first-match per device/package, deny subtraction | 🟡 | Union-of-allows graph (`backend/src/graph/build.py`) |
-| 02.3b | Checks: any-any, exposed admin ports, broad sources | ✅ | `analyzers/over_permissive.py`, `analyzers/severity.py` |
-| 02.3c | Check: shadowed rules (per rulebase, bucketed) | 🟡 | Per source tool, O(n²) (`analyzers/shadowing.py`) |
-| 02.3d | Check: expired rules | ⬜ | No schedule/expiry field |
-| 02.3e | Check: unused rules via hit counts | ⬜ | |
+| 02.3b | Checks: any-any, exposed admin ports, broad sources | ✅ | Engine `over_permissive` run over the uploaded rulebase; classified per FRR check in `backend/src/frr/review.py` |
+| 02.3c | Check: shadowed rules (per rulebase, bucketed) | 🟡 | Bucketed: destination-supernet + service index replaces the O(n²) scan, proven identical on 12 randomised rulebases (`tests/test_shadowing_index.py`). Still per source tool, not per layer (stated as a limitation when >1 layer) |
+| 02.3d | Check: expired rules | ✅ | Time-object expiry in `RuleMeta.expires_at`; `expired` and `expiring_soon` (`NPR_FRR_EXPIRING_DAYS`) checks |
+| 02.3e | Check: unused rules via hit counts | ✅ | `unused` = zero hits or last hit older than `NPR_FRR_UNUSED_DAYS` (90); only when the export carries hits, else a limitation; plus `disabled` |
 | 02.3f | Change recommendation workflow with rollback | 🟡 | Remediation loop exists; rollback is a status flip |
 | 02.4a | LLM for impact narrative only; engine decides | 🟡 | LLM currently classifies auto-approve/escalate and ranks |
 | 02.4b | Versioned system prompts | ⬜ | `advisory/prompts/*.txt` + inline, unversioned |
@@ -66,10 +67,10 @@ _Last updated: 2026-10-28_
 | ID | Item | Status | Where / note |
 |---|---|---|---|
 | 03.1a | Effective-policy model view | 🟡 | Explorer/graph UI; inherits 02.3a limit |
-| 03.1b | Rule-risk register with evidence | 🟡 | `/api/findings`, `RiskTodo.tsx`; not FRR-shaped |
+| 03.1b | Rule-risk register with evidence | 🟡 | API done: `GET /api/exports/{id}/review` — per-rule checks with engine evidence, worst band (forced-critical preserved), filters by band/check, paginated. UI screen not built |
 | 03.1c | Narrowed or time-bound rule proposals | ⬜ | |
 | 03.1d | Rollback plan artefact | ⬜ | |
-| 03.1e | Limitations section per review | 🟡 | Integrity/degraded markers only |
+| 03.1e | Limitations section per review | 🟡 | Review-level and per-rule limitations produced and served (negation, apps, unresolved objects, expansion cap, missing hits/age, degraded analyzers). UI not built |
 | 03.2a | Two-stage HITL: owner validates findings + availability impact → approver reviews change package | 🟡 | Single approver stage |
 | 03.2b | FRR policy switch: no device write, no auto-approve, no automatic ITSM change | ⬜ | Push simulated (`change/staging.py`); auto-approve path exists |
 

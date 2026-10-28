@@ -32,8 +32,20 @@ asks "does earlier cover later", never "do they intersect".
 
 Deliberately still out of scope (Phase 3, see docs/PROD-READINESS-AUDIT.md): the
 full 5-tuple test, deny-before-deny (the prose below assumes the shadower is an
-allow), rulebase/device scoping finer than the source tool, and replacing the
-O(n^2) scan with bucketing.
+allow), and rulebase/device scoping finer than the source tool.
+
+CANDIDATE INDEX (was the O(n^2) scan)
+-------------------------------------
+An earlier rule can only shadow a later one if its destination covers the later
+rule's: the same canonical asset, or an address space containing every later
+destination network -- in particular the FIRST one. The networks that contain a
+given network are exactly its supernets (at most 33 for IPv4, 129 for IPv6), so
+earlier rules are indexed by each destination network they name and by their
+canonical destination, and a later rule looks up only those keys. The full
+coverage predicates then run on the candidates in rule order, so the earliest
+shadower is still the one reported and the findings are identical to the scan's.
+Measured on a synthetic Check Point rulebase (19,394 grants from 5,000 rules):
+33.9 s for the scan, 2.9 s for the whole review with this index.
 """
 
 from __future__ import annotations
@@ -126,6 +138,40 @@ def _dest_covers(earlier_nets: list[Network], later_nets: list[Network],
     return covers(earlier_nets, later_nets)
 
 
+def _single_port(ivs: list[tuple[int, int]] | None) -> int | None:
+    if ivs and len(ivs) == 1 and ivs[0][0] == ivs[0][1]:
+        return ivs[0][0]
+    return None
+
+
+def _index_keys(earlier: PolicyRecord) -> list:
+    """Service buckets an earlier rule is filed under (see `_lookup_keys`)."""
+    if earlier.protocol == "any":
+        return ["*"]
+    port = _single_port(_intervals(earlier))
+    if port is None:
+        return [(earlier.protocol, "multi")]          # a range, several ports, or no port
+    return [(earlier.protocol, port), (earlier.protocol, "single")]
+
+
+def _lookup_keys(later: PolicyRecord) -> list:
+    """Every bucket that can hold a rule whose service covers `later`'s, read
+    off `_service_covers`: an any-protocol rule covers everything; otherwise only
+    the same protocol, and a single-port rule only covers that same single port
+    (or, when `later` names no port, possibly anything -- the label fallback)."""
+    if later.protocol == "any":
+        return ["*"]
+    keys = ["*", (later.protocol, "multi")]
+    ivs = _intervals(later)
+    if ivs is None:
+        keys.append((later.protocol, "single"))
+    else:
+        port = _single_port(ivs)
+        if port is not None:
+            keys.append((later.protocol, port))
+    return keys
+
+
 def analyze(records: list[PolicyRecord], g: nx.DiGraph, alias_map: dict[str, str]) -> list[Finding]:
     by_tool: dict[str, list[PolicyRecord]] = {}
     for rec in records:
@@ -141,8 +187,21 @@ def analyze(records: list[PolicyRecord], g: nx.DiGraph, alias_map: dict[str, str
         # the dominant cost (11.5 s at 2,000 rules).
         snets = [source_nets(r) for r in recs]
         dnets = [dest_nets(r) for r in recs]
+        by_net: dict = {}
+        by_dest: dict = {}
         for i, later in enumerate(recs):
-            for j in range(i):
+            canon = alias_map.get(later.destination, later.destination)
+            look = _lookup_keys(later)
+            cand: set[int] = set()
+            for k in look:
+                cand.update(by_dest.get((canon, k), ()))
+            if dnets[i]:
+                first = dnets[i][0]
+                for plen in range(first.prefixlen + 1):
+                    sup = first.supernet(new_prefix=plen)
+                    for k in look:
+                        cand.update(by_net.get((sup, k), ()))
+            for j in sorted(cand):
                 earlier = recs[j]
                 if not _dest_covers(dnets[j], dnets[i], earlier, later, alias_map):
                     continue
@@ -224,4 +283,9 @@ def analyze(records: list[PolicyRecord], g: nx.DiGraph, alias_map: dict[str, str
                     source_tools=[tool],
                 ))
                 break   # earliest shadower is enough
+            # Index AFTER the lookup: a rule never shadows itself.
+            for k in _index_keys(later):
+                by_dest.setdefault((canon, k), []).append(i)
+                for n in dnets[i]:
+                    by_net.setdefault((n, k), []).append(i)
     return findings
