@@ -1,0 +1,22 @@
+# Copy to <env>.tfvars (not committed) and fill in.
+subscription_id   = "<subscription-id>"
+location          = "westeurope"
+env               = "staging"
+operator_ip_cidrs = ["203.0.113.10/32"] # the machine / runner applying Terraform
+
+# Pinned by digest; CI prints these after pushing.
+backend_image  = "<acr>.azurecr.io/backend@sha256:<digest>"
+frontend_image = "<acr>.azurecr.io/frontend@sha256:<digest>"
+
+app_url       = "https://frr-staging.example.com"
+sso_issuer    = "https://login.example.com/oauth2"
+sso_client_id = "<client-id>"
+# sso_client_secret: pass with TF_VAR_sso_client_secret, never in a file.
+
+# The subscription's own model deployment (native provider under ADVISORY_PROVIDER=auto).
+azure_ai_endpoint   = "https://<account>.cognitiveservices.azure.com/"
+azure_ai_deployment = "gpt-4.1-mini"
+azure_ai_account_id = "/subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.CognitiveServices/accounts/<account>"
+
+db_high_availability = false # true for prod
+alert_emails         = ["oncall@example.com"]
