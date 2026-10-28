@@ -175,3 +175,16 @@ variable "frr_mode" {
   type        = bool
   default     = true
 }
+
+variable "breakglass_email" {
+  description = "Arms the break-glass password login (docs/BREAKGLASS.md) for this identity. Empty = off. For staging without an SSO provider, or recovery; never leave it set in prod."
+  type        = string
+  default     = ""
+}
+
+variable "breakglass_password_hash" {
+  description = "bcrypt hash of the break-glass password (stored in Secret Manager)."
+  type        = string
+  default     = ""
+  sensitive   = true
+}

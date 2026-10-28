@@ -258,7 +258,7 @@ resource "google_cloud_run_v2_service" "frontend" {
       }
 
       dynamic "env" {
-        for_each = {
+        for_each = merge({
           BACKEND_URL     = google_cloud_run_v2_service.api.uri
           AUTH_URL        = var.app_url
           APP_URL         = var.app_url
@@ -266,19 +266,23 @@ resource "google_cloud_run_v2_service" "frontend" {
           SSO_ISSUER      = var.sso_issuer
           SSO_CLIENT_ID   = var.sso_client_id
           SSO_ROLE_MAP    = var.sso_role_map
-        }
+          }, var.breakglass_email == "" ? {} : {
+          AUTH_LOCAL_LOGIN           = "true"
+          BREAKGLASS_EMAIL           = var.breakglass_email
+          BREAKGLASS_SESSION_MAX_AGE = "3600"
+        })
         content {
           name  = env.key
           value = env.value
         }
       }
       dynamic "env" {
-        for_each = {
+        for_each = merge({
           AUTH_SECRET       = "auth-secret"
           NPR_PROXY_SECRET  = "proxy-secret"
           DATABASE_URL      = "database-url"
           SSO_CLIENT_SECRET = "sso-client-secret"
-        }
+        }, var.breakglass_email == "" ? {} : { BREAKGLASS_PASSWORD_HASH = "breakglass-password-hash" })
         content {
           name = env.key
           value_source {
