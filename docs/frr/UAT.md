@@ -51,6 +51,9 @@ approver must be different people.
 | B4 | Shadowing respects gateways | Pick a rule covered on one gateway but installed on two | Not reported as shadowed; its limitations say where it is still effective; Effective policy shows it as shadowed on one gateway only |
 | B5 | Limitations visible | Review an export with negated cells or application rules | The limitations box lists each approximation; affected rules carry their own limitation |
 | B6 | Reviewer feedback | On three rules: agree with a check, disagree with a check (with reason and band), report a missed finding | Each verdict is saved and shown; Administrator's labels export reflects them |
+| B7 | Partly covered rules | Pick a rule with two services where an earlier rule already allows one of them; tick *Partly covered above* | The rule is listed, NOT reported as shadowed; its detail says which grants never match and which earlier rule takes each (allowed or denied); the CSV `covered_above` column says the same |
+| B8 | Shadowed only when fully covered | Pick a rule whose every service is allowed by rules above | Reported *shadowed*, naming every covering rule; the package proposes removal and names them |
+| B9 | Large export | Upload the largest real export (multipart is automatic above 16 MiB) | Accepted, or refused with the rule and grant counts and the advice to export per layer; never a stuck or crashed upload |
 
 ## C. Change package and agents
 
@@ -62,6 +65,8 @@ approver must be different people.
 | C4 | Rollback present | Inspect five items with commands | Every item has rollback commands that restore the rule as exported |
 | C5 | Flow-based narrowing | With flows loaded, open a narrowing item | Observed sources are listed with counts and prefilled in the owner form; sources older than 90 days are absent |
 | C6 | Destination owners | With CMDB loaded, open any item | The destination's owner and application are shown |
+| C7 | Large package | On an export above 20,000 rules: Change package → Draft without narratives | The draft runs in the background with its steps shown and completes; the package lists items page by page; the summary states the rules reviewed and the proposed changes separately |
+| C8 | Bulk decisions | As network owner, filter by band, *Accept all* | Every undecided item in the filter is accepted except narrowing items needing input, which stay undecided with a count; one audit entry records the filter |
 
 ## D. Human review (two stages)
 
