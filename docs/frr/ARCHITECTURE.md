@@ -92,7 +92,10 @@ produces, and needs no extra service. Properties:
 - **Lease + heartbeat**: a claimed job has `locked_until`; a crashed worker's job is reclaimed.
 - **Retries** with exponential backoff and a max-attempts dead state.
 - **Idempotency key** per job (e.g. export checksum), so a double upload is one job.
-- **Per-kind concurrency limits** so a burst of engine builds cannot starve narrative jobs.
+- **Memory-aware claiming**: rulebase-sized kinds (`export.ingest`, `frr.review_run`) are
+  registered `heavy`; a worker process runs at most `NPR_WORKER_HEAVY_CONCURRENCY` (1) at once
+  (~2.4 GiB at the grant limit) while its other slots take light jobs. Heavy throughput scales
+  with worker replicas.
 - **Metrics**: queue depth, age of oldest job and failure rate are exported for autoscaling
   (KEDA PostgreSQL scaler on Azure; custom metric or min-instance worker pool on GCP).
 
@@ -104,10 +107,10 @@ if it is ever reached the interface allows swapping in Pub/Sub or Service Bus.
 | Concern | Design |
 |---|---|
 | API horizontal scale | Stateless; snapshot cache per replica; sticky sessions not required |
-| Large rulebases | Parsing and analysis in workers; shadowing bucketed by device/package and port range (not O(n²) across the estate); path search capped by count **and** wall-clock |
+| Large rulebases | Parsing and analysis in workers; shadowing bucketed by device/package and port range (not O(n²) across the estate); memory bounded by grants (`NPR_MAX_GRANTS`, 450,000: ~2.4 GiB peak, verified on a 4 GiB worker at 110,000 rules); change packages above 20,000 rules drafted in the worker from a compact `package-input.json`, never in the API |
 | Uploads | Streamed to object storage with a size cap; never held whole in API memory |
-| Database connections | Per-process pool; `replicas × workers × pool_max ≤ DB limit − headroom`; managed pooling (Cloud SQL Managed Connection Pooling / Flexible Server PgBouncer) in production |
-| Read-heavy screens | Paginated, indexed queries (cursor pagination on findings already in place) |
+| Database connections | Per-process pool (`db_pool_max`); Terraform refuses a plan whose peak at full scale-out exceeds `db_max_connections`; a request waits 5 s for a connection, then gets 503 + Retry-After (the console retries reads); managed pooling (Cloud SQL Managed Connection Pooling / Flexible Server PgBouncer) as the next step |
+| Read-heavy screens | Register and package items page by index-only key scan then fetch (milliseconds at offset 50,000 of 110,000); the review head every page reads is ~1 KB (per-gateway lists are a separate column read on demand); register totals cached per export and filter. Staging load test: 125 req/s, 99.99% success on a 1-vCore database |
 | LLM cost and latency | LLM calls only in jobs or bounded endpoints; per-request input caps; per-identity rate limit; daily token budget per deployment; deterministic fallback on timeout |
 | Abuse | Edge WAF + per-identity rate limits in the API; body size caps on every endpoint |
 | Long requests | None by design: anything over ~2s becomes a job with progress polling |
