@@ -77,6 +77,19 @@ switch `database-url`. Rehearse quarterly.
 Raise `*_max_instances` / `*_max_replicas` and redeploy. Check the connection budget in the
 deploy guide first; the database is the shared limit.
 
+## Pausing a non-production environment
+
+The services already scale to zero; the database and the always-on worker are what cost money
+while idle.
+
+| | Pause | Resume |
+|---|---|---|
+| GCP | `gcloud run services update frr-<env>-worker --region <region> --min-instances 0`; `gcloud sql instances patch frr-<env> --activation-policy NEVER` | `gcloud sql instances patch frr-<env> --activation-policy ALWAYS`, then redeploy (restores the worker minimum) |
+| Azure | `az containerapp update -n ca-frr-<env>-worker -g rg-frr-<env> --min-replicas 0`; `az postgres flexible-server stop -g rg-frr-<env> -n <server>` | `az postgres flexible-server start …`, then redeploy |
+
+Azure starts a stopped Flexible Server again automatically after 7 days. Pausing is drift
+from Terraform; the next apply restores the worker minimum. Never pause production.
+
 ## Escalation data to collect
 
 Request id from the UI error, the time window, `/api/health` payload, `jobs/stats`, and the
