@@ -95,15 +95,32 @@ def process(row: dict, *, now: datetime | None = None) -> tuple[str, dict]:
         return "rejected", {"rejection_reason": str(e)}
 
     base = f"exports/{row['sha256']}"
+    review_doc = result.to_jsonable()
     store.put_bytes(f"{base}/parsed.json", json.dumps(parsed.to_jsonable()).encode(),
                     "application/json")
-    store.put_bytes(f"{base}/review.json", json.dumps(result.to_jsonable()).encode(),
-                    "application/json")
+    store.put_bytes(f"{base}/review.json", json.dumps(review_doc).encode(), "application/json")
     summary = {**parsed.summary(), "review": result.stats,
                "limitations_total": len(result.limitations)
                + sum(len(e.limitations) for e in result.register)}
-    return "accepted", {"exported_at": when, "summary": summary,
+    return "accepted", {"exported_at": when, "summary": summary, "review_doc": review_doc,
                         "parsed_key": f"{base}/parsed.json", "review_key": f"{base}/review.json"}
+
+
+def store_register(cur, export_id, review_doc: dict) -> int:
+    """The register as indexed rows (migration 0018) plus the small head on the
+    export, in the caller's transaction. Idempotent: replaces any earlier rows."""
+    from psycopg.types.json import Jsonb as _J
+    cur.execute("DELETE FROM ztpa.review_entries WHERE export_id = %s", [export_id])
+    with cur.copy("COPY ztpa.review_entries (export_id, ord, rule_uid, flagged, band, severity, checks, entry) "
+                  "FROM STDIN") as cp:
+        for i, e in enumerate(review_doc["register"]):
+            flagged = bool(e["checks"])
+            cp.write_row((export_id, i, e["rule_uid"], flagged, e["band"] if flagged else None,
+                          int(e.get("severity") or 0), sorted({c["check"] for c in e["checks"]}),
+                          json.dumps(e, default=str)))
+    head = {k: v for k, v in review_doc.items() if k != "register"}
+    cur.execute("UPDATE ztpa.exports SET review_head = %s WHERE export_id = %s", [_J(head), export_id])
+    return len(review_doc["register"])
 
 
 @handler("export.ingest")
@@ -124,6 +141,9 @@ def ingest(ctx: JobContext) -> dict:
             [status, fields.get("rejection_reason"), fields.get("exported_at"),
              Jsonb(fields["summary"]) if fields.get("summary") is not None else None,
              fields.get("parsed_key"), fields.get("review_key"), row["export_id"]])
+        if status == "accepted":
+            # Same transaction as the status: an accepted export always has its rows.
+            store_register(cur, row["export_id"], fields["review_doc"])
     log.info("export processed", extra={"event": "export_processed", "export_id": str(row["export_id"]),
                                         "status": status, "reason": fields.get("rejection_reason")})
     return {"status": status, "reason": fields.get("rejection_reason"),

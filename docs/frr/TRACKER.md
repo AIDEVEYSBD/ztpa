@@ -14,6 +14,7 @@ _Last updated: 2026-10-29_ · What still needs testing (UI in a browser, real da
 
 | Date | Item(s) | Change |
 |---|---|---|
+| 2026-10-29 | 03.1b | Register moved to indexed rows: 12–17 ms pages at 70k rules |
 | 2026-10-29 | 02.2d | Multipart uploads for exports beyond the 32 MiB Cloud Run request cap, on both clouds' native storage |
 | 2026-10-29 | 04.3 | Live narrative-quality eval with a gate; first Vertex run clean |
 | 2026-10-29 | 02.2b | NAT context on access rules and NAT hygiene checks (shadowed, disabled, orphan, internet exposure); indexed for scale |
@@ -83,7 +84,7 @@ _Last updated: 2026-10-29_ · What still needs testing (UI in a browser, real da
 | ID | Item | Status | Where / note |
 |---|---|---|---|
 | 03.1a | Effective-policy model view | ✅ | API: per-gateway effective policy with the register; UI `components/frr/EffectivePolicy.tsx` on the Rule review screen (per gateway: installed, effective allow, deny, shadowed here, inactive) |
-| 03.1b | Rule-risk register with evidence | ✅ | API `GET /api/exports/{id}/review`; UI `components/frr/ReviewScreen.tsx` + `RegisterTable.tsx`: KPIs, always-visible limitations, band/check filters, pagination, expandable evidence, hits shown as unknown (never 0) when absent |
+| 03.1b | Rule-risk register with evidence | ✅ | Stored as indexed rows (`ztpa.review_entries`, migration 0018) plus a small head on the export: filters and pagination are indexed queries — 12–17 ms per page at 70,000 rules (was 1.5–2.5 s per cold API process loading the whole document in staging). Rows and document proven identical for every filter/page; older exports still served from the document. UI `ReviewScreen.tsx` + `RegisterTable.tsx` |
 | 03.1c | Narrowed or time-bound rule proposals | ✅ | Deterministic proposals per check with availability impact; narrowing items now carry flow-observed sources and services as an owner prefill (owner still confirms; flows show use, not need). Outage guards: never moves a cleanup rule, never removes a rule shadowed by one being narrowed |
 | 03.1d | Rollback plan artefact | ✅ | Every item carries Check Point `mgmt_cli` change and exact rollback (restores rule as exported); `GET /api/change-packages/{id}/runbook` (approved only) emits accepted items with rollback under the approval record |
 | 03.1e | Limitations section per review | ✅ | Review-level and per-rule limitations produced, served and shown in the register UI |

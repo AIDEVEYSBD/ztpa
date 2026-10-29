@@ -37,7 +37,6 @@ Feature status lives in [TRACKER.md](TRACKER.md); this file is only about verifi
 | T13 | GCP edge: HTTPS load balancer + managed certificate + Cloud Armor + IAP | Staging uses the run.app URL through the IAM proxy | A domain for staging |
 | T14 | GitHub Actions: CI (`ci.yml`) and both deploy workflows on GitHub | Linted with actionlint, never run | Push the branch; configure environments |
 | T15 | Autoscaling under load: API instances scaling out, worker scaling, Cloud SQL connection budget at max instances | Staging load test stayed within a couple of instances | A load test from inside the VPC at production size |
-| T16 | Large upload in the cloud through the frontend (multipart) | Multipart built and tested locally; Cloud Run caps one request at 32 MiB | Staging run with a > 32 MiB export (in progress) |
 | T23 | Streaming parse for exports above 300 MB | One-pass JSON parse is refused above `NPR_MAX_PARSE_BYTES`; very large estates must upload per layer | Build an incremental parser (ijson) if real exports exceed it |
 | T24 | Multipart on Azure Blob (staged blocks) and GCS compose against the real services | GCS compose fold is tested with a fake bucket, Azure block commit not exercised | T12 for Azure; GCS covered by T16 |
 | T17 | Alerts reach a real channel (5xx, worker down, DB CPU) | Policies exist, no channel attached | A notification channel |
@@ -49,4 +48,5 @@ Feature status lives in [TRACKER.md](TRACKER.md); this file is only about verifi
 
 | # | What | When | Evidence |
 |---|---|---|---|
+| T16 | Large upload in the cloud: 36.1 MiB / 70,000-rule export through the staging frontend | 2026-10-29 | Single request refused 413 by Cloud Run (cap confirmed); multipart 5 parts in 20 s, finalized in 24.5 s, accepted and reviewed 88 s after start. Found: register pages 1.5–2.5 s on large reviews (whole-document load per process) → moved to indexed rows |
 | — | GCP staging deploy, migrations, smoke test, end-to-end FRR flow, Vertex narratives, tracing, staging load test | 2026-10-29 | [TRACKER.md](TRACKER.md) changelog; REMEDIATION-LOG "First real deployment" |

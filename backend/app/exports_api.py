@@ -155,7 +155,8 @@ def _review_doc(review_key: str) -> dict:
 def _get(export_id: str) -> dict:
     with get_conn() as conn, conn.cursor() as cur:
         try:
-            cur.execute(f"SELECT {_COLS}, review_key FROM ztpa.exports WHERE export_id = %s", [export_id])
+            cur.execute(f"SELECT {_COLS}, review_key, review_head FROM ztpa.exports WHERE export_id = %s",
+                        [export_id])
         except Exception:  # noqa: BLE001 — a malformed uuid is "no such export"
             conn.rollback()
             raise HTTPException(404, "no such export")
@@ -169,7 +170,33 @@ def _get(export_id: str) -> dict:
 def get_export(export_id: str):
     row = _get(export_id)
     row.pop("review_key", None)
+    row.pop("review_head", None)
     return _public(row)
+
+
+def _review_from_rows(export_id: str, head: dict, band, check, flagged_only, limit, offset) -> dict:
+    """One indexed count and one indexed page, whatever the rulebase size."""
+    where, params = ["export_id = %s"], [export_id]
+    if flagged_only or band:
+        where.append("flagged")
+    if band:
+        where.append("band = %s")
+        params.append(band)
+    if check:
+        where.append("checks @> ARRAY[%s]::text[]")
+        params.append(check)
+    clause = " AND ".join(where)
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(f"SELECT count(*) AS n FROM ztpa.review_entries WHERE {clause}", params)
+        total = cur.fetchone()["n"]
+        cur.execute(f"SELECT entry FROM ztpa.review_entries WHERE {clause} ORDER BY ord LIMIT %s OFFSET %s",
+                    params + [limit, offset])
+        items = [r["entry"] for r in cur.fetchall()]
+    return {"export_id": export_id, "stats": head["stats"], "limitations": head["limitations"],
+            "reference_time": head["reference_time"], "total": total,
+            "effective_policy": head.get("effective_policy", []),
+            "nat_findings": head.get("nat_findings", []),
+            "items": items, "limit": limit, "offset": offset}
 
 
 @router.get("/api/exports/{export_id}/review")
@@ -181,6 +208,9 @@ def get_review(export_id: str, band: str | None = Query(None, pattern="^(critica
     if row["status"] != "accepted":
         raise HTTPException(409, f"export is {row['status']}"
                                  + (f": {row['rejection_reason']}" if row.get("rejection_reason") else ""))
+    if row.get("review_head"):
+        return _review_from_rows(export_id, row["review_head"], band, check, flagged_only, limit, offset)
+    # Exports reviewed before migration 0018: the stored document.
     doc = _review_doc(row["review_key"])
     entries = doc["register"]
     if flagged_only:
