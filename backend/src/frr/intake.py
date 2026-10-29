@@ -139,7 +139,7 @@ def store_register(cur, export_id, review_doc: dict) -> int:
     return len(review_doc["register"])
 
 
-@handler("export.ingest")
+@handler("export.ingest", heavy=True)
 def ingest(ctx: JobContext) -> dict:
     with ctx.conn.cursor() as cur:
         cur.execute("SELECT * FROM ztpa.exports WHERE export_id = %s", [ctx.payload["export_id"]])

@@ -412,3 +412,50 @@ def test_smoke_fails_when_no_worker_is_running(monkeypatch) -> None:
     with connect() as c, c.cursor() as cur:            # leave no orphan ping behind
         cur.execute("DELETE FROM ztpa.jobs WHERE created_by = 'smoke' AND status = 'queued'")
         c.commit()
+
+
+def test_heavy_jobs_run_one_at_a_time_while_light_ones_continue(conn, kind) -> None:
+    """Memory-bound kinds (a whole rulebase in memory) are capped per process;
+    the other slots keep serving light jobs meanwhile."""
+    heavy_k, light_k = kind + "h", kind + "l"
+    lock, running, peak, light_during_heavy = threading.Lock(), [0], [0], [0]
+    release = threading.Event()
+
+    @jobs.handler(heavy_k, heavy=True)
+    def heavy(ctx: JobContext) -> dict:
+        with lock:
+            running[0] += 1
+            peak[0] = max(peak[0], running[0])
+        release.wait(10)
+        with lock:
+            running[0] -= 1
+        return {}
+
+    @jobs.handler(light_k)
+    def light(ctx: JobContext) -> dict:
+        with lock:
+            if running[0]:
+                light_during_heavy[0] += 1
+        return {}
+
+    for _ in range(3):
+        queue.enqueue(conn, heavy_k, {}, priority=1)
+    for _ in range(5):
+        queue.enqueue(conn, light_k, {}, priority=2)
+    conn.commit()
+    w = Worker(kinds=[heavy_k, light_k], concurrency=3, connect=connect, lease_s=30,
+               heavy_concurrency=1).start()
+    try:
+        _wait(conn, light_k, 5)                     # light jobs finish while the first heavy one holds
+        assert light_during_heavy[0] == 5 and peak[0] == 1
+        release.set()
+        _wait(conn, heavy_k, 3)
+    finally:
+        release.set()
+        w.stop(timeout=10)
+    assert peak[0] == 1
+
+
+def test_the_rulebase_jobs_are_registered_heavy() -> None:
+    from src.frr import agents, intake  # noqa: F401  (registers the handlers)
+    assert {"export.ingest", "frr.review_run"} <= jobs.heavy_kinds()

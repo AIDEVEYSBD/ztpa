@@ -23,6 +23,7 @@ from .queue import Job
 
 Handler = Callable[["JobContext"], dict | None]
 _HANDLERS: dict[str, Handler] = {}
+_HEAVY: set[str] = set()
 _LOCK = threading.Lock()
 
 
@@ -64,14 +65,24 @@ class JobContext:
             raise LeaseLost(self.job.job_id)
 
 
-def handler(kind: str) -> Callable[[Handler], Handler]:
+def handler(kind: str, *, heavy: bool = False) -> Callable[[Handler], Handler]:
+    """Register `fn` for `kind`. `heavy` marks a kind that holds a whole rulebase
+    in memory (gigabytes at the size limit): a worker process runs at most
+    NPR_WORKER_HEAVY_CONCURRENCY of those at once, whatever its slot count."""
     def register(fn: Handler) -> Handler:
         with _LOCK:
             if kind in _HANDLERS and _HANDLERS[kind] is not fn:
                 raise ValueError(f"a handler for job kind {kind!r} is already registered")
             _HANDLERS[kind] = fn
+            if heavy:
+                _HEAVY.add(kind)
         return fn
     return register
+
+
+def heavy_kinds() -> frozenset[str]:
+    with _LOCK:
+        return frozenset(_HEAVY)
 
 
 def handlers() -> dict[str, Handler]:
@@ -82,3 +93,4 @@ def handlers() -> dict[str, Handler]:
 def unregister(kind: str) -> None:
     with _LOCK:
         _HANDLERS.pop(kind, None)
+        _HEAVY.discard(kind)

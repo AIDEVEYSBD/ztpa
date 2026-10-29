@@ -34,7 +34,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 from .. import settings
-from . import JobContext, LeaseLost, PermanentError, handlers, queue
+from . import JobContext, LeaseLost, PermanentError, handlers, heavy_kinds, queue
 
 log = logging.getLogger("npr.api.jobs")
 
@@ -68,9 +68,16 @@ class Worker:
     def __init__(self, *, kinds: Sequence[str] | None = None, concurrency: int = 2,
                  lease_s: int = queue.DEFAULT_LEASE_S, poll_max_s: float = 2.0,
                  grace_s: float = 25.0, connect: ConnFactory = _default_connect,
-                 worker_id: str | None = None) -> None:
+                 worker_id: str | None = None, heavy_concurrency: int | None = None) -> None:
         self.kinds = list(kinds) if kinds else None      # None = every registered kind
         self.concurrency = max(1, concurrency)
+        # Memory, not CPU, bounds heavy jobs: one rulebase at the grant limit
+        # peaks near 2.4 GiB, so two at once would OOM a 4 GiB worker. Slots
+        # beyond this keep taking light jobs.
+        self.heavy_concurrency = max(1, heavy_concurrency if heavy_concurrency is not None else
+                                     int(os.environ.get("NPR_WORKER_HEAVY_CONCURRENCY", "1")))
+        self._heavy_running = 0
+        self._claim_lock = threading.Lock()
         self.lease_s = lease_s
         self.poll_max_s = poll_max_s
         self.grace_s = grace_s
@@ -118,14 +125,18 @@ class Worker:
                 if index == 0 and time.monotonic() - last_reap > self.lease_s:
                     queue.reap(conn)
                     last_reap = time.monotonic()
-                kinds = self.kinds or sorted(handlers())
-                job = queue.claim(conn, self.worker_id, kinds, lease_s=self.lease_s) if kinds else None
+                job, heavy = self._claim(conn)
                 if job is None:
                     self._stop.wait(idle)
                     idle = min(self.poll_max_s, idle * 2)
                     continue
                 idle = 0.2
-                self._run(conn, hb, job)
+                try:
+                    self._run(conn, hb, job)
+                finally:
+                    if heavy:
+                        with self._claim_lock:
+                            self._heavy_running -= 1
             except psycopg.OperationalError:
                 # Database away (failover, network). Drop both connections and
                 # back off; the lease protects any job we were holding.
@@ -135,6 +146,20 @@ class Worker:
                 conn = hb = None
                 self._stop.wait(min(self.poll_max_s * 2, 5.0))
         _close(conn, hb)
+
+    def _claim(self, conn: psycopg.Connection) -> tuple[queue.Job | None, bool]:
+        """Claim under a process-wide lock, leaving heavy kinds out while this
+        process already runs its share of them, so two slots cannot both take one."""
+        with self._claim_lock:
+            kinds = self.kinds or sorted(handlers())
+            heavy = heavy_kinds()
+            if self._heavy_running >= self.heavy_concurrency:
+                kinds = [k for k in kinds if k not in heavy]
+            job = queue.claim(conn, self.worker_id, kinds, lease_s=self.lease_s) if kinds else None
+            is_heavy = job is not None and job.kind in heavy
+            if is_heavy:
+                self._heavy_running += 1
+            return job, is_heavy
 
     def _run(self, conn: psycopg.Connection, hb: psycopg.Connection, job: queue.Job) -> None:
         fn = handlers().get(job.kind)

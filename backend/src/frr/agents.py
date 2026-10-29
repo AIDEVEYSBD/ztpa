@@ -212,7 +212,7 @@ def _step(cur, run_id: str, agent: str, status: str, **detail) -> None:
                 [json.dumps([entry], default=str), run_id])
 
 
-@handler("frr.review_run")
+@handler("frr.review_run", heavy=True)
 def review_run(ctx: JobContext, *, llm: Optional[Callable[..., Any]] = None) -> dict:
     """Runs as the person who started the run: the package and its audit rows
     are theirs (as agent work on their behalf), not unattributed."""

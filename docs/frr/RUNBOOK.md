@@ -38,7 +38,10 @@ at peak; a 40,000-rule export with ~4 grants a rule peaks near 1 GiB. Above
 `NPR_MAX_GRANTS` (450,000, sized to the 4 GiB worker) the export is rejected with the count
 before the review runs. To accept larger: raise the worker's memory and the limit together
 (roughly 1 GiB per 150,000 grants above the default), or have the owner export each access
-layer separately. `NPR_MAX_PARSE_BYTES` (300 MB) still bounds the raw JSON.
+layer separately. `NPR_MAX_PARSE_BYTES` (300 MB) still bounds the raw JSON. Each worker process
+runs at most `NPR_WORKER_HEAVY_CONCURRENCY` (1) rulebase-sized jobs (ingest, agent runs) at once —
+two at the limit would not fit 4 GiB — while its other slots take light jobs; more heavy
+throughput comes from more worker replicas, not more slots.
 
 **Replicas serving different snapshots**
 They converge within `NPR_SNAPSHOT_POLL_S` (5 s). If one does not, its logs show
