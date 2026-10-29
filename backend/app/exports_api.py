@@ -174,6 +174,15 @@ def get_export(export_id: str):
     return _public(row)
 
 
+def _ep_summary(ep: list) -> list:
+    """Per-gateway counts only. The rule lists are large (468 KiB of a 522 KiB
+    page at 70,000 rules) and were re-sent with every register page; they are
+    fetched per gateway from /effective-policy when a row is opened."""
+    return [{"layer": g["layer"], "gateway": g["gateway"], "rules_installed": g["rules_installed"],
+             **{f"{k}_count": len(g.get(k) or []) for k in ("effective_allow", "shadowed", "deny", "inactive")}}
+            for g in ep]
+
+
 def _review_from_rows(export_id: str, head: dict, band, check, flagged_only, limit, offset) -> dict:
     """One indexed count and one indexed page, whatever the rulebase size."""
     where, params = ["export_id = %s"], [export_id]
@@ -194,7 +203,7 @@ def _review_from_rows(export_id: str, head: dict, band, check, flagged_only, lim
         items = [r["entry"] for r in cur.fetchall()]
     return {"export_id": export_id, "stats": head["stats"], "limitations": head["limitations"],
             "reference_time": head["reference_time"], "total": total,
-            "effective_policy": head.get("effective_policy", []),
+            "effective_policy": _ep_summary(head.get("effective_policy", [])),
             "nat_findings": head.get("nat_findings", []),
             "items": items, "limit": limit, "offset": offset}
 
@@ -221,6 +230,20 @@ def get_review(export_id: str, band: str | None = Query(None, pattern="^(critica
         entries = [e for e in entries if any(c["check"] == check for c in e["checks"])]
     return {"export_id": export_id, "stats": doc["stats"], "limitations": doc["limitations"],
             "reference_time": doc["reference_time"], "total": len(entries),
-            "effective_policy": doc.get("effective_policy", []),
+            "effective_policy": _ep_summary(doc.get("effective_policy", [])),
             "nat_findings": doc.get("nat_findings", []),
             "items": entries[offset:offset + limit], "limit": limit, "offset": offset}
+
+
+@router.get("/api/exports/{export_id}/effective-policy")
+def get_effective_policy(export_id: str, layer: str = Query(..., max_length=200),
+                         gateway: str = Query(..., max_length=200)):
+    """One gateway's effective policy: the rule numbers in each class."""
+    row = _get(export_id)
+    if row["status"] != "accepted":
+        raise HTTPException(409, f"export is {row['status']}")
+    ep = (row.get("review_head") or _review_doc(row["review_key"])).get("effective_policy", [])
+    g = next((x for x in ep if x["layer"] == layer and x["gateway"] == gateway), None)
+    if g is None:
+        raise HTTPException(404, "no such layer / gateway in this review")
+    return g

@@ -47,3 +47,20 @@ def test_rows_and_document_agree_for_every_query(env) -> None:
         assert rows["items"] == doc["items"], q
         assert rows["stats"] == doc["stats"] and rows["limitations"] == doc["limitations"]
         assert rows["nat_findings"] == doc["nat_findings"]
+
+
+
+def test_pages_carry_effective_policy_counts_and_lists_come_on_demand(env) -> None:
+    c = env
+    eid = _settle(c, _upload(c, _fresh()).json()["export"]["export_id"])["export_id"]
+    page = c.get(f"/api/exports/{eid}/review", headers=ANALYST).json()
+    g = page["effective_policy"][0]
+    assert "effective_allow" not in g and g["effective_allow_count"] >= 1
+    full = c.get(f"/api/exports/{eid}/effective-policy", params={"layer": g["layer"], "gateway": g["gateway"]},
+                 headers=ANALYST).json()
+    assert len(full["effective_allow"]) == g["effective_allow_count"]
+    assert c.get(f"/api/exports/{eid}/effective-policy", params={"layer": "x", "gateway": "y"},
+                 headers=ANALYST).status_code == 404
+    gz = c.get(f"/api/exports/{eid}/review", params={"flagged_only": "false"},
+               headers={**ANALYST, "accept-encoding": "gzip"})
+    assert gz.headers.get("content-encoding") == "gzip"

@@ -222,6 +222,10 @@ class _ActorMiddleware:
 # the last-added middleware outermost): the proxy check and the request id
 # happen first, and a 413 carries the same request id as every other error.
 app.add_middleware(BodyLimitMiddleware)
+# Compress JSON responses (a register page is ~3x smaller gzipped). Added after
+# the body limit so it wraps it: responses are compressed on the way out.
+from starlette.middleware.gzip import GZipMiddleware  # noqa: E402
+app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=5)
 app.add_middleware(_ActorMiddleware)
 
 

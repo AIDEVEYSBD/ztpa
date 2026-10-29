@@ -3,14 +3,19 @@
 /**
  * The effective policy per (layer, gateway): which installed rules actually take
  * effect, which never match there, which deny, and which are switched off or
- * expired. Shadowing in the register is reported only when a rule is shadowed on
- * EVERY gateway it is installed on; this view shows where that is not the case.
+ * expired. Pages carry the counts; a gateway's rule lists load when it is opened
+ * (they are large on big rulebases). Shadowing in the register is reported only
+ * when a rule is shadowed on EVERY gateway it is installed on; this view shows
+ * where that is not the case.
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ChevronDown, ChevronRight, Network } from "lucide-react";
-import type { EffectivePolicyGateway } from "@/lib/frrTypes";
-import { Chip } from "../ui";
+import { asApiError, type ApiError } from "@/lib/api";
+import { frr } from "@/lib/frr";
+import type { EffectivePolicyGateway, EffectivePolicySummary } from "@/lib/frrTypes";
+import { Chip, Skeleton } from "../ui";
+import { InlineError } from "../ui/Feedback";
 
 const SHOW = 40;
 
@@ -39,7 +44,31 @@ function Rules({ label, xs, variant }: { label: string; xs: (number | null)[]; v
   );
 }
 
-export function EffectivePolicy({ gateways }: { gateways: EffectivePolicyGateway[] }) {
+function GatewayDetail({ exportId, g }: { exportId: string; g: EffectivePolicySummary }) {
+  const [data, setData] = useState<EffectivePolicyGateway>();
+  const [err, setErr] = useState<ApiError>();
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    let live = true;
+    setErr(undefined);
+    frr.effectivePolicy(exportId, g.layer, g.gateway)
+      .then((d) => { if (live) setData(d); })
+      .catch((e) => { if (live) setErr(asApiError(e)); });
+    return () => { live = false; };
+  }, [exportId, g.layer, g.gateway, attempt]);
+  if (err) return <InlineError resource={`the effective policy of ${g.gateway}`} error={err} onRetry={() => setAttempt((n) => n + 1)} />;
+  if (!data) return <Skeleton className="h-16 w-full" />;
+  return (
+    <div className="mt-2 grid gap-3 pl-5 md:grid-cols-2">
+      <Rules label="effective allow" xs={data.effective_allow} variant="ok" />
+      <Rules label="deny" xs={data.deny} variant="neutral" />
+      <Rules label="shadowed here" xs={data.shadowed} variant="warn" />
+      <Rules label="inactive (disabled / expired)" xs={data.inactive} variant="neutral" />
+    </div>
+  );
+}
+
+export function EffectivePolicy({ exportId, gateways }: { exportId: string; gateways: EffectivePolicySummary[] }) {
   const [open, setOpen] = useState<string | null>(null);
   if (!gateways.length) return null;
   return (
@@ -64,19 +93,12 @@ export function EffectivePolicy({ gateways }: { gateways: EffectivePolicyGateway
                 <span className="text-faint">· {g.layer}</span>
                 <span className="ml-auto flex gap-3 text-[11px] text-dim tnum">
                   <span>{g.rules_installed} installed</span>
-                  <span>{g.effective_allow.length} effective allow</span>
-                  <span>{g.shadowed.length} shadowed</span>
-                  <span>{g.inactive.length} inactive</span>
+                  <span>{g.effective_allow_count} effective allow</span>
+                  <span>{g.shadowed_count} shadowed</span>
+                  <span>{g.inactive_count} inactive</span>
                 </span>
               </button>
-              {isOpen && (
-                <div className="mt-2 grid gap-3 pl-5 md:grid-cols-2">
-                  <Rules label="effective allow" xs={g.effective_allow} variant="ok" />
-                  <Rules label="deny" xs={g.deny} variant="neutral" />
-                  <Rules label="shadowed here" xs={g.shadowed} variant="warn" />
-                  <Rules label="inactive (disabled / expired)" xs={g.inactive} variant="neutral" />
-                </div>
-              )}
+              {isOpen && <GatewayDetail exportId={exportId} g={g} />}
             </div>
           );
         })}

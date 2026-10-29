@@ -148,9 +148,19 @@ export interface ReviewPage {
   items: RegisterEntry[];
   limit: number;
   offset: number;
-  /** Per (layer, gateway): the rules installed there, in order, and what each does. */
-  effective_policy?: EffectivePolicyGateway[];
+  /** Per (layer, gateway): counts. The rule lists come from /effective-policy on demand. */
+  effective_policy?: EffectivePolicySummary[];
   nat_findings?: NatFinding[];
+}
+
+export interface EffectivePolicySummary {
+  layer: string;
+  gateway: string;
+  rules_installed: number;
+  effective_allow_count: number;
+  shadowed_count: number;
+  deny_count: number;
+  inactive_count: number;
 }
 
 export interface EffectivePolicyGateway {
