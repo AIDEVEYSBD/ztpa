@@ -142,7 +142,7 @@ function PackageLoader({ packageId, me, meLoading, footer }: {
 
   const reload = () => setAttempt((n) => n + 1);
   // A decision changes the facet counts (undecided, by decision): refresh the header.
-  const onItem = (_it: PackageItem) => reload();
+  const onItem = (_it?: PackageItem) => reload();
 
   if (err && !pkg) return <div className="space-y-4"><ErrorState resource={`change package ${packageId.slice(0, 8)}`} error={err} onRetry={reload} />{footer}</div>;
   if (!pkg) return <div className="space-y-3"><Skeleton className="h-[120px] w-full rounded-lg" /><Skeleton className="h-[220px] w-full rounded-lg" /></div>;

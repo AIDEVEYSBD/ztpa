@@ -189,6 +189,51 @@ def decide_item(cur: psycopg.Cursor, package_id: str, item_id: str, decision: st
     return out
 
 
+def decide_bulk(cur: psycopg.Cursor, package_id: str, decision: str, note: Optional[str], *,
+                band=None, proposal=None, impact=None, layer=None, undecided_only: bool = True) -> dict:
+    """One decision over every item matching a filter, with the same rules as
+    `decide_item`: the network_owner duty for EVERY layer the filter touches, a
+    note on rejection, and no bulk accept of an item that needs owner input
+    (those are skipped and counted, and must be decided one by one)."""
+    pkg = _package(cur, package_id, lock=True)
+    if pkg["status"] != "draft":
+        raise WorkflowError(409, f"package is {pkg['status']}; items can only be decided in draft")
+    if decision not in ("accept", "reject"):
+        raise WorkflowError(422, "bulk decision must be accept or reject (modify needs per-item input)")
+    if decision == "reject" and not (note or "").strip():
+        raise WorkflowError(422, "a bulk rejection needs a note saying why")
+    where, params = ["package_id = %s"], [package_id]
+    for col, val in (("band", band), ("proposal", proposal), ("availability_impact", impact), ("layer", layer)):
+        if val:
+            where.append(f"{col} = %s")
+            params.append(val)
+    if undecided_only:
+        where.append("owner_decision IS NULL")
+    clause = " AND ".join(where)
+    cur.execute(f"SELECT DISTINCT layer FROM ztpa.change_package_items WHERE {clause}", params)
+    layers = {r["layer"] for r in cur.fetchall()}
+    if not layers:
+        return {"matched": 0, "decided": 0, "skipped_need_input": 0}
+    if not has_duty(cur, "network_owner", layers):
+        raise WorkflowError(403, f"bulk deciding needs the network_owner duty for every layer it touches: "
+                                 f"{', '.join(sorted(layers))}")
+    needs_input = "jsonb_array_length(requires_owner_input) > 0"
+    cur.execute(f"SELECT count(*) AS n, count(*) FILTER (WHERE {needs_input}) AS skip "
+                f"FROM ztpa.change_package_items WHERE {clause}", params)
+    m = cur.fetchone()
+    target = clause + (f" AND NOT ({needs_input})" if decision == "accept" else "")
+    cur.execute(f"""UPDATE ztpa.change_package_items SET owner_decision = %s, owner_note = %s,
+                           decided_by = %s, decided_at = now()
+                     WHERE {target}""", [decision, note, actor()] + params)
+    decided = cur.rowcount
+    detail = {"decision": decision, "decided": decided, "matched": m["n"],
+              "filter": {"band": band, "proposal": proposal, "impact": impact, "layer": layer,
+                         "undecided_only": undecided_only}}
+    audit(cur, "frr_items_bulk_decided", subject=package_id, detail=detail)
+    return {"matched": m["n"], "decided": decided,
+            "skipped_need_input": m["skip"] if decision == "accept" else 0}
+
+
 def validate(cur: psycopg.Cursor, package_id: str, note: Optional[str]) -> dict:
     pkg = _package(cur, package_id, lock=True)
     if pkg["status"] != "draft":

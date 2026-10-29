@@ -185,3 +185,25 @@ def test_large_packages_page_their_items_with_facets(matrix, monkeypatch) -> Non
     left = c.get(f"/api/change-packages/{pkg['package_id']}/items", params={"decided": "false"}, headers=ANALYST).json()
     assert left["total"] == 6
     assert c.get(f"/api/change-packages/{pkg['package_id']}", headers=ANALYST).json()["facets"]["undecided"] == 6
+
+
+
+def test_bulk_decisions_follow_the_single_item_rules(matrix) -> None:
+    c = matrix
+    pkg = _draft(c, _accepted_export(c)).json()
+    pid = pkg["package_id"]
+    url = f"/api/change-packages/{pid}/items/bulk"
+    assert c.post(url, json={"decision": "accept"}, headers=NOBODY).status_code == 403
+    assert c.post(url, json={"decision": "reject"}, headers=OWNER).status_code == 422          # needs a note
+    r = c.post(url, json={"decision": "accept", "impact": "none"}, headers=OWNER).json()
+    assert r["matched"] == r["decided"] >= 1 and r["skipped_need_input"] == 0
+    r = c.post(url, json={"decision": "accept"}, headers=OWNER).json()                          # the rest
+    assert r["skipped_need_input"] >= 1 and r["decided"] == r["matched"] - r["skipped_need_input"]
+    left = c.get(f"/api/change-packages/{pid}/items", params={"decided": "false"}, headers=ANALYST).json()
+    assert left["total"] == r["skipped_need_input"]
+    assert all(i["requires_owner_input"] for i in left["items"])                               # only narrowing left
+    for it in left["items"]:
+        c.put(f"/api/change-packages/{pid}/items/{it['item_id']}", json={"decision": "accept", "input": INPUT},
+              headers=OWNER)
+    assert c.post(f"/api/change-packages/{pid}/validate", json={}, headers=OWNER).status_code == 200
+    assert c.post(url, json={"decision": "accept"}, headers=OWNER).status_code == 409           # no longer draft

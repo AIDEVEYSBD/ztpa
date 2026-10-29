@@ -14,6 +14,7 @@ _Last updated: 2026-10-29_ · What still needs testing (UI in a browser, real da
 
 | Date | Item(s) | Change |
 |---|---|---|
+| 2026-10-29 | 03.2a (bulk) | Bulk owner decisions over a filter (duty for every layer touched, note to reject, never bulk-accepts items needing input; one audit row with the filter and counts) |
 | 2026-10-29 | 03.1c, 03.2a (scale) | Change packages at 70k-rule scale: drafting 29.5 s → 2.1 s (COPY + two set-based context queries instead of 32,000 lookups); package response 49 MiB → 1 KiB with facets; items paged and filtered (30–84 ms) in API and UI |
 | 2026-10-29 | 03.1f, 03.1g | Register CSV download (streamed) and review-to-review comparison; planner statistics kept current after bulk loads |
 | 2026-10-29 | PLAT-10 | **Azure staging deployed** and exercised end to end; `start-job.sh` replaces `az containerapp job start --args` (which mangled command lines) in the deploy workflow; tighter Docker context |

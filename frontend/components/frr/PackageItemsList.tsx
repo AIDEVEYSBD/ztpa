@@ -12,9 +12,9 @@ import { ChevronLeft, ChevronRight, FileStack } from "lucide-react";
 import { asApiError, type ApiError } from "@/lib/api";
 import { frr } from "@/lib/frr";
 import type { ChangePackage, FrrMe, PackageItem, PackageItemPage } from "@/lib/frrTypes";
-import { Button, Checkbox, EmptyState, Field, Select, Skeleton } from "../ui";
+import { Button, Checkbox, EmptyState, Field, Input, Select, Skeleton } from "../ui";
 import { InlineError } from "../ui/Feedback";
-import { BANDS, hasDuty, impactMeta } from "./bits";
+import { ActionError, BANDS, hasDuty, hasDutyForAll, impactMeta } from "./bits";
 import { PackageItemCard } from "./PackageItemCard";
 
 const PAGE = 25;
@@ -23,7 +23,8 @@ export function PackageItemsList({ pkg, me, meLoading, onDecided }: {
   pkg: ChangePackage;
   me: FrrMe | undefined;
   meLoading: boolean;
-  onDecided: (it: PackageItem) => void;
+  /** A decision was recorded (one item, or a bulk decision when `it` is absent). */
+  onDecided: (it?: PackageItem) => void;
 }) {
   const f = pkg.facets;
   const [band, setBand] = useState("");
@@ -45,6 +46,27 @@ export function PackageItemsList({ pkg, me, meLoading, onDecided }: {
   }, [pkg.package_id, band, impact, undecidedOnly, offset, attempt]);
 
   const reset = () => setOffset(0);
+  const isOwner = pkg.status === "draft" && hasDutyForAll(me, "network_owner", Object.keys(f?.by_layer ?? {}));
+  const [bulkNote, setBulkNote] = useState("");
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkErr, setBulkErr] = useState<unknown>();
+  const [bulkDone, setBulkDone] = useState<string>();
+  const bulk = (decision: "accept" | "reject") => {
+    setBulkBusy(true);
+    setBulkErr(undefined);
+    setBulkDone(undefined);
+    frr.bulkDecide(pkg.package_id, { decision, note: bulkNote.trim() || undefined, band: band || undefined,
+                                     impact: impact || undefined, undecided_only: true })
+      .then((r) => {
+        setBulkDone(`${decision === "accept" ? "Accepted" : "Rejected"} ${r.decided} of ${r.matched} matching item(s)`
+          + (r.skipped_need_input ? `; ${r.skipped_need_input} need your input and must be decided one by one` : "") + ".");
+        setOffset(0);
+        setAttempt((n) => n + 1);
+        onDecided();                                           // refresh the package facets
+      })
+      .catch(setBulkErr)
+      .finally(() => setBulkBusy(false));
+  };
   const decided = (it: PackageItem) => {
     setPage((p) => (p ? { ...p, items: p.items.map((x) => (x.item_id === it.item_id ? { ...x, ...it } : x)) } : p));
     onDecided(it);
@@ -75,6 +97,21 @@ export function PackageItemsList({ pkg, me, meLoading, onDecided }: {
           {page ? (page.total === 0 ? "0 items" : `${page.offset + 1}–${last} of ${page.total}`) : "…"}
         </span>
       </div>
+      {isOwner && page && page.total > 1 && (
+        <div className="flex flex-wrap items-end gap-2 rounded-md border border-line bg-raise/40 p-2.5">
+          <div className="mb-1.5 text-[12px] text-dim">
+            Decide every <strong className="text-fg">undecided</strong> item matching these filters at once:
+          </div>
+          <Field label="Note (required to reject)" htmlFor="pkg-bulk-note" className="min-w-[16rem] flex-1">
+            <Input id="pkg-bulk-note" value={bulkNote} maxLength={4000} onChange={(e) => setBulkNote(e.target.value)} />
+          </Field>
+          <Button size="sm" tone="ink" loading={bulkBusy} onClick={() => bulk("accept")}>Accept all</Button>
+          <Button size="sm" variant="outline" tone="ink" loading={bulkBusy} disabled={!bulkNote.trim()}
+            onClick={() => bulk("reject")}>Reject all</Button>
+          {bulkDone && <p role="status" className="basis-full text-[11.5px] text-dim">{bulkDone}</p>}
+          {bulkErr !== undefined && <ActionError action="apply the bulk decision" error={bulkErr} className="basis-full" />}
+        </div>
+      )}
       {err && <InlineError resource="the package items" error={err} onRetry={() => setAttempt((n) => n + 1)} />}
       {!page ? (
         <div className="space-y-2">{Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-28 w-full" />)}</div>

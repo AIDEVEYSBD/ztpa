@@ -113,6 +113,22 @@ def decide_item(package_id: str, item_id: str, body: ItemDecision):
     return _jsonable(_run(wf.decide_item, package_id, item_id, body.decision, body.input, body.note))
 
 
+class BulkDecision(BaseModel):
+    decision: Literal["accept", "reject"]
+    note: Optional[str] = Field(None, max_length=4000)
+    band: Optional[Literal["critical", "high", "medium", "low"]] = None
+    proposal: Optional[str] = Field(None, max_length=40)
+    impact: Optional[str] = Field(None, max_length=40)
+    layer: Optional[str] = Field(None, max_length=200)
+    undecided_only: bool = True
+
+
+@router.post("/api/change-packages/{package_id}/items/bulk")
+def decide_bulk(package_id: str, body: BulkDecision):
+    return _run(wf.decide_bulk, package_id, body.decision, body.note, band=body.band, proposal=body.proposal,
+                impact=body.impact, layer=body.layer, undecided_only=body.undecided_only)
+
+
 class Note(BaseModel):
     note: Optional[str] = Field(None, max_length=4000)
 

@@ -88,6 +88,10 @@ export const frr = {
   draftPackage: (exportId: string, supersede = false) =>
     j<ChangePackage>(`/api/exports/${enc(exportId)}/change-package${supersede ? "?supersede=true" : ""}`, postJson()),
   pkg: (id: string) => j<ChangePackage>(`/api/change-packages/${enc(id)}`),
+  bulkDecide: (id: string, body: { decision: "accept" | "reject"; note?: string; band?: string; impact?: string;
+                                   proposal?: string; layer?: string; undecided_only?: boolean }) =>
+    j<{ matched: number; decided: number; skipped_need_input: number }>(
+      `/api/change-packages/${enc(id)}/items/bulk`, postJson(body)),
   pkgItems: (id: string, q: { band?: string; impact?: string; proposal?: string; layer?: string;
                               decided?: boolean; limit?: number; offset?: number } = {}) =>
     j<PackageItemPage>(`/api/change-packages/${enc(id)}/items${query({ ...q, limit: q.limit ?? 50, offset: q.offset ?? 0 })}`),
