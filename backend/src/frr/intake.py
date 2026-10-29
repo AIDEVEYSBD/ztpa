@@ -138,8 +138,13 @@ def store_register(cur, export_id, review_doc: dict) -> int:
             cp.write_row((export_id, i, e["rule_uid"], flagged, e["band"] if flagged else None,
                           int(e.get("severity") or 0), sorted({c["check"] for c in e["checks"]}),
                           bool(e.get("coverage")), json.dumps(e, default=str)))
-    head = {k: v for k, v in review_doc.items() if k != "register"}
-    cur.execute("UPDATE ztpa.exports SET review_head = %s WHERE export_id = %s", [_J(head), export_id])
+    # The head stays small (it is read by every register page): per-gateway
+    # counts here, the rule lists in their own column (migration 0022).
+    from .review import effective_policy_summary
+    head = {k: v for k, v in review_doc.items() if k not in ("register", "effective_policy")}
+    head["effective_policy_summary"] = effective_policy_summary(review_doc.get("effective_policy", []))
+    cur.execute("UPDATE ztpa.exports SET review_head = %s, review_effective = %s WHERE export_id = %s",
+                [_J(head), _J(review_doc.get("effective_policy", [])), export_id])
     return len(review_doc["register"])
 
 

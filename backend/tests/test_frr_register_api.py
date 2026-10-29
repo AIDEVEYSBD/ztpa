@@ -89,3 +89,23 @@ def test_partly_covered_rules_are_an_indexed_filter_and_a_csv_column(env) -> Non
                                                  params={"partly_covered": "true"}, headers=ANALYST).text)))
     assert [x["rule_number"] for x in rows] == ["2"]
     assert rows[0]["covered_above"].startswith("1 of 2 grants matched above by rule(s) 1")
+
+
+def test_the_review_head_stays_small_and_gateway_lists_load_on_demand(env) -> None:
+    """Every register page reads the head; the per-gateway rule lists (771 KB at
+    110,000 rules) live in their own column and come only from /effective-policy."""
+    from tests.test_frr_intake import connect
+    c = env
+    eid = _accepted(c, _fresh())
+    conn = connect()
+    with conn.cursor() as cur:
+        cur.execute("SELECT review_head, review_effective FROM ztpa.exports WHERE export_id = %s", [eid])
+        row = cur.fetchone()
+    conn.close()
+    assert "effective_policy" not in row["review_head"] and row["review_effective"]
+    page = c.get(f"/api/exports/{eid}/review", headers=ANALYST).json()
+    g = page["effective_policy"][0]
+    assert {"effective_allow_count", "shadowed_count", "partly_covered_count"} <= set(g)
+    lists = c.get(f"/api/exports/{eid}/effective-policy", params={"layer": g["layer"], "gateway": g["gateway"]},
+                  headers=ANALYST).json()
+    assert len(lists["effective_allow"]) == g["effective_allow_count"]

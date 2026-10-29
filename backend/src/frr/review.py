@@ -112,6 +112,15 @@ class Review:
 
 log = logging.getLogger("npr.api.review")
 
+EFFECTIVE_CLASSES = ("effective_allow", "shadowed", "deny", "inactive", "partly_covered")
+
+
+def effective_policy_summary(ep: list) -> list:
+    """Per (layer, gateway): the counts of each class, without the rule lists
+    (those are large and are read per gateway, on demand)."""
+    return [{"layer": g["layer"], "gateway": g["gateway"], "rules_installed": g["rules_installed"],
+             **{f"{k}_count": len(g.get(k) or []) for k in EFFECTIVE_CLASSES}} for g in ep]
+
 # The engine analyzers a rule review needs. cidr_overlap (pairwise redundancy,
 # tens of thousands of findings on a large rulebase), path_trace (cross-tool
 # paths) and transport_exposure (QUIC) answer other questions.

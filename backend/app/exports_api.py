@@ -30,6 +30,7 @@ from fastapi.responses import JSONResponse
 from src import request_ctx, storage
 from src.db import get_conn
 from src.frr import intake
+from src.frr.review import effective_policy_summary
 from src.jobs import queue
 
 router = APIRouter()
@@ -152,10 +153,12 @@ def _review_doc(review_key: str) -> dict:
     return json.loads(storage.store().get_bytes(review_key))
 
 
-def _get(export_id: str) -> dict:
+def _get(export_id: str, extra: str = "") -> dict:
+    """The export row; `extra` adds columns (the review head is read only by the
+    review page, the per-gateway lists only by the effective-policy endpoint)."""
     with get_conn() as conn, conn.cursor() as cur:
         try:
-            cur.execute(f"SELECT {_COLS}, review_key, review_head FROM ztpa.exports WHERE export_id = %s",
+            cur.execute(f"SELECT {_COLS}, review_key{extra} FROM ztpa.exports WHERE export_id = %s",
                         [export_id])
         except Exception:  # noqa: BLE001 — a malformed uuid is "no such export"
             conn.rollback()
@@ -170,18 +173,15 @@ def _get(export_id: str) -> dict:
 def get_export(export_id: str):
     row = _get(export_id)
     row.pop("review_key", None)
-    row.pop("review_head", None)
     return _public(row)
 
 
-def _ep_summary(ep: list) -> list:
-    """Per-gateway counts only. The rule lists are large (468 KiB of a 522 KiB
-    page at 70,000 rules) and were re-sent with every register page; they are
-    fetched per gateway from /effective-policy when a row is opened."""
-    return [{"layer": g["layer"], "gateway": g["gateway"], "rules_installed": g["rules_installed"],
-             **{f"{k}_count": len(g.get(k) or [])
-                for k in ("effective_allow", "shadowed", "deny", "inactive", "partly_covered")}}
-            for g in ep]
+def _ep_summary(head: dict) -> list:
+    """Per-gateway counts: stored in the head since migration 0022, computed
+    from the full lists for heads written before it."""
+    if "effective_policy_summary" in head:
+        return head["effective_policy_summary"]
+    return effective_policy_summary(head.get("effective_policy", []))
 
 
 def _review_from_rows(export_id: str, head: dict, band, check, flagged_only, limit, offset,
@@ -211,7 +211,7 @@ def _review_from_rows(export_id: str, head: dict, band, check, flagged_only, lim
         items = [r["entry"] for r in cur.fetchall()]
     return {"export_id": export_id, "stats": head["stats"], "limitations": head["limitations"],
             "reference_time": head["reference_time"], "total": total,
-            "effective_policy": _ep_summary(head.get("effective_policy", [])),
+            "effective_policy": _ep_summary(head),
             "nat_findings": head.get("nat_findings", []),
             "items": items, "limit": limit, "offset": offset}
 
@@ -222,7 +222,7 @@ def get_review(export_id: str, band: str | None = Query(None, pattern="^(critica
                flagged_only: bool = Query(True),
                partly_covered: bool = Query(False, description="rules some of whose grants are matched above"),
                limit: int = Query(100, ge=1, le=1000), offset: int = Query(0, ge=0)):
-    row = _get(export_id)
+    row = _get(export_id, ", review_head")
     if row["status"] != "accepted":
         raise HTTPException(409, f"export is {row['status']}"
                                  + (f": {row['rejection_reason']}" if row.get("rejection_reason") else ""))
@@ -242,7 +242,7 @@ def get_review(export_id: str, band: str | None = Query(None, pattern="^(critica
         entries = [e for e in entries if any(c["check"] == check for c in e["checks"])]
     return {"export_id": export_id, "stats": doc["stats"], "limitations": doc["limitations"],
             "reference_time": doc["reference_time"], "total": len(entries),
-            "effective_policy": _ep_summary(doc.get("effective_policy", [])),
+            "effective_policy": _ep_summary(doc),
             "nat_findings": doc.get("nat_findings", []),
             "items": entries[offset:offset + limit], "limit": limit, "offset": offset}
 
@@ -251,10 +251,14 @@ def get_review(export_id: str, band: str | None = Query(None, pattern="^(critica
 def get_effective_policy(export_id: str, layer: str = Query(..., max_length=200),
                          gateway: str = Query(..., max_length=200)):
     """One gateway's effective policy: the rule numbers in each class."""
-    row = _get(export_id)
+    row = _get(export_id, ", review_effective, review_head ? 'effective_policy' AS head_has_lists, "
+                          "review_head->'effective_policy' AS head_lists")
     if row["status"] != "accepted":
         raise HTTPException(409, f"export is {row['status']}")
-    ep = (row.get("review_head") or _review_doc(row["review_key"])).get("effective_policy", [])
+    # Since 0022 the lists have their own column; before 0018 only the stored document has them.
+    ep = row.get("review_effective") or (row.get("head_lists") if row.get("head_has_lists") else None)
+    if ep is None:
+        ep = _review_doc(row["review_key"]).get("effective_policy", [])
     g = next((x for x in ep if x["layer"] == layer and x["gateway"] == gateway), None)
     if g is None:
         raise HTTPException(404, "no such layer / gateway in this review")
