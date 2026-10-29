@@ -264,6 +264,9 @@ def analyze(records: list[PolicyRecord], g: nx.DiGraph, alias_map: dict[str, str
                     severity=sc["severity"], severity_band=band(sc["severity"]), forced_critical=False,
                     signals={
                         "shadowed_ref": later.raw_ref, "shadowing_ref": earlier.raw_ref, "reason": reason,
+                        # Which grant of the rule is covered: a rule with several
+                        # grants never matches only when every one of them is.
+                        "shadowed_record": later.id,
                         # Al-Shaer & Hamed's class, carried as data so the UI
                         # groups and filters on the industry term instead of
                         # pattern-matching our prose.

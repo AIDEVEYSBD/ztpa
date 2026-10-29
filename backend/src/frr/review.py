@@ -187,7 +187,13 @@ def _shadowing_by_gateway(parsed: ParsedRulebase, graph, alias_map, ref: datetim
     the rules installed on that gateway, in order. A rule installed on every
     gateway ('Policy Targets') belongs to each partition.
 
-    Returns ({uid: {partition: (coverer_uid, finding)}}, effective_policy,
+    A rule is shadowed in a partition only when EVERY one of its grants is
+    covered there: a rule allowing ssh and https under a rule allowing only ssh
+    still carries the https traffic, and calling it "never matched" would
+    propose removing live traffic. A rule whose grants were truncated at parse
+    time is never claimed shadowed (its unanalysed grants may not be covered).
+
+    Returns ({uid: {partition: (coverer_uids, finding)}}, effective_policy,
     degraded). Partitions with the same rule set share one computation, so a
     hundred gateways running one policy cost the same as one."""
     from ..analyzers import shadowing
@@ -202,6 +208,7 @@ def _shadowing_by_gateway(parsed: ParsedRulebase, graph, alias_map, ref: datetim
     effective: list[dict] = []
     degraded: list[dict] = []
     gw_of = {r.uid: _gateways_of(r) for r in parsed.rules}
+    truncated = {r.uid for r in parsed.rules if r.grants_truncated}
     for layer in parsed.layers:
         rules = [r for r in parsed.rules if r.layer == layer]
         for g in gateways:
@@ -217,10 +224,16 @@ def _shadowing_by_gateway(parsed: ParsedRulebase, graph, alias_map, ref: datetim
                     degraded.append({"analyzer": "shadowing", "error": type(exc).__name__,
                                      "message": str(exc)})
                     memo[key] = []
-            shadowed_here = set()
+            per_rule: dict[str, dict] = {}
             for f in memo[key]:
-                uid = f.signals.get("shadowed_ref")
-                covered.setdefault(uid, {})[(layer, g)] = (f.signals.get("shadowing_ref"), f)
+                per_rule.setdefault(f.signals.get("shadowed_ref"), {})[f.signals.get("shadowed_record")] = f
+            shadowed_here = set()
+            for uid, by_grant in per_rule.items():
+                if uid in truncated or len(by_grant) < len(by_rule_records.get(uid, ())):
+                    continue                           # some grant of this rule still matches here
+                fs = list(by_grant.values())
+                coverers = tuple(sorted({x.signals.get("shadowing_ref") for x in fs}))
+                covered.setdefault(uid, {})[(layer, g)] = (coverers, fs[0])
                 shadowed_here.add(uid)
             live = [r for r in here if r.enabled and not (r.expires_at and r.expires_at <= ref)]
             live_uids = {r.uid for r in live}
@@ -301,24 +314,32 @@ def review(parsed: ParsedRulebase, *, now: Optional[datetime] = None) -> Review:
         mine = {(rm.layer, g) for g in (_gateways_of(rm) if ALL_GATEWAYS not in _gateways_of(rm)
                                          else {e["gateway"] for e in effective if e["layer"] == rm.layer})}
         missing = sorted(g for (_l, g) in mine - set(where))
-        coverers = sorted({number.get(c, c) for c, _f in where.values()}, key=lambda x: (x is None, x))
+        coverers = sorted({number.get(c, c) for cs, _f in where.values() for c in cs},
+                          key=lambda x: (x is None, str(x) if isinstance(x, str) else x))
         if missing:
             entry.limitations.append(
                 f"covered by rule {', '.join(map(str, coverers))} on some gateways but effective on "
                 f"{', '.join(missing)}")
             continue
-        refuted = _shadowing_refuted(rm, meta.get(next(iter(where.values()))[0]), ref)
+        cov_uids, f = next(iter(where.values()))
+        cov_numbers = sorted(n for n in (number.get(c) for c in cov_uids) if n is not None)
+        first_cov = min(cov_uids, key=lambda c: (number.get(c) is None, number.get(c) or 0))
+        refuted = _shadowing_refuted(rm, meta.get(first_cov), ref)
         if refuted:
             if refuted not in entry.limitations:
                 entry.limitations.append(refuted)
             continue
-        cov_uid, f = next(iter(where.values()))
         sig = dict(f.signals or {})
-        sig["covered_by_rule"] = number.get(cov_uid)
+        sig.pop("shadowed_record", None)               # one grant's id; the check is about the rule
+        # The earliest coverer: a deny moved above it is above all of them.
+        sig["covered_by_rule"] = number.get(first_cov)
+        sig["covered_by_rules"] = cov_numbers
         sig["gateways"] = sorted(g for (_l, g) in where)
+        above = (f"rule {cov_numbers[0]}" if len(cov_numbers) == 1 else
+                 "rules " + ", ".join(map(str, cov_numbers)) if cov_numbers else f"rule {first_cov}")
         entry.checks.append(Check("shadowed", f.severity, f.severity_band,
-                                  f"never matched: rule {number.get(cov_uid, cov_uid)} above it already "
-                                  "covers it", sig, f.id))
+                                  f"never matched: {above} above it already cover"
+                                  f"{'s' if len(cov_numbers) <= 1 else ''} it", sig, f.id))
 
     # Several grants of one rule can raise the same check (one per service in
     # a group); the register keeps the worst of each kind per rule.

@@ -605,3 +605,6 @@ Server-side API latency under the staging load test: p50 8 ms, p95 11 ms; 0 erro
 
 First apply created all 55 resources without error; migrations ran on Flexible Server with the role fix from GCP. One defect found: `az containerapp job start --args` delivers a command line as a single argument and parses `-m` as its own flag, so the deploy workflow's migrate and smoke steps would have failed on first run; replaced by `scripts/azure/start-job.sh` (REST, env and secret references carried over). Docker build context trimmed (Terraform provider caches were being uploaded).
 
+### Review correctness: partial shadowing (2026-10-29)
+
+Found while profiling memory. Shadowing is computed per grant (one per source × destination × service), but the review marked the whole rule "never matched" when **any** grant was covered. A rule allowing ssh and https under an ssh-only rule was therefore drafted for removal, cutting https. Fixed: a rule is shadowed on a gateway only when every grant is covered there; every covering rule is named; a rule truncated at parse time (> 512 grants) is never claimed. Regression tests in `tests/test_frr_partial_shadowing.py`. The eval generator now plants partly-covered, never-hit rules; against the old code shadowed precision is 0.66 and the CI gate fails.

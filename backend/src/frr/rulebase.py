@@ -43,6 +43,9 @@ class RuleMeta:
     section: Optional[str] = None
     comments: Optional[str] = None
     record_ids: list[str] = field(default_factory=list)
+    # True when the rule expanded to more grants than were analysed: no claim
+    # about ALL of its traffic (e.g. "never matched") can then be made.
+    grants_truncated: bool = False
     limitations: list[str] = field(default_factory=list)
 
     @property

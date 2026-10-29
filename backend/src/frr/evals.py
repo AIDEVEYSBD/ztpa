@@ -117,7 +117,7 @@ def generate(n: int, seed: int = 1, exported_at: datetime | None = None) -> tupl
         return uid
 
     mix = ["clean"] * 50 + ["internet_admin"] * 6 + ["internal_broad_admin"] * 6 + ["internet_data"] * 4 + \
-          ["redundant_unused"] * 8 + ["expired"] * 6 + ["disabled"] * 6 + ["unused"] * 8 + ["stale"] * 6
+          ["redundant_unused"] * 8 + ["partly_covered"] * 4 + ["expired"] * 6 + ["disabled"] * 6 + ["unused"] * 8 + ["stale"] * 6
     while len(rules) < n - 2:
         cat = rnd.choice(mix)
         if cat == "clean":
@@ -136,6 +136,17 @@ def generate(n: int, seed: int = 1, exported_at: datetime | None = None) -> tupl
             objs.append({"uid": narrow, "name": f"{o['name']}-sub", "type": "network",
                          "subnet4": o["subnet4"], "mask-length4": 28})
             add(cat, {"shadowed", "unused"}, [narrow], [h], ["s-https"], hits=(0, None))
+        elif cat == "partly_covered":
+            # Only one of the second rule's two services is covered above: it
+            # still carries alt-https and must NOT be reported shadowed. No
+            # hits, so the counter cannot rescue it: only full-coverage logic.
+            h, wide = host(), net(24)
+            add("clean", set(), [wide], [h], ["s-https"])
+            o = next(x for x in objs if x["uid"] == wide)
+            narrow = f"{wide}-sub"
+            objs.append({"uid": narrow, "name": f"{o['name']}-sub", "type": "network",
+                         "subnet4": o["subnet4"], "mask-length4": 28})
+            add("unused", {"unused"}, [narrow], [h], ["s-https", "s-alt-https"], hits=(0, None))
         elif cat == "expired":
             add(cat, {"expired"}, [net(24)], [host()], ["s-https"], time=["t-past"])
         elif cat == "disabled":

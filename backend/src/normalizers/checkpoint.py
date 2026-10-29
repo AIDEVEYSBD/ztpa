@@ -303,6 +303,7 @@ def _parse_layer(resp: dict, objs: _Objects, exported_at: Optional[datetime],
             if i >= MAX_GRANTS_PER_RULE:
                 meta.limitations.append(f"expands to {n_total} grants; only the first "
                                         f"{MAX_GRANTS_PER_RULE} are analysed")
+                meta.grants_truncated = True
                 break
             rid = f"cp:{layer}:{uid}:{i}"
             for name, cidrs in ((sname, scidrs), (dname, dcidrs)):

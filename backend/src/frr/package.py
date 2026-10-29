@@ -105,8 +105,13 @@ def _draft_item(n: int, entry: dict, rule: dict, numbers: dict[int, dict],
                 rule_name=entry["name"], check=kind, band=c["band"], evidence=c.get("evidence") or {})
 
     if kind == "shadowed":
-        cover = (c.get("evidence") or {}).get("covered_by_rule")
-        if cover in narrowed:
+        ev = c.get("evidence") or {}
+        cover = ev.get("covered_by_rule")
+        all_cov = ev.get("covered_by_rules") or [cover]
+        held = [n for n in all_cov if n in narrowed]
+        who = f"rule {all_cov[0]}" if len(all_cov) == 1 else "rules " + ", ".join(map(str, all_cov))
+        if held:
+            cover = held[0]
             # The covering rule is itself being narrowed or time-bound; once it
             # is, THIS rule carries the traffic. Removing it now is an outage.
             return Item(**base, proposal="revisit_after",
@@ -120,14 +125,16 @@ def _draft_item(n: int, entry: dict, rule: dict, numbers: dict[int, dict],
                         availability_impact="none")
         if entry["action"] == "deny":
             return Item(**base, proposal="reorder",
-                        rationale=f"this deny never fires: allow rule {cover} above it permits the "
-                                  "same traffic. Moving it above that rule makes it take effect.",
+                        rationale=f"this deny never fires: allow {who} above it permit"
+                                  f"{'s' if len(all_cov) == 1 else ''} the same traffic. Moving it above "
+                                  f"rule {cover} makes it take effect.",
                         availability_impact="changes_behaviour",
                         commands=[f"mgmt_cli set access-rule {sel} new-position {cover}", *_publish()],
                         rollback=[f"mgmt_cli set access-rule {sel} new-position {entry['number']}", *_publish()])
         return Item(**base, proposal="remove",
-                    rationale=f"never matched: rule {cover} above it already allows everything this "
-                              "rule allows. Removing it changes no traffic.",
+                    rationale=f"never matched: {who} above it already allow"
+                              f"{'s' if len(all_cov) == 1 else ''} everything this rule allows. "
+                              "Removing it changes no traffic.",
                     availability_impact="none",
                     commands=[f"mgmt_cli delete access-rule {sel}", *_publish()],
                     rollback=[*_restore(rule, layer), *_publish()])
