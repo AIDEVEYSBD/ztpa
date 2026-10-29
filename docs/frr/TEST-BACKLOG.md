@@ -25,6 +25,7 @@ Feature status lives in [TRACKER.md](TRACKER.md); this file is only about verifi
 | T7 | Stealthwatch flow export and CMDB/IPAM extract in their real column layouts | Column aliases are guesses from typical exports | Sample files |
 | T8 | Skybox export | Parser not built: format unknown | A sample export (01.1b) |
 | T9 | Evaluation on the reviewers' labelled rulebase; decide the severity-tuning signal (broad internal admin, internet-exposed DB ports) | Current eval set is labelled by construction | Labelled rulebase (FRR-01.5) |
+| T22 | Narrative eval on the client's own rules and documents, and on the Azure AI Foundry model | First live run used the synthetic rulebase and two sample excerpts on Vertex | T6, T10, T12 |
 | T10 | Knowledge base with the client's standards, exceptions and runbooks; check retrieval picks the right passages | Retrieval tested on a two-section sample | Client documents |
 
 ## Needs a deployment or environment

@@ -14,6 +14,7 @@ _Last updated: 2026-10-29_ · What still needs testing (UI in a browser, real da
 
 | Date | Item(s) | Change |
 |---|---|---|
+| 2026-10-29 | 04.3 | Live narrative-quality eval with a gate; first Vertex run clean |
 | 2026-10-29 | 02.2b | NAT context on access rules and NAT hygiene checks (shadowed, disabled, orphan, internet exposure); indexed for scale |
 | 2026-10-29 | PLAT-9, 05.3, PLAT-15 | **Staging deployed to GCP** and exercised end to end (intake, CMDB/flows, five agents on Vertex, owner validation, four eyes); request tracing verified; staging load test. Six deploy findings fixed (invoker IAM, managed-Postgres role, job egress, alert query, sequential narration 134→54 s, tracing sampler) |
 | 2026-10-28 | 05.3 | OpenTelemetry tracing to each cloud's native backend |
@@ -94,7 +95,7 @@ _Last updated: 2026-10-29_ · What still needs testing (UI in a browser, real da
 |---|---|---|---|
 | 04.1 | UAT scenarios + expected outcomes | ✅ | `docs/frr/UAT.md`: 30 scenarios across intake, register, package/agents, two-stage review and controls, per role, with pass criteria and a results sheet. The labelled test rulebase itself comes from the client (FRR-01.5) |
 | 04.2 | Internal functional + integration testing | 🟡 | 2,065 backend tests green against real Postgres 16 + pgvector locally; DB tests still skip in CI; 0 frontend tests |
-| 04.3 | Re-runnable eval suite incl. live-model evals | 🟡 | Deterministic eval suite re-runnable (`python -m src.frr.evals`). Live-model narrative checked manually on Vertex; automated narrative eval (groundedness / citation rate) not yet built |
+| 04.3 | Re-runnable eval suite incl. live-model evals | ✅ | Deterministic suite (`src.frr.evals`, CI-gated) plus live narrative eval `python -m src.frr.narrative_eval --gate`: fallback rate, invented numbers (every number must appear in the facts/excerpts given), softened verdicts or arguments against the proposal, citation rate, owner-question rate. First live run (Vertex gemini-2.5-pro, 20 items, prompt impact.v1@ad214bac1a4c): fallback 0, ungrounded 0, contradictions 0, citation 0.80, owner questions on narrowing 1.0. On demand / nightly, not per commit (model cost) |
 | 04.4 | False-positive / false-negative measurement and tuning | 🟡 | FP/FN measured per check with misses listed. Tuning signal found, **not applied pending reviewer labels**: engine rates broad internal admin access low (policy says medium) and internet-exposed database ports medium (policy says high) |
 | 04.5 | Eval gate in CI before UAT / release | ✅ | CI step `FRR evaluation gate` (2,000 rules): fails on precision/recall < 0.98, any check recall < 0.95, or > 3 s per 1,000 rules; band agreement enforced when `NPR_EVAL_MIN_BAND_AGREEMENT` is set; report kept as a build artifact |
 
