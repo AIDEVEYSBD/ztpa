@@ -27,7 +27,6 @@ Feature status lives in [TRACKER.md](TRACKER.md); this file is only about verifi
 | T9 | Evaluation on the reviewers' labelled rulebase; decide the severity-tuning signal (broad internal admin, internet-exposed DB ports) | Current eval set is labelled by construction | Labelled rulebase (FRR-01.5) |
 | T22 | Narrative eval on the client's own rules and documents | Live runs so far (Vertex gemini-2.5-pro, Azure gpt-4.1-mini, both clean) used the synthetic rulebase and two sample excerpts | T6, T10 |
 | T25 | Review comparison on two real, successive exports of the same rulebase; CSV opened in the reviewers' spreadsheet tool | Rule uids are assumed stable across exports (Check Point uids are); verified only on synthetic pairs | Two real exports some weeks apart (T6) |
-| T26 | Eval ledger entry on Vertex | Only Azure gpt-4.1-mini is recorded; the Vertex run was refused (expired local Google credential, every call fell back) | After `gcloud auth application-default login`: `ADVISORY_PROVIDER=vertex python -m src.frr.narrative_eval --items 20 --gate --record`, commit the ledger; then consider `NPR_PROMPT_GATE_MIN_MODELS=2` in CI |
 | T10 | Knowledge base with the client's standards, exceptions and runbooks; check retrieval picks the right passages | Retrieval tested on a two-section sample | Client documents |
 
 ## Needs a deployment or environment
@@ -55,5 +54,6 @@ Feature status lives in [TRACKER.md](TRACKER.md); this file is only about verifi
 | T12a | Azure staging end to end: Terraform apply (55 resources), migrations on Flexible Server, in-VNet smoke test, break-glass through the public frontend, FRR flow, AI Foundry narratives via managed identity, Key Vault references, Application Insights | 2026-10-29 | Export accepted 5.5 s; agent run 12 s, 7/7 narrated on gpt-4.1-mini; 40k-rule export reviewed 32 s, register page 290 ms. Found: `az containerapp job start --args` mangles command lines → `scripts/azure/start-job.sh` |
 | T12b | KEDA PostgreSQL scaler scales workers on queue depth | 2026-10-29 | Burst of 20 × 8,000-rule exports: workers 1 → 2 (staging max) within ~45 s; all 20 reviewed in 53 s |
 | T24 | Multipart on Azure Blob staged blocks (and GCS compose, T16) against the real services | 2026-10-29 | 20.5 MiB in 3 parts committed as blocks, finalized and reviewed |
+| T26 | Eval ledger on both clouds | 2026-10-30 | Vertex gemini-2.5-pro: 20 items, fallback 0, ungrounded 0, contradictions 0, citation 0.8, package summary clean; Azure gpt-4.1-mini recorded for the same fingerprints. CI now requires both (`NPR_PROMPT_GATE_MIN_MODELS=2`) |
 | T22a | Narrative eval on Azure gpt-4.1-mini | 2026-10-29 | 20 items: fallback 0, ungrounded 0, contradictions 0, citation 1.0 |
 | — | GCP staging deploy, migrations, smoke test, end-to-end FRR flow, Vertex narratives, tracing, staging load test | 2026-10-29 | [TRACKER.md](TRACKER.md) changelog; REMEDIATION-LOG "First real deployment" |

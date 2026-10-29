@@ -51,6 +51,32 @@
           "contradiction": null
         }
       }
+    },
+    {
+      "at": "2026-10-29T19:43:23+00:00",
+      "model": "vertex:google/gemini-2.5-pro",
+      "fingerprints": {
+        "impact_assessor": "impact_assessor@0b5aed4dce02",
+        "package_drafter": "package_drafter@6043312c6966"
+      },
+      "thresholds": {
+        "max_fallback_rate": 0.1,
+        "max_ungrounded_rate": 0.05,
+        "max_contradictions": 0
+      },
+      "metrics": {
+        "items": 20,
+        "fallback_rate": 0.0,
+        "ungrounded_rate": 0.0,
+        "contradictions": 0,
+        "citation_rate": 0.8,
+        "owner_question_rate_on_narrowing": 1.0,
+        "package_summary": {
+          "fallback": false,
+          "ungrounded": [],
+          "contradiction": null
+        }
+      }
     }
   ]
 }

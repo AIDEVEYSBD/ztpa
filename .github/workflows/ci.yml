@@ -62,6 +62,8 @@ jobs:
       # Offline; the evaluation itself makes model calls and is run on demand.
       - name: Prompt and agent tuning gate
         working-directory: backend
+        env:
+          NPR_PROMPT_GATE_MIN_MODELS: "2"      # both clouds we ship on: Vertex and AI Foundry
         run: python -m src.frr.prompt_gate
 
       - name: Keep the evaluation report
