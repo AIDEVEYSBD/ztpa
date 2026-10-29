@@ -49,4 +49,5 @@ Feature status lives in [TRACKER.md](TRACKER.md); this file is only about verifi
 | # | What | When | Evidence |
 |---|---|---|---|
 | T16 | Large upload in the cloud: 36.1 MiB / 70,000-rule export through the staging frontend | 2026-10-29 | Single request refused 413 by Cloud Run (cap confirmed); multipart 5 parts in 20 s, finalized in 24.5 s, accepted and reviewed 88 s after start. Found: register pages 1.5–2.5 s on large reviews (whole-document load per process) → moved to indexed rows |
+| T16b | Register pages at 70,000 rules in staging, after moving to rows + summarised effective policy + gzip | 2026-10-29 | Server-side p50 178 ms (was ~2 s); end-user 470–650 ms over a ~365 ms network floor (was 1.3–2.5 s) |
 | — | GCP staging deploy, migrations, smoke test, end-to-end FRR flow, Vertex narratives, tracing, staging load test | 2026-10-29 | [TRACKER.md](TRACKER.md) changelog; REMEDIATION-LOG "First real deployment" |

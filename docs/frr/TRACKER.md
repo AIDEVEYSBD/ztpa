@@ -14,7 +14,7 @@ _Last updated: 2026-10-29_ · What still needs testing (UI in a browser, real da
 
 | Date | Item(s) | Change |
 |---|---|---|
-| 2026-10-29 | 03.1b | Register moved to indexed rows: 12–17 ms pages at 70k rules |
+| 2026-10-29 | 03.1b | Register moved to indexed rows (12–17 ms pages at 70k rules locally); effective-policy lists on demand + gzip: staging pages 470–650 ms end-user over a 365 ms network floor (was 1.3–2.5 s) |
 | 2026-10-29 | 02.2d | Multipart uploads for exports beyond the 32 MiB Cloud Run request cap, on both clouds' native storage |
 | 2026-10-29 | 04.3 | Live narrative-quality eval with a gate; first Vertex run clean |
 | 2026-10-29 | 02.2b | NAT context on access rules and NAT hygiene checks (shadowed, disabled, orphan, internet exposure); indexed for scale |
