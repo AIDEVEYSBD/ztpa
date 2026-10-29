@@ -125,7 +125,8 @@ Set `ACR_NAME` from `terraform output registry`, then run the workflow.
 - **Staging without an identity provider:** set `breakglass_email` and pass a bcrypt hash in
   `TF_VAR_breakglass_password_hash`; never in production.
 - **Small staging database:** `db_sku = "B_Standard_B1ms"`, `db_storage_mb = 32768`,
-  `db_storage_tier = "P4"`.
+  `db_storage_tier = "P4"`, `db_max_connections = 50`, `db_pool_max = 2` (the budget check
+  refuses the defaults on a 50-connection server).
 
 ## Releasing
 
@@ -152,9 +153,11 @@ IP is added to Key Vault's allow-list for the apply only.
 | `db_sku` | `GP_Standard_D2ds_v5` | Raise before raising replica counts |
 | `db_high_availability` | true | Zone-redundant standby |
 
-The connection budget is the same as on GCP: keep
-`api replicas × api_processes × 8 + worker replicas × worker_concurrency × 2` within the
-server's `max_connections` for the chosen SKU, or enable the server's built-in PgBouncer.
+The connection budget is checked by Terraform as on GCP (`db_pool_max`, default 8, per API
+process), against `db_max_connections`, which must state the SKU's `max_connections`
+(Azure derives it from memory: 859 for the default `GP_Standard_D2ds_v5`, 50 for `B_Standard_B1ms`).
+Beyond that, enable the server's built-in PgBouncer. `proxy_secret_previous` supports a
+zero-downtime proxy-secret rotation (runbook).
 
 ## Edge: Front Door + WAF
 

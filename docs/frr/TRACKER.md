@@ -8,7 +8,7 @@ disabled by an FRR policy switch, not deleted.
 
 Status: ✅ done · 🟡 partial · ⬜ not started · 🔧 in progress
 
-_Last updated: 2026-10-29_ · What still needs testing (UI in a browser, real data, Azure, CI…): [TEST-BACKLOG.md](TEST-BACKLOG.md)
+_Last updated: 2026-10-30_ · What still needs testing (UI in a browser, real data, Azure, CI…): [TEST-BACKLOG.md](TEST-BACKLOG.md)
 
 ## Changelog
 

@@ -173,11 +173,15 @@ gcloud run jobs execute frr-staging-migrate --region $REGION --wait
 | `db_tier` | `db-custom-2-8192` | Raise before raising instance counts |
 | `db_high_availability` | true | Regional failover; recommended for prod |
 
-**Connection budget:** each API process holds a pool of up to `DB_POOL_MAX` (8) connections;
-each worker job slot holds two (work + heartbeat). Keep
-`api instances × api_processes × 8 + worker instances × worker_concurrency × 2`
-below `max_connections` (400) with headroom for migrations and admin. At the defaults'
-maximum: `10 × 2 × 8 + 4 × 2 × 2 = 176`.
+**Connection budget (checked by Terraform):** peak connections at full scale-out are
+`api_max_instances × api_processes × db_pool_max + worker_max_instances × (worker_concurrency × 2 + 2)
++ frontend_max_instances × 3 + 10`, and the plan fails if that exceeds `db_max_connections`
+(400, which also sets the Cloud SQL `max_connections` flag). Defaults:
+`10 × 2 × 8 + 4 × 6 + 10 × 3 + 10 = 224`. Under overload the API sheds requests with
+503 + Retry-After after `DB_POOL_TIMEOUT` (5 s) rather than queueing them.
+
+**Rotating the proxy secret:** set `proxy_secret_previous` (sensitive) to the current value while
+rotating, so the API accepts both while the frontend rolls; see the runbook.
 
 ## Tear-down
 
