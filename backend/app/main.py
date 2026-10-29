@@ -128,6 +128,8 @@ from app.uploads_api import router as _uploads_router  # noqa: E402
 app.include_router(_uploads_router)                    # before exports: /uploads must not match /{export_id}
 from app.exports_api import router as _exports_router  # noqa: E402
 app.include_router(_exports_router)
+from app.register_api import router as _register_router  # noqa: E402
+app.include_router(_register_router)
 from app.packages_api import router as _packages_router  # noqa: E402
 app.include_router(_packages_router)
 from app.frr_api import router as _frr_router  # noqa: E402

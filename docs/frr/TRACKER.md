@@ -14,6 +14,7 @@ _Last updated: 2026-10-29_ · What still needs testing (UI in a browser, real da
 
 | Date | Item(s) | Change |
 |---|---|---|
+| 2026-10-29 | 03.1f, 03.1g | Register CSV download (streamed) and review-to-review comparison; planner statistics kept current after bulk loads |
 | 2026-10-29 | PLAT-10 | **Azure staging deployed** and exercised end to end; `start-job.sh` replaces `az containerapp job start --args` (which mangled command lines) in the deploy workflow; tighter Docker context |
 | 2026-10-29 | 03.1b | Register moved to indexed rows (12–17 ms pages at 70k rules locally); effective-policy lists on demand + gzip: staging pages 470–650 ms end-user over a 365 ms network floor (was 1.3–2.5 s) |
 | 2026-10-29 | 02.2d | Multipart uploads for exports beyond the 32 MiB Cloud Run request cap, on both clouds' native storage |
@@ -89,6 +90,8 @@ _Last updated: 2026-10-29_ · What still needs testing (UI in a browser, real da
 | 03.1c | Narrowed or time-bound rule proposals | ✅ | Deterministic proposals per check with availability impact; narrowing items now carry flow-observed sources and services as an owner prefill (owner still confirms; flows show use, not need). Outage guards: never moves a cleanup rule, never removes a rule shadowed by one being narrowed |
 | 03.1d | Rollback plan artefact | ✅ | Every item carries Check Point `mgmt_cli` change and exact rollback (restores rule as exported); `GET /api/change-packages/{id}/runbook` (approved only) emits accepted items with rollback under the approval record |
 | 03.1e | Limitations section per review | ✅ | Review-level and per-rule limitations produced, served and shown in the register UI |
+| 03.1f | Register CSV download | ✅ | `GET /api/exports/{id}/register.csv` (filters as on screen), streamed through a server-side cursor in batches: all 70,000 rules (10.2 MiB) in 0.8 s; "Download CSV" on the Rule review screen |
+| 03.1g | Compare with an earlier review | ✅ | `GET /api/exports/{id}/compare?baseline=` : new / resolved findings, rules added / removed, band changes, keyed by the stable rule uid; SQL anti-joins + EXCEPT. 70k vs 70k in ~0.5 s, including straight after loading (nested loops disabled for the query; migration 0019 tightens autoanalyze — a fresh pair first took 357 s). UI `CompareCard.tsx` |
 | 03.2a | Two-stage HITL: owner validates findings + availability impact → approver reviews change package | ✅ | `backend/src/frr/workflow.py` + `app/packages_api.py`: owner decides each item (accept/reject-with-note/modify-with-input) then validates; a different security approver approves/rejects (four eyes enforced in code and as a DB CHECK); state-conditional updates; all transitions audited. 6 end-to-end tests as the runtime role |
 | 03.2b | FRR policy switch: no device write, no auto-approve, no automatic ITSM change | ✅ | `NPR_FRR_MODE` (on by default in both Terraform roots): the older change gate escalates everything, staging needs explicit approval, simulated push refused (403). FRR packages have no device or ITSM code path at all (test asserts no network client imports). 3 tests |
 

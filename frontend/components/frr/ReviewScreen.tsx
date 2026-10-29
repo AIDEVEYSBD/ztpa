@@ -20,6 +20,7 @@ import { ErrorState, InlineError } from "../ui/Feedback";
 import { BANDS, checkLabel, useFrrMe, when } from "./bits";
 import { EffectivePolicy } from "./EffectivePolicy";
 import { NatFindings } from "./NatFindings";
+import { CompareCard } from "./CompareCard";
 import { RegisterTable } from "./RegisterTable";
 
 const PAGE_SIZES = [25, 50, 100] as const;
@@ -97,6 +98,9 @@ export function ReviewScreen({ exportId, onGoToExports }: { exportId: string; on
         </div>
       </div>
       <Button size="sm" variant="quiet" tone="neutral" className="ml-auto" onClick={onGoToExports}>Change export</Button>
+      <a className="focusable inline-flex items-center gap-1 rounded-md px-2 py-1 text-[12px] text-dim hover:text-fg"
+        href={frr.registerCsvUrl(exportId, { band: band || undefined, check: check || undefined, flagged_only: flaggedOnly })}
+        download>Download CSV</a>
       <Button size="sm" variant="quiet" tone="neutral" onClick={retry} loading={loading}><RotateCw size={12} /> Refresh</Button>
     </div>
   );
@@ -154,6 +158,8 @@ export function ReviewScreen({ exportId, onGoToExports }: { exportId: string; on
       )}
 
       {page?.nat_findings && page.nat_findings.length > 0 && <NatFindings findings={page.nat_findings} />}
+
+      {page && <CompareCard exportId={exportId} />}
 
       {fbErr && <InlineError resource="your earlier feedback" error={fbErr} onRetry={retry} />}
 

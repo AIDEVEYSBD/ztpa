@@ -347,3 +347,25 @@ export interface ContextDataset {
   uploaded_at: string;
   active: boolean;
 }
+
+export interface CompareFinding {
+  rule_uid: string;
+  check: string;
+  number: string | null;
+  name: string | null;
+  layer: string | null;
+  band: Band | null;
+  title?: string | null;
+  new_rule?: boolean;
+  rule_removed?: boolean;
+}
+
+export interface CompareResult {
+  export_id: string;
+  baseline: string;
+  summary: { rules_added: number; rules_removed: number; findings_new: number; findings_resolved: number; band_changes: number };
+  new_findings: CompareFinding[];
+  resolved_findings: CompareFinding[];
+  band_changes: { rule_uid: string; number: string | null; name: string | null; was: Band; now: Band }[];
+  limit: number;
+}

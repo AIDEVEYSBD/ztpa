@@ -9,7 +9,7 @@ import { requestJson as j, requestText } from "./api";
 import type {
   ApproverGrant, ChangePackage, ExportList, FrrExport, FrrMe, FrrRun, KnowledgeDoc, KnowledgeHit,
   KnowledgeKind, OwnerDecision, OwnerInput, PackageItem, ReviewPage, ReviewQuery, UploadResult,
-  FrrDuty, FeedbackBand, FeedbackList, FeedbackRow, FeedbackVerdict, ContextDataset, ContextKind, EffectivePolicyGateway,
+  FrrDuty, FeedbackBand, FeedbackList, FeedbackRow, FeedbackVerdict, ContextDataset, ContextKind, EffectivePolicyGateway, CompareResult,
 } from "./frrTypes";
 
 const enc = encodeURIComponent;
@@ -96,6 +96,11 @@ export const frr = {
     j<ChangePackage>(`/api/change-packages/${enc(pkgId)}/decision`, postJson({ decision, note: note || undefined })),
   runbook: (pkgId: string) => requestText(`/api/change-packages/${enc(pkgId)}/runbook`),
 
+  compare: (exportId: string, baseline: string) =>
+    j<CompareResult>(`/api/exports/${enc(exportId)}/compare${query({ baseline })}`),
+  /** Same-origin URL; the browser downloads it with the session cookie. */
+  registerCsvUrl: (exportId: string, q: { band?: string; check?: string; flagged_only?: boolean } = {}) =>
+    `/api/exports/${enc(exportId)}/register.csv${query({ band: q.band, check: q.check, flagged_only: q.flagged_only ?? true })}`,
   effectivePolicy: (exportId: string, layer: string, gateway: string) =>
     j<EffectivePolicyGateway>(`/api/exports/${enc(exportId)}/effective-policy${query({ layer, gateway })}`),
 
