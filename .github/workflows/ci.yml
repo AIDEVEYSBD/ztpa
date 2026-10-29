@@ -56,6 +56,14 @@ jobs:
         working-directory: backend
         run: python -m src.frr.evals --rules 2000 --gate > frr-eval.json
 
+      # Eval-gated tuning (FRR-05.5): every model-backed agent's running
+      # configuration (prompt, sampling, retrieval) must have a passing
+      # narrative evaluation recorded in src/frr/prompts/eval-ledger.json.
+      # Offline; the evaluation itself makes model calls and is run on demand.
+      - name: Prompt and agent tuning gate
+        working-directory: backend
+        run: python -m src.frr.prompt_gate
+
       - name: Keep the evaluation report
         if: always()
         uses: actions/upload-artifact@v4

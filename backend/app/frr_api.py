@@ -1,6 +1,6 @@
 """FRR agent runs and the knowledge base.
 
-    GET  /api/frr/agents                         the agents, their model policy and prompt versions
+    GET  /api/frr/agents                         the agents, model policy, prompt versions, evaluation
     POST /api/exports/{export_id}/review-runs    start an orchestrated run (admin, analyst) -> 202
     GET  /api/frr/runs/{run_id}                  run status and every agent's step
     POST /api/knowledge?kind=&title=             add a standard / exception / runbook (admin; text body)
@@ -17,7 +17,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 
 from src import request_ctx
 from src.db import audit, get_conn
-from src.frr import agents, knowledge
+from src.frr import agents, knowledge, prompt_gate
 from src.jobs import queue
 
 from app.packages_api import _jsonable
@@ -48,9 +48,12 @@ def my_duties():
 @router.get("/api/frr/agents")
 def list_agents():
     out = []
+    evaluated = prompt_gate.status()
     for a in agents.AGENTS:
         out.append({"key": a.key, "role": a.role, "model": a.model,
-                    "prompt": agents.prompt(a.prompt).version if a.prompt else None})
+                    "prompt": agents.prompt(a.prompt).version if a.prompt else None,
+                    # Whether the running configuration passed a recorded evaluation (05.5).
+                    "evaluation": evaluated.get(a.key)})
     return {"agents": out, "narrate_top": agents.NARRATE_TOP}
 
 

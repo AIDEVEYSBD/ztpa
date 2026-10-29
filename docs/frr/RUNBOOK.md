@@ -68,6 +68,16 @@ additive migrations, which is the rule from 0008 on: add columns and tables in o
 release, remove what is no longer read in a later one (expand, then contract). Check the
 migrations between the two revisions before rolling back.
 
+**Change a prompt, retrieval setting or model**
+Prompts live in `backend/src/frr/prompts/`; sampling and retrieval settings at the top of
+`src/frr/agents.py`. Any change alters the agent's fingerprint, and CI's prompt gate fails until
+a passing evaluation of it is recorded. Against each provider you ship on (Vertex, Foundry):
+`python -m src.frr.narrative_eval --items 20 --gate --record` (about 21 model calls), then commit
+`src/frr/prompts/eval-ledger.json`. A failing run is never recorded. A model change (new
+deployment or version) does not alter the fingerprint: re-run the evaluation on the new model
+before switching production to it. `GET /api/frr/agents` shows, per agent, the running
+fingerprint and the models it passed on. `NPR_PROMPT_GATE_MIN_MODELS=2` requires both clouds.
+
 **Rotate a secret**
 Add a new version in Secret Manager / Key Vault, then roll the services (re-run the deploy,
 or `gcloud run services update … --update-secrets` / `az containerapp update`).

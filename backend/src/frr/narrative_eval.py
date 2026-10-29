@@ -2,6 +2,7 @@
 against the facts it was given, deterministically.
 
     python -m src.frr.narrative_eval --rules 300 --items 20 --gate     # uses ADVISORY_PROVIDER
+    ... --gate --record      # and, when it passes, add it to the eval ledger (prompt_gate.py)
 
 Per item, the assessor runs exactly as in a review run (same prompt, same
 retrieval shape), then each narrative is scored:
@@ -13,6 +14,10 @@ retrieval shape), then each narrative is scored:
                  critical item) or argues against the proposal ("keep the rule")
   cited          when an excerpt was retrieved, whether the narrative cited one
   asks_owner     narrowing items that ask the owner at least one question
+
+The package drafter's executive summary is scored once per run the same way
+(fallback, ungrounded numbers, softening wording) and gated strictly: one
+summary, so any problem fails.
 
 No second model judges the first: the checks are cheap, stable across runs and
 explainable. The gate thresholds are deliberately strict on what must never
@@ -89,7 +94,19 @@ def score(item: dict, context: list[dict], narrative: dict) -> dict:
     }
 
 
-def evaluate(items: list[dict], llm=None, parallel: int = 6) -> dict[str, Any]:
+def score_summary(drafted: dict, narrative: dict) -> dict:
+    facts_text = json.dumps({"stats": drafted["summary"], "items": drafted["items"][:10],
+                             "limitations": drafted["limitations"][:20]}, default=str)
+    text = " ".join([narrative.get("summary", ""), *narrative.get("key_risks", []),
+                     narrative.get("limitations_note", "")])
+    fb = narrative.get("by") == "engine_fallback"
+    worst = {i["band"] for i in drafted["items"][:10]}
+    soft = _SOFTENING.search(text) if not fb and worst & {"critical", "high"} else None
+    return {"fallback": fb, "ungrounded": [] if fb else ungrounded_numbers(text, facts_text),
+            "contradiction": f"softens a package with critical/high items: '{soft.group(0)}'" if soft else None}
+
+
+def evaluate(items: list[dict], llm=None, parallel: int = 6, drafted: dict | None = None) -> dict[str, Any]:
     from concurrent.futures import ThreadPoolExecutor
     p = agents.prompt("impact.v1")
     t0 = time.perf_counter()
@@ -114,7 +131,11 @@ def evaluate(items: list[dict], llm=None, parallel: int = 6) -> dict[str, Any]:
         "citation_rate": round(sum(r["cited"] for r in live) / max(1, len(live)), 3),
         "owner_question_rate_on_narrowing": round(sum(r["asks_owner"] for r in narrowing) / max(1, len(narrowing)), 3),
         "problems": [r for r in rows if r["ungrounded"] or r["contradiction"]][:20],
+        "fingerprints": {k: agents.fingerprint(k) for k in ("impact_assessor", "package_drafter")},
     }
+    if drafted is not None:
+        out["package_summary"] = score_summary(
+            drafted, agents.summarise_package(drafted, agents.prompt("package.v1"), llm))
     return out
 
 
@@ -126,11 +147,22 @@ def gate(m: dict, g: dict = GATE) -> list[str]:
         fails.append(f"ungrounded-number rate {m['ungrounded_rate']} > {g['max_ungrounded_rate']}")
     if m["contradictions"] > g["max_contradictions"]:
         fails.append(f"{m['contradictions']} contradiction(s) > {g['max_contradictions']}")
+    ps = m.get("package_summary")
+    if ps is None:
+        fails.append("the package summary was not evaluated")
+    else:
+        if ps["fallback"]:
+            fails.append("the package summary fell back to the engine text")
+        if ps["ungrounded"]:
+            fails.append(f"the package summary has ungrounded numbers {ps['ungrounded']}")
+        if ps["contradiction"]:
+            fails.append(f"the package summary {ps['contradiction']}")
     return fails
 
 
-def sample_items(rules: int, items: int, seed: int = 11) -> list[dict]:
-    """Package items from the labelled synthetic rulebase, spread across checks."""
+def sample_items(rules: int, items: int, seed: int = 11) -> tuple[list[dict], dict]:
+    """(items, drafted package) from the labelled synthetic rulebase; items
+    spread across checks."""
     doc, _ = generate(rules, seed)
     parsed = checkpoint.parse(doc)
     rv = review(parsed)
@@ -144,7 +176,7 @@ def sample_items(rules: int, items: int, seed: int = 11) -> list[dict]:
         for k in sorted(by_check):
             if by_check[k] and len(out) < items:
                 out.append(by_check[k].pop(0))
-    return out
+    return out, drafted
 
 
 def main(argv=None) -> int:
@@ -152,11 +184,22 @@ def main(argv=None) -> int:
     ap.add_argument("--rules", type=int, default=300)
     ap.add_argument("--items", type=int, default=20)
     ap.add_argument("--gate", action="store_true")
+    ap.add_argument("--record", action="store_true",
+                    help="append a passing, gated run to the eval ledger (src/frr/prompts/eval-ledger.json)")
     a = ap.parse_args(argv)
-    m = evaluate(sample_items(a.rules, a.items))
+    if a.record and not a.gate:
+        ap.error("--record needs --gate")
+    items, drafted = sample_items(a.rules, a.items)
+    m = evaluate(items, drafted=drafted)
     m["gate"] = {"thresholds": GATE, "failures": gate(m)}
     print(json.dumps(m, indent=2, default=str))
-    return 1 if a.gate and m["gate"]["failures"] else 0
+    if a.gate and m["gate"]["failures"]:
+        return 1
+    if a.record:
+        from . import prompt_gate
+        e = prompt_gate.record(m)
+        print(f"recorded {', '.join(e['fingerprints'].values())} on {e['model']}", file=sys.stderr)
+    return 0
 
 
 if __name__ == "__main__":

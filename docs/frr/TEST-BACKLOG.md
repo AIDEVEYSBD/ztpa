@@ -27,6 +27,7 @@ Feature status lives in [TRACKER.md](TRACKER.md); this file is only about verifi
 | T9 | Evaluation on the reviewers' labelled rulebase; decide the severity-tuning signal (broad internal admin, internet-exposed DB ports) | Current eval set is labelled by construction | Labelled rulebase (FRR-01.5) |
 | T22 | Narrative eval on the client's own rules and documents | Live runs so far (Vertex gemini-2.5-pro, Azure gpt-4.1-mini, both clean) used the synthetic rulebase and two sample excerpts | T6, T10 |
 | T25 | Review comparison on two real, successive exports of the same rulebase; CSV opened in the reviewers' spreadsheet tool | Rule uids are assumed stable across exports (Check Point uids are); verified only on synthetic pairs | Two real exports some weeks apart (T6) |
+| T26 | Eval ledger entry on Vertex | Only Azure gpt-4.1-mini is recorded; the Vertex run was refused (expired local Google credential, every call fell back) | After `gcloud auth application-default login`: `ADVISORY_PROVIDER=vertex python -m src.frr.narrative_eval --items 20 --gate --record`, commit the ledger; then consider `NPR_PROMPT_GATE_MIN_MODELS=2` in CI |
 | T10 | Knowledge base with the client's standards, exceptions and runbooks; check retrieval picks the right passages | Retrieval tested on a two-section sample | Client documents |
 
 ## Needs a deployment or environment

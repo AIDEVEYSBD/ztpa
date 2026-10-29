@@ -26,6 +26,7 @@ items by severity (default 40); the rest get the deterministic rationale. A
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import logging
 import os
@@ -50,6 +51,14 @@ NARRATE_TOP = int(os.environ.get("NPR_FRR_NARRATE_TOP", "40"))
 NARRATE_PARALLEL = int(os.environ.get("NPR_FRR_NARRATE_PARALLEL", "6"))
 _PROMPTS = Path(__file__).with_name("prompts")
 
+# What shapes a narrative besides the prompt. Part of each agent's fingerprint
+# (see `fingerprint`), so changing one needs a passing evaluation like a prompt
+# change does (src/frr/prompt_gate.py).
+RETRIEVAL_K = 3                # knowledge excerpts retrieved per item
+EXCERPT_CHARS = 900            # of each excerpt shown to the model
+TEMPERATURE = 0.2
+FACTS_CHARS = 12000            # cap on the facts document sent
+
 
 @dataclass(frozen=True)
 class Prompt:
@@ -59,6 +68,20 @@ class Prompt:
     @property
     def version(self) -> str:
         return f"{self.name}@{hashlib.sha256(self.text.encode()).hexdigest()[:12]}"
+
+
+def fingerprint(agent: str) -> str:
+    """`agent@hash` over everything tuned for a model-backed agent: prompt text,
+    sampling, and for the impact assessor retrieval depth, excerpt size and the
+    retrieval query builder (part of its behaviour). Equal fingerprints mean the
+    evaluated configuration is the one running."""
+    p = prompt(next(a.prompt for a in AGENTS if a.key == agent and a.prompt))
+    knobs = {"temperature": TEMPERATURE, "facts_chars": FACTS_CHARS}
+    if agent == "impact_assessor":
+        knobs |= {"retrieval_k": RETRIEVAL_K, "excerpt_chars": EXCERPT_CHARS,
+                  "query": inspect.getsource(_query_for)}
+    blob = json.dumps({"prompt": p.text, **knobs}, sort_keys=True)
+    return f"{agent}@{hashlib.sha256(blob.encode()).hexdigest()[:12]}"
 
 
 def prompt(name: str) -> Prompt:
@@ -129,9 +152,9 @@ def assess_item(item: dict, context: list[dict], p: Prompt,
                      | {"evidence": {k: v for k, v in (item.get("evidence") or {}).items()
                                      if k not in ("severity_vector",)}},
              "context": [{"cite": c["cite"], "kind": c["kind"], "title": c["title"],
-                          "heading": c["heading"], "excerpt": c["body"][:900]} for c in context]}
-    r = (llm or complete)(system=p.text, user=json.dumps(facts, default=str)[:12000], role="prose",
-            temperature=0.2, expect_json=True, capability="frr_impact",
+                          "heading": c["heading"], "excerpt": c["body"][:EXCERPT_CHARS]} for c in context]}
+    r = (llm or complete)(system=p.text, user=json.dumps(facts, default=str)[:FACTS_CHARS], role="prose",
+            temperature=TEMPERATURE, expect_json=True, capability="frr_impact",
             subject=f"{item['layer']}#{item['rule_number']}")
     if not getattr(r, "ok", False):
         return _fallback_impact(item) | {"fallback_reason": getattr(r, "error", None) or "model unavailable"}
@@ -150,8 +173,8 @@ def summarise_package(drafted: dict, p: Prompt, llm: Optional[Callable[..., Any]
     top = [{k: i[k] for k in ("rule_number", "check", "band", "proposal", "availability_impact", "rationale")}
            for i in drafted["items"][:10]]
     facts = {"stats": drafted["summary"], "top_items": top, "limitations": drafted["limitations"][:20]}
-    r = (llm or complete)(system=p.text, user=json.dumps(facts, default=str)[:12000], role="prose",
-            temperature=0.2, expect_json=True, capability="frr_package")
+    r = (llm or complete)(system=p.text, user=json.dumps(facts, default=str)[:FACTS_CHARS], role="prose",
+            temperature=TEMPERATURE, expect_json=True, capability="frr_package")
     if getattr(r, "ok", False):
         try:
             out = PackageNarrative.model_validate(parse_json(r.text, {}))
@@ -214,7 +237,7 @@ def review_run(ctx: JobContext, *, llm: Optional[Callable[..., Any]] = None) -> 
     top = drafted["items"][:NARRATE_TOP]
     for item in drafted["items"][NARRATE_TOP:]:
         narratives[item["item_id"]] = _fallback_impact(item) | {"fallback_reason": "outside top-N"}
-    contexts = {item["item_id"]: knowledge.search(cur, _query_for(item), k=3) for item in top}
+    contexts = {item["item_id"]: knowledge.search(cur, _query_for(item), k=RETRIEVAL_K) for item in top}
     done = 0
     with ThreadPoolExecutor(max_workers=max(1, NARRATE_PARALLEL)) as pool:
         futures = {pool.submit(assess_item, item, contexts[item["item_id"]], impact_prompt, llm): item
@@ -229,7 +252,8 @@ def review_run(ctx: JobContext, *, llm: Optional[Callable[..., Any]] = None) -> 
             if done % 5 == 0:
                 ctx.progress(step="impact_assessor", done=done, of=len(top))
                 ctx.check()
-    _step(cur, run_id, "impact_assessor", "done", prompt=impact_prompt.version, narrated=narrated,
+    _step(cur, run_id, "impact_assessor", "done", prompt=impact_prompt.version,
+          fingerprint=fingerprint("impact_assessor"), narrated=narrated,
           fallbacks=fallbacks, deterministic=max(0, len(drafted["items"]) - NARRATE_TOP))
 
     # Never discard human work: a package an owner has started deciding, or one
@@ -255,7 +279,8 @@ def review_run(ctx: JobContext, *, llm: Optional[Callable[..., Any]] = None) -> 
     cur.execute("UPDATE ztpa.change_packages SET narrative = %s WHERE package_id = %s",
                 [Jsonb(summary), pkg["package_id"]])
     _step(cur, run_id, "package_drafter", "done", package_id=str(pkg["package_id"]),
-          items=len(drafted["items"]), prompt=pkg_prompt.version, summary_by=summary["by"])
+          items=len(drafted["items"]), prompt=pkg_prompt.version,
+          fingerprint=fingerprint("package_drafter"), summary_by=summary["by"])
     cur.execute("UPDATE ztpa.frr_runs SET status = 'succeeded', package_id = %s, finished_at = now() "
                 "WHERE run_id = %s", [pkg["package_id"], run_id])
     _step(cur, run_id, "orchestrator", "finished")
