@@ -99,7 +99,11 @@ def _get_pool() -> "ConnectionPool":
                     check=ConnectionPool.check_connection,  # never hand out a dead Neon conn
                     max_idle=float(os.getenv("DB_POOL_MAX_IDLE", "120")),
                     max_lifetime=float(os.getenv("DB_POOL_MAX_LIFETIME", "1800")),
-                    timeout=30.0,
+                    # How long a request waits for a connection before giving up.
+                    # Short on purpose: under overload, waiting 30 s per request
+                    # queued thousands of requests clients had abandoned (staging
+                    # load test); failing fast answers 503 + Retry-After instead.
+                    timeout=float(os.getenv("DB_POOL_TIMEOUT", "5")),
                     name="ztpa",
                     open=False,
                 )

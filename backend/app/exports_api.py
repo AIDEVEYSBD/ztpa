@@ -202,8 +202,12 @@ def _review_from_rows(export_id: str, head: dict, band, check, flagged_only, lim
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(f"SELECT count(*) AS n FROM ztpa.review_entries WHERE {clause}", params)
         total = cur.fetchone()["n"]
-        cur.execute(f"SELECT entry FROM ztpa.review_entries WHERE {clause} ORDER BY ord LIMIT %s OFFSET %s",
-                    params + [limit, offset])
+        # Keys from the index first, then only the page's rows: OFFSET over the
+        # table itself read every skipped row (~100 MB at offset 50,000).
+        cur.execute(f"""SELECT e.entry FROM (SELECT ord FROM ztpa.review_entries WHERE {clause}
+                                               ORDER BY ord LIMIT %s OFFSET %s) k
+                          JOIN ztpa.review_entries e ON e.export_id = %s AND e.ord = k.ord
+                         ORDER BY k.ord""", params + [limit, offset, export_id])
         items = [r["entry"] for r in cur.fetchall()]
     return {"export_id": export_id, "stats": head["stats"], "limitations": head["limitations"],
             "reference_time": head["reference_time"], "total": total,

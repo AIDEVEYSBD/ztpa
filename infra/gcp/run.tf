@@ -12,8 +12,15 @@ locals {
     VERTEX_LOCATION      = var.vertex_location
     VERTEX_MODEL         = var.vertex_model
     GOOGLE_CLOUD_PROJECT = var.project_id
-    DB_POOL_MAX          = "8"
+    DB_POOL_MAX          = tostring(var.db_pool_max)
   }
+  # Connections at full scale-out, checked against the server's limit at plan
+  # time (precondition on the API). A staging load test that scaled the API to 4
+  # replicas starved every pool when the sum passed the server's 50 connections.
+  db_connections_peak = (var.api_max_instances * var.api_processes * var.db_pool_max
+    + var.worker_max_instances * (var.worker_concurrency * 2 + 2) # job + heartbeat per slot, reaper, health
+    + var.frontend_max_instances * 3                              # frontend/lib/db.ts pool
+  + 10)                                                           # migrations, admin
   backend_secret_env = merge({
     DATABASE_URL     = "database-url"
     NPR_PROXY_SECRET = "proxy-secret"
@@ -36,6 +43,13 @@ resource "google_cloud_run_v2_service" "api" {
   # tokens (frontend/middleware.ts, src/smoke.py), on top of internal ingress
   # and the proxy secret.
   labels = local.labels
+
+  lifecycle {
+    precondition {
+      condition     = local.db_connections_peak <= var.db_max_connections
+      error_message = "Database connection budget exceeded: at full scale-out the services can open ${local.db_connections_peak} connections (API ${var.api_max_instances} x ${var.api_processes} processes x ${var.db_pool_max}, workers, frontend, 10 reserved) but the server allows ${var.db_max_connections}. Lower db_pool_max / api_processes / the replica maximums, or use a larger database."
+    }
+  }
 
   template {
     service_account                  = google_service_account.backend.email

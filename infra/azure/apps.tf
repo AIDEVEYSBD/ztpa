@@ -32,8 +32,15 @@ locals {
     AZURE_AI_CLIENT_ID                    = local.backend_id.client_id
     AZURE_CLIENT_ID                       = local.backend_id.client_id # DefaultAzureCredential (Blob)
     APPLICATIONINSIGHTS_CONNECTION_STRING = azurerm_application_insights.ai.connection_string
-    DB_POOL_MAX                           = "8"
+    DB_POOL_MAX                           = tostring(var.db_pool_max)
   }
+  # Connections at full scale-out, checked against the server's limit at plan
+  # time (precondition on the API). A staging load test that scaled the API to 4
+  # replicas starved every pool when the sum passed the server's 50 connections.
+  db_connections_peak = (var.api_max_replicas * var.api_processes * var.db_pool_max
+    + var.worker_max_replicas * (var.worker_concurrency * 2 + 2) # job + heartbeat per slot, reaper, health
+    + var.frontend_max_replicas * 3                              # frontend/lib/db.ts pool
+  + 10)                                                          # migrations, KEDA probe, admin
   backend_secret_env = merge({
     DATABASE_URL     = "database-url"
     NPR_PROXY_SECRET = "proxy-secret"
@@ -51,6 +58,13 @@ resource "azurerm_container_app" "api" {
   revision_mode                = "Single"
   workload_profile_name        = "Consumption"
   tags                         = local.tags
+
+  lifecycle {
+    precondition {
+      condition     = local.db_connections_peak <= var.db_max_connections
+      error_message = "Database connection budget exceeded: at full scale-out the services can open ${local.db_connections_peak} connections (API ${var.api_max_replicas} x ${var.api_processes} processes x ${var.db_pool_max}, workers, frontend, 10 reserved) but the server allows ${var.db_max_connections}. Lower db_pool_max / api_processes / the replica maximums, or use a larger database."
+    }
+  }
 
   identity {
     type         = "UserAssigned"

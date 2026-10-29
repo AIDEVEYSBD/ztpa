@@ -1212,3 +1212,17 @@ def test_background_work_is_attributed_to_the_actor_that_caused_it(client, monke
     finally:
         main.app.router.routes = [rt for rt in main.app.router.routes
                                   if getattr(rt, "path", None) != "/_test/spawn"]
+
+
+def test_an_exhausted_connection_pool_is_a_503_with_retry_after(client, monkeypatch):
+    """Overload sheds load with a retryable answer, never a 500."""
+    from psycopg_pool import PoolTimeout
+    import app.main as main_mod
+
+    def busy(*_a, **_k):
+        raise PoolTimeout("couldn't get a connection after 5.00 sec")
+    monkeypatch.delenv("NPR_PROXY_SECRET", raising=False)
+    monkeypatch.setattr(main_mod, "get_conn", busy)
+    r = client.get("/api/assets/merges", headers={"x-npr-role": "admin"})     # a DB-backed GET
+    assert r.status_code == 503 and r.headers.get("retry-after") == "2"
+    assert "busy" in r.json()["detail"]

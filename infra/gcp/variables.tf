@@ -111,6 +111,18 @@ variable "db_tier" {
   default     = "db-custom-2-8192"
 }
 
+variable "db_max_connections" {
+  description = "Cloud SQL max_connections flag. The connection budget is checked against it at plan time."
+  type        = number
+  default     = 400
+}
+
+variable "db_pool_max" {
+  description = "Database connections each API process may hold (DB_POOL_MAX). Part of the connection budget checked at plan time."
+  type        = number
+  default     = 8
+}
+
 variable "db_high_availability" {
   description = "Regional (HA) Cloud SQL. Recommended for prod."
   type        = bool

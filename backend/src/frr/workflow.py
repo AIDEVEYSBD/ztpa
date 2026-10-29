@@ -95,12 +95,18 @@ def create(cur: psycopg.Cursor, export_id: str, drafted: dict, *, supersede: boo
                  Jsonb(drafted["notes"]), actor()])
     pkg = cur.fetchone()
     # COPY, not one INSERT per item: a 70,000-rule review drafts ~32,000 items.
+    # Each item's position (migration 0021): pages are read from an index on it.
+    # Worst band first, then rule number -- the order packages were always shown in.
+    position = {it["item_id"]: n for n, it in enumerate(sorted(
+        drafted["items"], key=lambda i: (_BAND_ORDER.get(i["band"], 3), i["rule_number"] is None,
+                                         i["rule_number"] or 0, i["item_id"])))}
     with cur.copy("""COPY ztpa.change_package_items
-                       (package_id, item_id, rule_uid, layer, rule_number, rule_name, check_kind, band,
+                       (package_id, item_id, ord, rule_uid, layer, rule_number, rule_name, check_kind, band,
                         proposal, rationale, availability_impact, requires_owner_input, commands,
                         rollback, evidence) FROM STDIN""") as cp:
         for it in drafted["items"]:
-            cp.write_row((pkg["package_id"], it["item_id"], it["rule_uid"], it["layer"], it["rule_number"],
+            cp.write_row((pkg["package_id"], it["item_id"], position[it["item_id"]], it["rule_uid"],
+                          it["layer"], it["rule_number"],
                           it["rule_name"], it["check"], it["band"], it["proposal"], it["rationale"],
                           it["availability_impact"], json.dumps(it["requires_owner_input"]),
                           json.dumps(it["commands"]), json.dumps(it["rollback"]),
@@ -110,8 +116,7 @@ def create(cur: psycopg.Cursor, export_id: str, drafted: dict, *, supersede: boo
     return pkg
 
 
-_ORDER = ("CASE band WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, "
-          "rule_number NULLS LAST, item_id")
+_BAND_ORDER = {"critical": 0, "high": 1, "medium": 2}
 ITEMS_INLINE = 500           # packages up to this size return their items with the package
 
 
@@ -131,7 +136,7 @@ def get(cur: psycopg.Cursor, package_id: str, *, with_items: Optional[bool] = No
     inline = facets["total"] <= ITEMS_INLINE if with_items is None else with_items
     out = {**pkg, "facets": facets, "items_inline": inline}
     if inline:
-        cur.execute(f"SELECT * FROM ztpa.change_package_items WHERE package_id = %s ORDER BY {_ORDER}", [package_id])
+        cur.execute("SELECT * FROM ztpa.change_package_items WHERE package_id = %s ORDER BY ord", [package_id])
         out["items"] = cur.fetchall()
     return out
 
@@ -149,8 +154,12 @@ def items(cur: psycopg.Cursor, package_id: str, *, band=None, proposal=None, imp
     clause = " AND ".join(where)
     cur.execute(f"SELECT count(*) AS n FROM ztpa.change_package_items WHERE {clause}", params)
     total = cur.fetchone()["n"]
-    cur.execute(f"SELECT * FROM ztpa.change_package_items WHERE {clause} ORDER BY {_ORDER} LIMIT %s OFFSET %s",
-                params + [limit, offset])
+    # The page's keys from the covering index (no sort, no heap reads for the
+    # rows skipped), then only those rows.
+    cur.execute(f"""SELECT i.* FROM (SELECT ord FROM ztpa.change_package_items WHERE {clause}
+                                       ORDER BY ord LIMIT %s OFFSET %s) k
+                      JOIN ztpa.change_package_items i ON i.package_id = %s AND i.ord = k.ord
+                     ORDER BY k.ord""", params + [limit, offset, package_id])
     return {"total": total, "items": cur.fetchall(), "limit": limit, "offset": offset}
 
 

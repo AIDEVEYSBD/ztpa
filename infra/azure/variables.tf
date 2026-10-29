@@ -111,6 +111,18 @@ variable "db_sku" {
   default = "GP_Standard_D2ds_v5"
 }
 
+variable "db_max_connections" {
+  description = "The server's max_connections for db_sku (Azure sets it from memory: B1ms 50, D2ds_v5 859). Used to check the connection budget at plan time."
+  type        = number
+  default     = 859
+}
+
+variable "db_pool_max" {
+  description = "Database connections each API process may hold (DB_POOL_MAX). Part of the connection budget checked at plan time."
+  type        = number
+  default     = 8
+}
+
 variable "db_storage_mb" {
   type    = number
   default = 131072

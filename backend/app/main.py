@@ -27,6 +27,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request  # noqa: E40
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import JSONResponse  # noqa: E402
 from psycopg.types.json import Jsonb  # noqa: E402
+from psycopg_pool import PoolTimeout  # noqa: E402
 from pydantic import BaseModel, Field, field_validator  # noqa: E402
 from starlette.exceptions import HTTPException as StarletteHTTPException  # noqa: E402
 
@@ -673,6 +674,19 @@ def _unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
     return JSONResponse(status_code=500,
                         content={"detail": "internal server error", "error": "internal server error",
                                  "request_id": rid})
+
+
+@app.exception_handler(PoolTimeout)
+def _pool_exhausted(request: Request, exc: PoolTimeout) -> JSONResponse:
+    """Every database connection of this process is busy: overload, not a bug.
+    503 with Retry-After lets clients and the edge back off while the platform
+    scales out, instead of a 500 that reads as a defect."""
+    log.warning("database pool exhausted; shedding the request", extra={
+        "event": "db_pool_exhausted", "path": request.url.path, "method": request.method})
+    return JSONResponse(status_code=503, headers={"Retry-After": "2"},
+                        content={"detail": "the service is busy; retry in a few seconds",
+                                 "error": "the service is busy; retry in a few seconds",
+                                 "request_id": request_ctx.request_id()})
 
 
 @app.exception_handler(azure_arm.ArmError)

@@ -42,7 +42,7 @@ resource "google_sql_database_instance" "pg" {
     # slots x 2 must stay below this, with headroom for migrations and admin.
     database_flags {
       name  = "max_connections"
-      value = "400"
+      value = tostring(var.db_max_connections)
     }
   }
 }
