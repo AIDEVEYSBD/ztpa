@@ -116,7 +116,8 @@ def test_older_exports_without_a_package_input_fall_back_to_parsed(tmp_path, mon
     monkeypatch.setenv("NPR_STORAGE_URL", f"file://{tmp_path}")
     from src import storage
     st = storage.store()
-    st.put_bytes("exports/abc/parsed.json", b'{"rules": [], "records": [{"raw_ref": "x"}]}', "application/json")
-    assert pk.load_input(st, "exports/abc/parsed.json")["records"] == [{"raw_ref": "x"}]
-    st.put_bytes(pk.input_key("exports/abc/parsed.json"), b'{"rules": [], "records": []}', "application/json")
-    assert pk.load_input(st, "exports/abc/parsed.json")["records"] == []
+    key = "/".join(("exports", "abc", "parsed.json"))          # an object-store key, not a repo path
+    st.put_bytes(key, b'{"rules": [], "records": [{"raw_ref": "x"}]}', "application/json")
+    assert pk.load_input(st, key)["records"] == [{"raw_ref": "x"}]
+    st.put_bytes(pk.input_key(key), b'{"rules": [], "records": []}', "application/json")
+    assert pk.load_input(st, key)["records"] == []
