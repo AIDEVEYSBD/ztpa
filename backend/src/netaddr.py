@@ -85,6 +85,7 @@ drift apart unnoticed.
 
 from __future__ import annotations
 
+import functools
 import ipaddress
 from typing import Union
 
@@ -159,6 +160,14 @@ def parse_net(value: str) -> Network | None:
         return ipaddress.ip_network(value)
     if not isinstance(value, str):
         return None                       # None, ints, lists: not address space
+    return _parse_token(value)
+
+
+@functools.lru_cache(maxsize=1 << 17)
+def _parse_token(value: str) -> Network | None:
+    """Cached: a rulebase names a few thousand networks across hundreds of
+    thousands of grants, and each parse allocates a fresh network object. The
+    objects are immutable, so every grant naming one network shares one."""
     token = value.strip()
     if not token:
         return None

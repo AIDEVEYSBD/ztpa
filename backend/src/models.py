@@ -8,6 +8,7 @@ mutates a model instance — it only reads facts and returns separate language.
 
 from __future__ import annotations
 
+import sys
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
@@ -56,6 +57,27 @@ FindingType = Literal[
 Protocol = Literal["tcp", "udp", "icmp", "sctp", "gre", "esp", "ah", "any"]
 L7Source = Literal["declared", "inferred"]
 SeverityBand = Literal["low", "medium", "high", "critical"]
+
+
+_FULL_FIELDS_SETS: dict[type, set[str]] = {}
+
+
+def _share_full_fields_set(self: BaseModel, context, /) -> None:
+    """`model_post_init` for models built by the hundred thousand (grants, findings).
+
+    Pydantic keeps a per-instance set of the field names passed in. The
+    normalizers and analyzers pass every field, so each grant carried an
+    identical 22-name set costing more than the grant itself (2.2 KiB of
+    ~3.6 KiB), which bounded how large a rulebase a worker could hold. When the
+    set is complete it is swapped for one shared set with the same members.
+    Nothing is lost: assigning a field adds a name already present, and copies
+    take their own set. An incomplete set is left alone."""
+    cls = type(self)
+    full = _FULL_FIELDS_SETS.get(cls)
+    if full is None:
+        full = _FULL_FIELDS_SETS.setdefault(cls, set(cls.model_fields))
+    if self.__pydantic_fields_set__ == full:
+        object.__setattr__(self, "__pydantic_fields_set__", full)
 
 
 class PolicyRecord(BaseModel):
@@ -166,8 +188,9 @@ class PolicyRecord(BaseModel):
                 nets.append(net)
         ordered = sorted({(n.version, int(n.network_address), n.prefixlen): n
                           for n in nets}.items())
-        return [str(net) for _key, net in ordered]
+        return [sys.intern(str(net)) for _key, net in ordered]   # one string per network, shared
 
+    model_post_init = _share_full_fields_set
 
 class Finding(BaseModel):
     """A structured fact emitted by a deterministic analyzer.
@@ -186,6 +209,8 @@ class Finding(BaseModel):
     involved: list[str] = Field(default_factory=list)  # entity ids / refs
     raw_refs: list[str] = Field(default_factory=list)
     source_tools: list[str] = Field(default_factory=list)
+
+    model_post_init = _share_full_fields_set
 
 
 class ChangeRequest(BaseModel):

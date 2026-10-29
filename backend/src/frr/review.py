@@ -217,23 +217,20 @@ def _shadowing_by_gateway(parsed: ParsedRulebase, graph, alias_map, ref: datetim
             if key not in memo:
                 recs = [x for r in here for x in by_rule_records.get(r.uid, ())]
                 try:
-                    memo[key] = shadowing.analyze(recs, graph, alias_map)
+                    memo[key] = shadowing.analyze(recs, graph, alias_map, per_rule=True)
                 except Exception as exc:  # noqa: BLE001 — isolation boundary, recorded
                     log.error("shadowing failed", exc_info=True,
                               extra={"event": "review_analyzer_degraded", "analyzer": "shadowing"})
                     degraded.append({"analyzer": "shadowing", "error": type(exc).__name__,
                                      "message": str(exc)})
                     memo[key] = []
-            per_rule: dict[str, dict] = {}
-            for f in memo[key]:
-                per_rule.setdefault(f.signals.get("shadowed_ref"), {})[f.signals.get("shadowed_record")] = f
             shadowed_here = set()
-            for uid, by_grant in per_rule.items():
-                if uid in truncated or len(by_grant) < len(by_rule_records.get(uid, ())):
+            for f in memo[key]:
+                uid = f.signals.get("shadowed_ref")
+                if uid in truncated or \
+                        len(set(f.signals["shadowed_records"])) < len(by_rule_records.get(uid, ())):
                     continue                           # some grant of this rule still matches here
-                fs = list(by_grant.values())
-                coverers = tuple(sorted({x.signals.get("shadowing_ref") for x in fs}))
-                covered.setdefault(uid, {})[(layer, g)] = (coverers, fs[0])
+                covered.setdefault(uid, {})[(layer, g)] = (tuple(sorted(f.signals["shadowing_refs"])), f)
                 shadowed_here.add(uid)
             live = [r for r in here if r.enabled and not (r.expires_at and r.expires_at <= ref)]
             live_uids = {r.uid for r in live}
@@ -330,7 +327,8 @@ def review(parsed: ParsedRulebase, *, now: Optional[datetime] = None) -> Review:
                 entry.limitations.append(refuted)
             continue
         sig = dict(f.signals or {})
-        sig.pop("shadowed_record", None)               # one grant's id; the check is about the rule
+        for k in ("shadowed_record", "shadowed_records", "shadowing_refs"):
+            sig.pop(k, None)                           # per-grant bookkeeping; the check is about the rule
         # The earliest coverer: a deny moved above it is above all of them.
         sig["covered_by_rule"] = number.get(first_cov)
         sig["covered_by_rules"] = cov_numbers

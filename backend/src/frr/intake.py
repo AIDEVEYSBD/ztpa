@@ -42,6 +42,11 @@ MAX_AGE_DAYS = int(os.environ.get("NPR_EXPORT_MAX_AGE_DAYS", "30"))
 # Python objects). Above this the worker would risk running out of memory and
 # being killed mid-job, retried, killed again: refuse with a reason instead.
 MAX_PARSE_BYTES = int(os.environ.get("NPR_MAX_PARSE_BYTES", str(300 * 1024 * 1024)))
+# Memory follows grants (source x destination x service per rule), not bytes:
+# ~5.4 KiB per grant at the peak of an ingest, measured. 450,000 grants is
+# ~2.4 GiB, inside the 4 GiB worker on both clouds with room for the process.
+# Checked after parsing, before the review, which is the larger half.
+MAX_GRANTS = int(os.environ.get("NPR_MAX_GRANTS", "450000"))
 _FUTURE_SLACK = timedelta(hours=24)
 
 # source_type -> parser(export_json, exported_at) -> ParsedRulebase
@@ -87,6 +92,13 @@ def process(row: dict, *, now: datetime | None = None) -> tuple[str, dict]:
         except (UnicodeDecodeError, ValueError) as e:
             raise ExportRejected(f"the export is not valid JSON ({e})") from None
         parsed = parser(doc, exported_at=None)
+        del doc, data                                   # the raw export is no longer needed
+        grants = len(parsed.result.records)
+        if grants > MAX_GRANTS:
+            raise ExportRejected(
+                f"the export's {len(parsed.rules):,} rules expand to {grants:,} grants; one review "
+                f"holds at most {MAX_GRANTS:,} (NPR_MAX_GRANTS, sized to the worker's memory). "
+                "Export each access layer separately, or raise the limit with the worker's memory")
         when = parsed.exported_at or row.get("declared_exported_at")
         _check_age(when, now)
         parsed.exported_at = when
@@ -94,14 +106,18 @@ def process(row: dict, *, now: datetime | None = None) -> tuple[str, dict]:
     except ExportRejected as e:
         return "rejected", {"rejection_reason": str(e)}
 
+    # One document at a time, each dropped once stored: holding both as objects
+    # and as JSON at once was the largest single block of an ingest's memory.
     base = f"exports/{row['sha256']}"
-    review_doc = result.to_jsonable()
-    store.put_bytes(f"{base}/parsed.json", json.dumps(parsed.to_jsonable()).encode(),
-                    "application/json")
-    store.put_bytes(f"{base}/review.json", json.dumps(review_doc).encode(), "application/json")
     summary = {**parsed.summary(), "review": result.stats,
                "limitations_total": len(result.limitations)
                + sum(len(e.limitations) for e in result.register)}
+    store.put_bytes(f"{base}/parsed.json", json.dumps(parsed.to_jsonable()).encode(),
+                    "application/json")
+    del parsed
+    review_doc = result.to_jsonable()
+    del result
+    store.put_bytes(f"{base}/review.json", json.dumps(review_doc).encode(), "application/json")
     return "accepted", {"exported_at": when, "summary": summary, "review_doc": review_doc,
                         "parsed_key": f"{base}/parsed.json", "review_key": f"{base}/review.json"}
 

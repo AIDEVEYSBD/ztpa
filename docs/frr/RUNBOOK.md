@@ -32,6 +32,14 @@ A `PermanentError` is bad input (the message says what); anything else exhausted
 After fixing the cause, requeue:
 `UPDATE ztpa.jobs SET status='queued', attempts=0, run_after=now(), finished_at=NULL WHERE job_id = '<id>';`
 
+**Export rejected for size, or worker restarted mid-ingest (OOM)**
+Ingest memory follows grants (rules × sources × destinations × services), ~5.4 KiB each
+at peak; a 40,000-rule export with ~4 grants a rule peaks near 1 GiB. Above
+`NPR_MAX_GRANTS` (450,000, sized to the 4 GiB worker) the export is rejected with the count
+before the review runs. To accept larger: raise the worker's memory and the limit together
+(roughly 1 GiB per 150,000 grants above the default), or have the owner export each access
+layer separately. `NPR_MAX_PARSE_BYTES` (300 MB) still bounds the raw JSON.
+
 **Replicas serving different snapshots**
 They converge within `NPR_SNAPSHOT_POLL_S` (5 s). If one does not, its logs show
 `event=snapshot_sync_failed` with the reason (missing artifact, signature failure). A

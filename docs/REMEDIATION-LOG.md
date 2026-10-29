@@ -608,3 +608,8 @@ First apply created all 55 resources without error; migrations ran on Flexible S
 ### Review correctness: partial shadowing (2026-10-29)
 
 Found while profiling memory. Shadowing is computed per grant (one per source × destination × service), but the review marked the whole rule "never matched" when **any** grant was covered. A rule allowing ssh and https under an ssh-only rule was therefore drafted for removal, cutting https. Fixed: a rule is shadowed on a gateway only when every grant is covered there; every covering rule is named; a rule truncated at parse time (> 512 grants) is never claimed. Regression tests in `tests/test_frr_partial_shadowing.py`. The eval generator now plants partly-covered, never-hit rules; against the old code shadowed precision is 0.66 and the CI gate fails.
+
+### Ingest memory (2026-10-29)
+
+The 300 MB byte cap did not bound memory: the raw JSON is ~1% of an ingest's peak, which follows grants. Measured 44.5 KiB a rule, so a 4 GiB worker would have been OOM-killed and retried in a loop near 85,000 rules. Now 20.8 KiB a rule (40k rules: 1.87 → 0.94 GiB): pydantic's per-instance field set shared on fully-specified grants and findings, network parsing cached, one shadowing finding per rule, stored documents serialized one at a time. `NPR_MAX_GRANTS` (450,000) rejects with the count before the review instead of crashing. Live check on a staging worker is T23 in the test backlog.
+

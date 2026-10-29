@@ -172,7 +172,13 @@ def _lookup_keys(later: PolicyRecord) -> list:
     return keys
 
 
-def analyze(records: list[PolicyRecord], g: nx.DiGraph, alias_map: dict[str, str]) -> list[Finding]:
+def analyze(records: list[PolicyRecord], g: nx.DiGraph, alias_map: dict[str, str], *,
+            per_rule: bool = False) -> list[Finding]:
+    """One finding per shadowed grant, or with `per_rule` one per rule (raw_ref):
+    the first covered grant's finding, carrying every covered grant's id in
+    `signals["shadowed_records"]` and every covering rule in
+    `signals["shadowing_refs"]`. A rulebase review needs only that, and a
+    finding per grant cost ~1 KiB each at hundreds of thousands of grants."""
     by_tool: dict[str, list[PolicyRecord]] = {}
     for rec in records:
         if rec.order is None:
@@ -180,6 +186,7 @@ def analyze(records: list[PolicyRecord], g: nx.DiGraph, alias_map: dict[str, str
         by_tool.setdefault(rec.source_tool, []).append(rec)
 
     findings: list[Finding] = []
+    by_ref: dict[tuple[str, str], Finding] = {}
     for tool in sorted(by_tool):
         recs = sorted(by_tool[tool], key=lambda r: (r.order, r.raw_ref))
         # Resolve each rule's address space ONCE. The scan below is O(n^2) until
@@ -208,6 +215,12 @@ def analyze(records: list[PolicyRecord], g: nx.DiGraph, alias_map: dict[str, str
                 if not _service_covers(earlier, later) or \
                         not _source_covers(snets[j], snets[i], earlier, later):
                     continue
+                seen = by_ref.get((tool, later.raw_ref)) if per_rule else None
+                if seen is not None:
+                    seen.signals["shadowed_records"].append(later.id)
+                    if earlier.raw_ref not in seen.signals["shadowing_refs"]:
+                        seen.signals["shadowing_refs"].append(earlier.raw_ref)
+                    break
 
                 d = alias_map.get(later.destination, later.destination)
                 s = alias_map.get(later.source, later.source)
@@ -285,6 +298,11 @@ def analyze(records: list[PolicyRecord], g: nx.DiGraph, alias_map: dict[str, str
                     involved=[s, d], raw_refs=sorted([earlier.raw_ref, later.raw_ref]),
                     source_tools=[tool],
                 ))
+                if per_rule:
+                    f = findings[-1]
+                    f.signals["shadowed_records"] = [later.id]
+                    f.signals["shadowing_refs"] = [earlier.raw_ref]
+                    by_ref[(tool, later.raw_ref)] = f
                 break   # earliest shadower is enough
             # Index AFTER the lookup: a rule never shadows itself.
             for k in _index_keys(later):

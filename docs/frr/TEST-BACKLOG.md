@@ -38,7 +38,7 @@ Feature status lives in [TRACKER.md](TRACKER.md); this file is only about verifi
 | T13 | GCP edge: HTTPS load balancer + managed certificate + Cloud Armor + IAP | Staging uses the run.app URL through the IAM proxy | A domain for staging |
 | T14 | GitHub Actions: CI (`ci.yml`) and both deploy workflows on GitHub | Linted with actionlint, never run | Push the branch; configure environments |
 | T15 | Autoscaling under load: API instances scaling out, worker scaling, Cloud SQL connection budget at max instances | Staging load test stayed within a couple of instances | A load test from inside the VPC at production size |
-| T23 | Streaming parse for exports above 300 MB | One-pass JSON parse is refused above `NPR_MAX_PARSE_BYTES`; very large estates must upload per layer | Build an incremental parser (ijson) if real exports exceed it |
+| T23 | Largest single export on a real worker | Measured locally: memory follows grants, not bytes (the raw JSON is ~1% of peak), so streaming JSON was the wrong fix. Ingest memory halved (40k rules: 1.87 → 0.94 GiB) and a grant limit (`NPR_MAX_GRANTS` 450,000) rejects before the review instead of OOM | Ingest a ~150k-rule export on the 4 GiB staging worker (GCP and Azure) and confirm peak memory under ~3 GiB; tune the limit from the measurement |
 | T17 | Alerts reach a real channel (5xx, worker down, DB CPU) | Policies exist, no channel attached | A notification channel |
 | T18 | Point-in-time restore rehearsal and secret rotation (runbook steps) | Documented, never performed | A staging window |
 | T19 | Model provider failure in the cloud (quota / 429 / outage) degrades to labelled engine text | Fallback tested offline with stubs | Temporarily point staging at an invalid model |

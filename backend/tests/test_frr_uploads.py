@@ -96,3 +96,16 @@ def test_an_export_too_large_to_parse_is_rejected_with_advice(up, monkeypatch) -
     st = _upload_in_parts(up, json.dumps(_fresh()).encode())
     exp = _settle(up, st["export_id"])
     assert exp["status"] == "rejected" and "access layer separately" in exp["rejection_reason"]
+
+
+def test_an_export_expanding_to_too_many_grants_is_rejected_before_review(up, monkeypatch) -> None:
+    from src.frr import intake
+
+    def no_review(*a, **kw):
+        raise AssertionError("review must not run past the grant limit")
+    monkeypatch.setattr(intake, "MAX_GRANTS", 3)
+    monkeypatch.setattr(intake, "review", no_review)
+    st = _upload_in_parts(up, json.dumps(_fresh()).encode())
+    exp = _settle(up, st["export_id"])
+    assert exp["status"] == "rejected", exp
+    assert "grants" in exp["rejection_reason"] and "NPR_MAX_GRANTS" in exp["rejection_reason"]
