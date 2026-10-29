@@ -8,12 +8,13 @@ disabled by an FRR policy switch, not deleted.
 
 Status: ✅ done · 🟡 partial · ⬜ not started · 🔧 in progress
 
-_Last updated: 2026-10-28_
+_Last updated: 2026-10-29_ · What still needs testing (UI in a browser, real data, Azure, CI…): [TEST-BACKLOG.md](TEST-BACKLOG.md)
 
 ## Changelog
 
 | Date | Item(s) | Change |
 |---|---|---|
+| 2026-10-29 | 02.2b | NAT context on access rules and NAT hygiene checks (shadowed, disabled, orphan, internet exposure); indexed for scale |
 | 2026-10-29 | PLAT-9, 05.3, PLAT-15 | **Staging deployed to GCP** and exercised end to end (intake, CMDB/flows, five agents on Vertex, owner validation, four eyes); request tracing verified; staging load test. Six deploy findings fixed (invoker IAM, managed-Postgres role, job egress, alert query, sequential narration 134→54 s, tracing sampler) |
 | 2026-10-28 | 05.3 | OpenTelemetry tracing to each cloud's native backend |
 | 2026-10-28 | 04.1 | UAT scenario script |
@@ -61,7 +62,7 @@ _Last updated: 2026-10-28_
 |---|---|---|---|
 | 02.1 | Five agents + handoffs: orchestrator, intake parser, effective-policy checker, risk & impact assessor, change-package drafter | ✅ | `backend/src/frr/agents.py`: `frr.review_run` job sequences the five agents, records each step (inputs' identity, counts, prompt version, model) in `ztpa.frr_runs`, restarts idempotently, never replaces a package under review. `POST /api/exports/{id}/review-runs`, `GET /api/frr/runs/{id}`, `GET /api/frr/agents`. 12 tests incl. real-DB orchestrated run |
 | 02.2a | Rule / object normalisation | ✅ | `backend/src/models.py`, `backend/src/normalizers/` |
-| 02.2b | NAT parsing | 🟡 | Check Point NAT rules parsed with resolved original/translated address space (`NatRule`); not yet applied to effective policy |
+| 02.2b | NAT parsing | ✅ | Check Point NAT parsed (resolved original/translated address space and service specs). `backend/src/frr/nat.py`: NAT context on every access rule reaching an original or translated destination (capped at 10 per rule); checks `nat_shadowed` (gateway-aware), `nat_disabled`, `nat_orphan`, `nat_internet_exposure` (names the internal host). Access grants are NOT rewritten through NAT (stated as a limitation). Interval index: 500 static NATs × 77,647 grants in 2.9 s (was 19.9 s). 8 tests; UI section + per-rule context |
 | 02.2c | Intake integrity: checksum, export age, schema validation, fail closed on wrong shape | ✅ | `backend/src/frr/intake.py`: sha256 recorded at upload and re-verified in the worker; export time required (file or declared), rejected if > `NPR_EXPORT_MAX_AGE_DAYS` (30) or in the future; non-rulebase / paginated-incomplete / rule-missing-fields exports rejected with a reason. Rejection is an outcome on the export row, never an empty estate. (The older `profile.py` path is unchanged) |
 | 02.2d | Export upload + object storage (GCS / Blob) | ✅ | `POST /api/exports` streams to storage (100 MB cap, content-addressed, duplicate = same export), `ztpa.exports` (migration 0012), `export.ingest` job; `GET /api/exports[/{id}[/review]]`. 11 end-to-end tests as the runtime role. Uploaded exports do not yet feed the main console engine (they feed the FRR register) |
 | 02.3a | Effective policy: first-match per device/package, deny subtraction | 🟡 | Per (layer, gateway) model in the review: rules installed on each gateway in order → effective allows, shadowed, denies, inactive (`effective_policy` in `GET /api/exports/{id}/review`). Partitions with identical rule sets computed once. Full packet-space subtraction (partial overlaps) and NAT application not done |

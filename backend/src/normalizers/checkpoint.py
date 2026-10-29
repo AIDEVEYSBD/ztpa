@@ -339,6 +339,10 @@ def _parse_nat(resp: dict, objs: _Objects, parsed: ParsedRulebase) -> None:
         od, odc = cell(rule, "original-destination")
         ts, tsc = cell(rule, "translated-source")
         td, tdc = cell(rule, "translated-destination")
+        osvc = rule.get("original-service")
+        specs: list[str] = []
+        for r in (osvc if isinstance(osvc, list) else [osvc] if osvc else []):
+            specs += objs.services(r)[0]
         parsed.nat.append(NatRule(
             source_tool=TOOL, package=package, uid=rule.get("uid", ""),
             number=rule.get("rule-number"), enabled=bool(rule.get("enabled", True)),
@@ -350,6 +354,7 @@ def _parse_nat(resp: dict, objs: _Objects, parsed: ParsedRulebase) -> None:
             translated_service=cell(rule, "translated-service")[0],
             original_source_cidrs=osc, original_destination_cidrs=odc,
             translated_source_cidrs=tsc, translated_destination_cidrs=tdc,
+            original_service_specs=sorted(set(specs)) or ["any"],
             install_on=[objs.name(r) for r in rule.get("install-on") or []],
             comments=rule.get("comments") or None))
 

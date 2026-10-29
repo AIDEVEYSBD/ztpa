@@ -69,6 +69,8 @@ class RegisterEntry:
     expires_at: Optional[str]
     checks: list[Check] = field(default_factory=list)
     limitations: list[str] = field(default_factory=list)
+    # NAT rules whose original or translated destination this rule reaches.
+    nat: list[dict] = field(default_factory=list)
 
     @property
     def severity(self) -> int:
@@ -93,12 +95,14 @@ class Review:
     reference_time: str
     stats: dict
     effective_policy: list = field(default_factory=list)
+    nat_findings: list = field(default_factory=list)
 
     def to_jsonable(self) -> dict[str, Any]:
         return {"stats": self.stats, "limitations": self.limitations,
                 "degraded_analyzers": self.degraded_analyzers,
                 "reviewed_at": self.reviewed_at, "reference_time": self.reference_time,
                 "effective_policy": self.effective_policy,
+                "nat_findings": [asdict(f) for f in self.nat_findings],
                 "register": [{**asdict(e), "severity": e.severity, "band": e.band}
                              for e in self.register]}
 
@@ -345,6 +349,16 @@ def review(parsed: ParsedRulebase, *, now: Optional[datetime] = None) -> Review:
     if degraded:
         limitations.append("analysis incomplete: " + ", ".join(d["analyzer"] for d in degraded)
                            + " failed; their checks are missing from this register")
+    from . import nat as nat_mod
+    nat_findings, nat_context = nat_mod.analyse(parsed)
+    for e in register:
+        e.nat = nat_context.get(e.rule_uid, [])
+    stats["nat"] = {"rules": len(parsed.nat),
+                    "by_check": {k: sum(1 for f in nat_findings if f.check == k)
+                                 for k in sorted({f.check for f in nat_findings})}}
+    if parsed.nat:
+        limitations.append("NAT is shown as context on access rules and checked for NAT-rule hygiene; "
+                           "access grants are evaluated on addresses as written, not rewritten through NAT")
     return Review(register=register, limitations=limitations, degraded_analyzers=degraded,
                   reviewed_at=now.isoformat(), reference_time=ref.isoformat(), stats=stats,
-                  effective_policy=effective)
+                  effective_policy=effective, nat_findings=nat_findings)

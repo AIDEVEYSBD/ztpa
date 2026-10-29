@@ -69,6 +69,9 @@ class NatRule:
     original_destination_cidrs: list[str] = field(default_factory=list)
     translated_source_cidrs: list[str] = field(default_factory=list)
     translated_destination_cidrs: list[str] = field(default_factory=list)
+    # Resolved service specs ("tcp/443", "any") of the original service, for
+    # NAT-rule shadowing; names alone cannot be compared.
+    original_service_specs: list[str] = field(default_factory=list)
     install_on: list[str] = field(default_factory=list)
     comments: Optional[str] = None
 

@@ -114,6 +114,29 @@ export interface RegisterEntry {
   limitations: string[];
   severity: number | null;
   band: Band | null;
+  /** NAT rules whose original or translated destination this rule reaches. */
+  nat?: NatContext[];
+}
+
+export interface NatContext {
+  nat_rule: number | null;
+  package: string;
+  method: string;
+  original_destination: string[];
+  translated_destination: string[];
+  translated_destination_cidrs: string[];
+  more_nat_rules?: number;
+}
+
+export interface NatFinding {
+  check: "nat_shadowed" | "nat_disabled" | "nat_orphan" | "nat_internet_exposure" | string;
+  severity: number;
+  band: Band;
+  title: string;
+  nat_uid: string;
+  nat_number: number | null;
+  package: string;
+  evidence: Record<string, unknown>;
 }
 
 export interface ReviewPage {
@@ -127,6 +150,7 @@ export interface ReviewPage {
   offset: number;
   /** Per (layer, gateway): the rules installed there, in order, and what each does. */
   effective_policy?: EffectivePolicyGateway[];
+  nat_findings?: NatFinding[];
 }
 
 export interface EffectivePolicyGateway {

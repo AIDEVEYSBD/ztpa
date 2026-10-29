@@ -19,6 +19,7 @@ import { Button, Checkbox, EmptyState, Field, KpiBand, KpiTile, Select, Skeleton
 import { ErrorState, InlineError } from "../ui/Feedback";
 import { BANDS, checkLabel, useFrrMe, when } from "./bits";
 import { EffectivePolicy } from "./EffectivePolicy";
+import { NatFindings } from "./NatFindings";
 import { RegisterTable } from "./RegisterTable";
 
 const PAGE_SIZES = [25, 50, 100] as const;
@@ -151,6 +152,8 @@ export function ReviewScreen({ exportId, onGoToExports }: { exportId: string; on
       {page?.effective_policy && page.effective_policy.length > 0 && (
         <EffectivePolicy gateways={page.effective_policy} />
       )}
+
+      {page?.nat_findings && page.nat_findings.length > 0 && <NatFindings findings={page.nat_findings} />}
 
       {fbErr && <InlineError resource="your earlier feedback" error={fbErr} onRetry={retry} />}
 

@@ -93,6 +93,19 @@ export function RegisterTable({ items, feedback }: {
                           <div><span className="text-faint">Destinations </span><List xs={e.destinations} /></div>
                           <div><span className="text-faint">Services </span><List xs={e.services} /></div>
                           <div className="font-mono text-[10.5px] text-faint">uid {e.rule_uid}</div>
+                          {e.nat && e.nat.length > 0 && (
+                            <div className="mt-2 rounded-md border border-line px-2.5 py-2">
+                              <div className="text-[11px] font-medium text-dim">Reaches NAT</div>
+                              <ul className="mt-1 space-y-0.5 text-[11.5px]">
+                                {e.nat.map((n, i) => (
+                                  <li key={i} className="font-mono break-words text-fg">
+                                    NAT {n.nat_rule ?? "?"} ({n.method}): {n.original_destination.join(", ")} → {n.translated_destination.join(", ")}
+                                    {n.more_nat_rules ? <span className="text-faint"> · +{n.more_nat_rules} more</span> : null}
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
                           {e.limitations.length > 0 && (
                             <div className="mt-2 rounded-md border border-warn-line bg-warn-bg px-2.5 py-2">
                               <div className="text-[11px] font-medium text-warn">Limitations for this rule</div>
