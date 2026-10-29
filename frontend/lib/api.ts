@@ -217,6 +217,9 @@ export function asApiError(e: unknown): ApiError {
  * plausible-looking empty payload, which is what made a dead database and a
  * clean estate render identically.
  */
+const BUSY_RETRIES = 2;
+const BUSY_MAX_WAIT_MS = 5000;
+
 async function j<T>(url: string, init?: RequestInit, attempt = 0): Promise<T> {
   let r: Response;
   try {
@@ -226,7 +229,18 @@ async function j<T>(url: string, init?: RequestInit, attempt = 0): Promise<T> {
     // Status 0 lets a caller say "no answer" instead of guessing a status.
     throw new ApiError(0, e instanceof Error && e.message ? e.message : "The request could not be sent.", url);
   }
-  if (!r.ok) throw await readFailure(r, url);
+  if (!r.ok) {
+    // The API sheds load with 503 + Retry-After when its database pool is full.
+    // A read can simply be asked again, briefly: up to twice, never longer than
+    // BUSY_MAX_WAIT_MS. Writes are never repeated here (not idempotent).
+    const method = (init?.method || "GET").toUpperCase();
+    const wait = Number(r.headers.get("retry-after"));
+    if (r.status === 503 && method === "GET" && attempt < BUSY_RETRIES && Number.isFinite(wait) && wait > 0) {
+      await sleep(Math.min(wait * 1000, BUSY_MAX_WAIT_MS));
+      return j<T>(url, init, attempt + 1);
+    }
+    throw await readFailure(r, url);
+  }
   try {
     return (await r.json()) as T;
   } catch {
