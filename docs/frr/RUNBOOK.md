@@ -84,11 +84,17 @@ fingerprint and the models it passed on. `NPR_PROMPT_GATE_MIN_MODELS=2` requires
 **Rotate a secret**
 Add a new version in Secret Manager / Key Vault, then roll the services (re-run the deploy,
 or `gcloud run services update … --update-secrets` / `az containerapp update`).
-- `NPR_PROXY_SECRET`: roll frontend and API together. Rehearsed on Azure staging: `terraform apply
-  -replace='random_password.internal["proxy"]'` writes a new Key Vault version; the apps reference the
-  versionless secret but read it only at start, so restart the active revision of `-api`, `-web` and
-  `-worker` (`az containerapp revision restart`). Requests during the ~1 minute restart can time out;
-  no request was refused for a secret mismatch.
+- `NPR_PROXY_SECRET` (frontend to API), with no refused request. A restart is NOT enough: Container
+  Apps and Cloud Run read a secret when a *revision* starts, and a restart keeps the cached value, so
+  "rotate then restart" silently leaves the old secret in use and the next new revision of one app
+  breaks the pair. Rehearsed on Azure staging with a probe once a second, zero failures:
+  1. `export TF_VAR_proxy_secret_previous="$(az keyvault secret show --vault-name <kv> -n proxy-secret
+     --query value -o tsv)"` (GCP: `gcloud secrets versions access latest --secret frr-<env>-proxy-secret`),
+     then `terraform apply -replace='random_password.internal["proxy"]'`. The API and worker get a new
+     revision accepting both secrets; the frontend still sends the old one.
+  2. New frontend revision: `az containerapp update -n ca-frr-<env>-web -g <rg> --revision-suffix rot<date>`
+     (GCP: `gcloud run services update frr-<env>-web --region <region> --update-labels rotated=<date>`).
+  3. `unset TF_VAR_proxy_secret_previous; terraform apply` drops the old secret from the vault and the API.
 - Database app password (`app-db-password` plus `database-url`): update both, run the migrate
   job (it resets the role's password), then roll the services.
 - `NPR_ARTIFACT_KEY`: roll, then trigger one recompute.

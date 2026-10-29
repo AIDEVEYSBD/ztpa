@@ -625,3 +625,13 @@ Headless Chromium through every FRR screen (`scripts/ui_walkthrough.py`): no con
 | Sign-out button left the user's name one letter wide | Icon button with an accessible name |
 | Register row detail ran off-screen at 1024 px; bulk buttons split across lines; package header showed only an id | Layout fixes; export file name shown |
 
+### Night of 2026-10-30: staging rehearsals (Azure)
+
+| Rehearsal | Found | Fix |
+|---|---|---|
+| Largest export at the grant limit (110k rules) | Two such ingests at once on the default two worker slots would OOM a 4 GiB worker; drafting its package in the 2 GiB API would too | One heavy job per worker process; drafting reads a compact input and runs in the worker above 20k rules |
+| Proxy-secret rotation | Restarting a revision keeps the cached secret, so "rotate, restart" changed nothing, and the next new revision of one app broke frontend to API with 401s | API accepts a previous secret during rotation; three-step procedure, rehearsed with zero failed probes |
+| Point-in-time restore | Worked as documented (~10 min, same VNet) | Measured procedure in the runbook |
+| Model provider down | Fallback works; a draining revision still takes jobs during a switch | Noted in the backlog |
+| Rate limit across 3 replicas | Holds exactly (30 of 90) | — |
+
