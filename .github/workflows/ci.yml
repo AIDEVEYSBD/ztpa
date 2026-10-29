@@ -162,7 +162,7 @@ jobs:
           done
 
   frontend:
-    name: frontend (typecheck + lint + build)
+    name: frontend (typecheck + lint + test + build)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -191,6 +191,11 @@ jobs:
 
       - name: Lint
         run: npm run lint
+
+      # Unit tests (vitest): the edge middleware's decisions first, since they
+      # are what keeps forged actor headers and unlocked edges out.
+      - name: Test
+        run: npm test
 
       - name: Build
         run: npm run build
