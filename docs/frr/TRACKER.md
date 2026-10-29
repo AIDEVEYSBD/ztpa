@@ -83,11 +83,11 @@ _Last updated: 2026-10-29_ · What still needs testing (UI in a browser, real da
 | 02.3c | Check: shadowed rules (per rulebase, bucketed) | ✅ | Bucketed index (identical to the O(n²) scan on randomised rulebases) and now computed per (layer, gateway): a rule is shadowed only when covered on every gateway it is installed on; recent hit counts still refute. 20,000 rules reviewed in 11 s |
 | 02.3d | Check: expired rules | ✅ | Time-object expiry in `RuleMeta.expires_at`; `expired` and `expiring_soon` (`NPR_FRR_EXPIRING_DAYS`) checks |
 | 02.3e | Check: unused rules via hit counts | ✅ | `unused` = zero hits or last hit older than `NPR_FRR_UNUSED_DAYS` (90); only when the export carries hits, else a limitation; plus `disabled` |
-| 02.3f | Change recommendation workflow with rollback | 🟡 | Remediation loop exists; rollback is a status flip |
+| 02.3f | Change recommendation workflow with rollback | ✅ | Met by the FRR change package (03.1c, 03.1d, 03.2a): per-item proposal with `mgmt_cli` change **and exact rollback**, owner then approver, approved runbook. No device write by design (03.2b). The older remediation loop (rollback = status flip) remains for the non-FRR product, unchanged |
 | 02.4a | LLM for impact narrative only; engine decides | ✅ | FRR path: model writes prose through a schema with no band/proposal/command/impact field (test proves injected fields are dropped); live-verified on Vertex `gemini-2.5-pro` (grounded, cited). Older console features still use the LLM for classify/rank (behind FRR mode, classify can no longer auto-approve) |
 | 02.4b | Versioned system prompts | ✅ | `backend/src/frr/prompts/impact.v1.md`, `package.v1.md`; version = name@sha256 recorded on every narrative and run step |
 | 02.4c | Schema-validated model output | ✅ | pydantic `ImpactNarrative` / `PackageNarrative` with length caps; invented citations, schema failures and provider errors fall back to labelled engine text (`by: engine_fallback`, `fallback_reason`). Top-N narration (`NPR_FRR_NARRATE_TOP`, 40) bounds cost |
-| 02.5 | Configuration smoke test + initial benchmark | 🟡 | `/api/admin/ai/test`; no benchmark on labelled data |
+| 02.5 | Configuration smoke test + initial benchmark | ✅ | Smoke: `/api/admin/ai/test` plus the post-deploy `src.smoke` job on both clouds (run in staging). Benchmark on the labelled synthetic rulebase (04.3, CI-gated): precision/recall per check, 0.36 s per 1,000 rules; live narrative benchmark on Vertex and Foundry. A benchmark on the client's own labelled rules waits for their data and reviewer labels (04.4) |
 
 ## FRR-03 · Screens, HITL gates and change package
 
