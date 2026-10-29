@@ -37,7 +37,11 @@ from tests import cp_fixture as fx  # noqa: E402
 ANALYST = {"x-npr-role": "analyst", "x-npr-email": "load@example.com", "x-npr-sub": "sub-load"}
 
 
-def headers(secret: str | None) -> dict:
+def headers(secret: str | None, cookie: str | None = None) -> dict:
+    """Direct-to-API identity headers, or -- through the frontend -- a signed-in
+    session cookie (the frontend strips x-npr-* and sets its own)."""
+    if cookie:
+        return {"cookie": cookie}
     return {**ANALYST, **({"x-npr-proxy-secret": secret} if secret else {})}
 
 
@@ -160,7 +164,7 @@ def read_mix_parallel(base, ids, pkg, h, concurrency, duration, processes) -> di
 
 
 async def main_async(a) -> int:
-    h = headers(a.proxy_secret)
+    h = headers(a.proxy_secret, a.cookie)
     limits = httpx.Limits(max_connections=a.concurrency + 16, max_keepalive_connections=a.concurrency + 16)
     async with httpx.AsyncClient(base_url=a.base, timeout=30, limits=limits) as client:
         ingest = await ingest_burst(client, a.exports, h, a.ingest_timeout)
@@ -195,6 +199,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", default="http://127.0.0.1:8000")
     ap.add_argument("--proxy-secret", default=os.environ.get("NPR_PROXY_SECRET"))
+    ap.add_argument("--cookie", default=os.environ.get("NPR_LOADTEST_COOKIE"),
+                    help="session cookie header, to test through the frontend as a signed-in user")
     ap.add_argument("--exports", type=int, default=20)
     ap.add_argument("--concurrency", type=int, default=64)
     ap.add_argument("--duration", type=float, default=60)

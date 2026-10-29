@@ -96,6 +96,30 @@ db_high_availability = false                        # true for prod
 alert_channels       = ["projects/<project>/notificationChannels/<id>"]
 ```
 
+## Organisations that enforce invoker IAM
+
+If the organisation enforces `constraints/run.managed.requireInvokerIam` (unauthenticated
+Cloud Run is forbidden), the configuration already complies: invoker IAM stays on for every
+service. The frontend calls the API with a Google ID token it mints from the metadata server
+(`NPR_BACKEND_AUDIENCE`), and only the frontend and migrate service accounts may invoke the
+API. Users reach the frontend through the HTTPS load balancer with Identity-Aware Proxy in
+production; for staging, grant testers via `web_invokers` and use
+
+```bash
+gcloud run services proxy frr-<env>-web --region <region> --port 8088   # then http://127.0.0.1:8088
+```
+
+**Staging without an identity provider:** set `breakglass_email` (and pass a bcrypt hash as
+`TF_VAR_breakglass_password_hash`) to arm the break-glass login ([../BREAKGLASS.md](../BREAKGLASS.md))
+and set `app_url` to the proxy address. Never leave it set in production.
+
+**Building images inside GCP** (when a workstation cannot push large layers reliably):
+
+```bash
+gcloud builds submit --region <region> --config infra/gcp/cloudbuild.yaml \
+  --substitutions=_REPO=<region>-docker.pkg.dev/<project>/frr-<env>,_TAG=$(git rev-parse --short HEAD) .
+```
+
 ## Releasing
 
 GitHub → Actions → **Deploy (GCP)** → environment. The workflow:

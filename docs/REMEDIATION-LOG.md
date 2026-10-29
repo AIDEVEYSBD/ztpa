@@ -585,6 +585,19 @@ is the empty-vs-unknown conflation appearing where it is least affordable.
 ### ⚠️ Carried forward
 
 - Recompute, dataset switch and merge still rebuild on the request path (now published to all replicas); moving them onto jobs needs the frontend to poll (tracker PLAT-4).
-- Not yet applied to a real cloud: both Terraform roots are validated and planned read-only against the sandbox (GCP 68 resources, Azure 56), and the deploy workflows are linted but not yet run on GitHub.
+- ~~Not yet applied to a real cloud~~ — GCP staging applied 2026-10-29 and exercised end to end; Azure still validated/planned only, and the deploy workflows are linted but not yet run on GitHub.
 - Load testing (PLAT-15), Azure Front Door + WAF (PLAT-18), OpenTelemetry export.
+
+### First real deployment (GCP staging, 2026-10-29) — what only a real cloud showed
+
+| Finding | Fix |
+|---|---|
+| Org policy forbids unauthenticated Cloud Run | Invoker IAM kept on; frontend and smoke test call the API with Google ID tokens |
+| Cloud SQL's admin is not a superuser; `ALTER ROLE ... NOSUPERUSER` refused | Role created with defaults, attributes verified, fail closed |
+| Smoke test could not reach the internal-only API | Job egress through the VPC |
+| Monitoring API rejected the alert query (int vs double) | Float literal |
+| Impact narratives ran sequentially (134 s for 7 items) | Bounded parallel pool: 54 s |
+| No request spans: Cloud Run's unsampled trace parent was obeyed | Ratio applies under unsampled parents |
+
+Server-side API latency under the staging load test: p50 8 ms, p95 11 ms; 0 errors in 3,515 requests.
 
