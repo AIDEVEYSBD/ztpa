@@ -64,6 +64,9 @@ function GatewayDetail({ exportId, g }: { exportId: string; g: EffectivePolicySu
       <Rules label="deny" xs={data.deny} variant="neutral" />
       <Rules label="shadowed here" xs={data.shadowed} variant="warn" />
       <Rules label="inactive (disabled / expired)" xs={data.inactive} variant="neutral" />
+      {data.partly_covered && data.partly_covered.length > 0 && (
+        <Rules label="partly covered above (some grants never match)" xs={data.partly_covered} variant="warn" />
+      )}
     </div>
   );
 }
@@ -96,6 +99,7 @@ export function EffectivePolicy({ exportId, gateways }: { exportId: string; gate
                   <span>{g.effective_allow_count} effective allow</span>
                   <span>{g.shadowed_count} shadowed</span>
                   <span>{g.inactive_count} inactive</span>
+                  {g.partly_covered_count ? <span>{g.partly_covered_count} partly covered</span> : null}
                 </span>
               </button>
               {isOpen && <GatewayDetail exportId={exportId} g={g} />}

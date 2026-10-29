@@ -70,3 +70,22 @@ def test_compare_needs_two_accepted_exports(env) -> None:
     d = c.get(f"/api/exports/{eid}/compare", params={"baseline": eid}, headers=ANALYST).json()
     assert d["summary"] == {"rules_added": 0, "rules_removed": 0, "findings_new": 0, "findings_resolved": 0,
                             "band_changes": 0}
+
+
+def test_partly_covered_rules_are_an_indexed_filter_and_a_csv_column(env) -> None:
+    c = env
+    rules = [fx._rule(1, "https", ["n-dc"], ["h-web1"], ["s-https"]),
+             fx._rule(2, "https dns", ["n-dc"], ["h-web1"], ["s-https", "s-dns"]),
+             fx._rule(3, "cleanup", [fx.ANY], [fx.ANY], [fx.ANY], action="act-drop")]
+    doc = _fresh()
+    doc["access_layers"][0].update(rulebase=rules, to=3, total=3)
+    eid = _accepted(c, doc)
+    page = c.get(f"/api/exports/{eid}/review", params={"partly_covered": "true"}, headers=ANALYST).json()
+    assert page["total"] == 1 and page["items"][0]["number"] == 2
+    assert page["items"][0]["coverage"]["covered"] == 1
+    assert page["stats"]["rules_partly_covered"] == 1
+    assert page["effective_policy"][0]["partly_covered_count"] == 1
+    rows = list(csv.DictReader(io.StringIO(c.get(f"/api/exports/{eid}/register.csv",
+                                                 params={"partly_covered": "true"}, headers=ANALYST).text)))
+    assert [x["rule_number"] for x in rows] == ["2"]
+    assert rows[0]["covered_above"].startswith("1 of 2 grants matched above by rule(s) 1")

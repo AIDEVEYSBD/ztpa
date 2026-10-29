@@ -1,6 +1,6 @@
 """The register beyond the screen: CSV download, and comparison with an earlier review.
 
-    GET /api/exports/{id}/register.csv?band=&check=&flagged_only=   streamed; any size
+    GET /api/exports/{id}/register.csv?band=&check=&flagged_only=&partly_covered=   streamed; any size
     GET /api/exports/{id}/compare?baseline={earlier id}&limit=     what changed since then
 
 Both read the indexed rows (migration 0018), so they need exports reviewed after it.
@@ -25,7 +25,7 @@ router = APIRouter()
 _BATCH = 1000
 _COLUMNS = ["rule_number", "rule_name", "layer", "section", "action", "enabled", "sources", "destinations",
             "services", "hit_count", "last_hit", "expires_at", "worst_band", "severity", "checks",
-            "check_titles", "limitations", "nat", "rule_uid"]
+            "check_titles", "limitations", "nat", "covered_above", "rule_uid"]
 
 
 def _accepted_with_rows(cur, export_id: str) -> dict:
@@ -46,9 +46,11 @@ def _accepted_with_rows(cur, export_id: str) -> dict:
     return row
 
 
-def _where(export_id: str, band, check, flagged_only) -> tuple[str, list]:
+def _where(export_id: str, band, check, flagged_only, partly_covered=False) -> tuple[str, list]:
     where, params = ["export_id = %s"], [export_id]
-    if flagged_only or band:
+    if partly_covered:
+        where.append("partly_covered")
+    elif flagged_only or band:
         where.append("flagged")
     if band:
         where.append("band = %s")
@@ -69,15 +71,23 @@ def _csv_row(e: dict) -> list:
             join(e.get("limitations") or []),
             join(f"NAT {n.get('nat_rule')}: {', '.join(n.get('original_destination') or [])} -> "
                  f"{', '.join(n.get('translated_destination') or [])}" for n in e.get("nat") or []),
-            e.get("rule_uid")]
+            _covered(e.get("coverage")), e.get("rule_uid")]
+
+
+def _covered(cov: dict | None) -> str:
+    if not cov:
+        return ""
+    rules = ", ".join(map(str, cov.get("by_rules") or []))
+    return f"{cov['covered']} of {cov['grants']} grants matched above by rule(s) {rules} on {cov['gateway']}"
 
 
 @router.get("/api/exports/{export_id}/register.csv")
 def register_csv(export_id: str, band: str | None = Query(None, pattern="^(critical|high|medium|low)$"),
-                 check: str | None = Query(None, max_length=40), flagged_only: bool = Query(True)):
+                 check: str | None = Query(None, max_length=40), flagged_only: bool = Query(True),
+                 partly_covered: bool = Query(False)):
     with get_conn() as conn, conn.cursor() as cur:
         exp = _accepted_with_rows(cur, export_id)
-    clause, params = _where(export_id, band, check, flagged_only)
+    clause, params = _where(export_id, band, check, flagged_only, partly_covered)
 
     def rows() -> Iterator[str]:
         buf = io.StringIO()

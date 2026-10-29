@@ -77,7 +77,8 @@ export const frr = {
   exportById: (id: string) => j<FrrExport>(`/api/exports/${enc(id)}`),
   review: (id: string, q: ReviewQuery = {}) =>
     j<ReviewPage>(`/api/exports/${enc(id)}/review${query({
-      band: q.band, check: q.check, flagged_only: q.flagged_only ?? true, limit: q.limit ?? 100, offset: q.offset ?? 0,
+      band: q.band, check: q.check, flagged_only: q.flagged_only ?? true, partly_covered: q.partly_covered || undefined,
+      limit: q.limit ?? 100, offset: q.offset ?? 0,
     })}`),
 
   // ── agent runs ────────────────────────────────────────────────────────────
@@ -106,8 +107,10 @@ export const frr = {
   compare: (exportId: string, baseline: string) =>
     j<CompareResult>(`/api/exports/${enc(exportId)}/compare${query({ baseline })}`),
   /** Same-origin URL; the browser downloads it with the session cookie. */
-  registerCsvUrl: (exportId: string, q: { band?: string; check?: string; flagged_only?: boolean } = {}) =>
-    `/api/exports/${enc(exportId)}/register.csv${query({ band: q.band, check: q.check, flagged_only: q.flagged_only ?? true })}`,
+  registerCsvUrl: (exportId: string, q: { band?: string; check?: string; flagged_only?: boolean; partly_covered?: boolean } = {}) =>
+    `/api/exports/${enc(exportId)}/register.csv${query({
+      band: q.band, check: q.check, flagged_only: q.flagged_only ?? true, partly_covered: q.partly_covered || undefined,
+    })}`,
   effectivePolicy: (exportId: string, layer: string, gateway: string) =>
     j<EffectivePolicyGateway>(`/api/exports/${enc(exportId)}/effective-policy${query({ layer, gateway })}`),
 

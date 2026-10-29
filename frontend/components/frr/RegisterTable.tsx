@@ -2,7 +2,7 @@
 
 import { Fragment, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import type { FeedbackRow, RegisterEntry } from "@/lib/frrTypes";
+import type { FeedbackRow, RegisterEntry, RuleCoverage } from "@/lib/frrTypes";
 import { Chip, SeverityPill, Table, THead, Th, Td } from "../ui";
 import { EvidenceList, checkLabel, when } from "./bits";
 import { CheckFeedback } from "./CheckFeedback";
@@ -23,6 +23,28 @@ function Expiry({ at }: { at: string | null }) {
 function List({ xs }: { xs: string[] }) {
   if (!xs?.length) return <span className="text-faint">—</span>;
   return <span className="font-mono break-words">{xs.join(", ")}</span>;
+}
+
+function Coverage({ c }: { c: RuleCoverage }) {
+  const rest = c.covered - c.covered_grants.length;
+  return (
+    <div className="mt-2 rounded-md border border-line px-2.5 py-2">
+      <div className="text-[11px] font-medium text-dim">
+        Partly covered above: {c.covered} of {c.grants} grants never match on {c.gateway}
+        {c.partly_covered_on > 1 ? <span className="text-faint"> (and {c.partly_covered_on - 1} more gateways)</span> : null}
+      </div>
+      <ul className="mt-1 space-y-0.5 text-[11.5px]">
+        {c.covered_grants.map((g, i) => (
+          <li key={i} className="font-mono break-words text-fg">
+            {g.source} → {g.destination} {g.service}
+            <span className="text-faint"> · {g.by_action === "deny" ? "denied" : "allowed"} by rule {g.by_rule ?? "?"}</span>
+          </li>
+        ))}
+        {rest > 0 && <li className="text-faint">+{rest} more</li>}
+      </ul>
+      <p className="mt-1 text-[11px] text-faint">The rest of the rule still matches traffic. Grants allowed above are redundant here; grants denied above are blocked before reaching it.</p>
+    </div>
+  );
 }
 
 export function RegisterTable({ items, feedback }: {
@@ -106,6 +128,7 @@ export function RegisterTable({ items, feedback }: {
                               </ul>
                             </div>
                           )}
+                          {e.coverage && <Coverage c={e.coverage} />}
                           {e.limitations.length > 0 && (
                             <div className="mt-2 rounded-md border border-warn-line bg-warn-bg px-2.5 py-2">
                               <div className="text-[11px] font-medium text-warn">Limitations for this rule</div>

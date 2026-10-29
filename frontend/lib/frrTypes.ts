@@ -42,6 +42,8 @@ export type BandCounts = Partial<Record<Band, number>>;
 export interface ReviewStats {
   rules: number;
   rules_with_findings: number;
+  /** Rules some (not all) of whose grants are matched by rules above them. */
+  rules_partly_covered?: number;
   by_check: Partial<Record<CheckKind | string, number>>;
   by_band: BandCounts;
   grants_analysed?: number;
@@ -116,6 +118,20 @@ export interface RegisterEntry {
   band: Band | null;
   /** NAT rules whose original or translated destination this rule reaches. */
   nat?: NatContext[];
+  /** Some, not all, of the rule's grants are matched by rules above it. */
+  coverage?: RuleCoverage | null;
+}
+
+export interface RuleCoverage {
+  grants: number;
+  covered: number;
+  gateway: string;
+  layer: string;
+  /** Gateways on which the rule is partly covered. */
+  partly_covered_on: number;
+  by_rules: number[];
+  /** Up to ten covered grants, each with the earlier rule that takes it. */
+  covered_grants: { source: string; destination: string; service: string; by_rule: number | null; by_action: string | null }[];
 }
 
 export interface NatContext {
@@ -161,6 +177,7 @@ export interface EffectivePolicySummary {
   shadowed_count: number;
   deny_count: number;
   inactive_count: number;
+  partly_covered_count?: number;
 }
 
 export interface EffectivePolicyGateway {
@@ -171,6 +188,7 @@ export interface EffectivePolicyGateway {
   shadowed: (number | null)[];
   deny: (number | null)[];
   inactive: (number | null)[];
+  partly_covered?: (number | null)[];
 }
 
 export type FeedbackVerdict = "agree" | "disagree";
@@ -198,6 +216,8 @@ export interface ReviewQuery {
   band?: Band;
   check?: string;
   flagged_only?: boolean;
+  /** Only rules partly covered above (overrides flagged_only). */
+  partly_covered?: boolean;
   limit?: number;
   offset?: number;
 }

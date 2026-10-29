@@ -179,14 +179,18 @@ def _ep_summary(ep: list) -> list:
     page at 70,000 rules) and were re-sent with every register page; they are
     fetched per gateway from /effective-policy when a row is opened."""
     return [{"layer": g["layer"], "gateway": g["gateway"], "rules_installed": g["rules_installed"],
-             **{f"{k}_count": len(g.get(k) or []) for k in ("effective_allow", "shadowed", "deny", "inactive")}}
+             **{f"{k}_count": len(g.get(k) or [])
+                for k in ("effective_allow", "shadowed", "deny", "inactive", "partly_covered")}}
             for g in ep]
 
 
-def _review_from_rows(export_id: str, head: dict, band, check, flagged_only, limit, offset) -> dict:
+def _review_from_rows(export_id: str, head: dict, band, check, flagged_only, limit, offset,
+                      partly_covered=False) -> dict:
     """One indexed count and one indexed page, whatever the rulebase size."""
     where, params = ["export_id = %s"], [export_id]
-    if flagged_only or band:
+    if partly_covered:
+        where.append("partly_covered")              # mostly unflagged: not combined with flagged_only
+    elif flagged_only or band:
         where.append("flagged")
     if band:
         where.append("band = %s")
@@ -212,17 +216,21 @@ def _review_from_rows(export_id: str, head: dict, band, check, flagged_only, lim
 def get_review(export_id: str, band: str | None = Query(None, pattern="^(critical|high|medium|low)$"),
                check: str | None = Query(None, max_length=40),
                flagged_only: bool = Query(True),
+               partly_covered: bool = Query(False, description="rules some of whose grants are matched above"),
                limit: int = Query(100, ge=1, le=1000), offset: int = Query(0, ge=0)):
     row = _get(export_id)
     if row["status"] != "accepted":
         raise HTTPException(409, f"export is {row['status']}"
                                  + (f": {row['rejection_reason']}" if row.get("rejection_reason") else ""))
     if row.get("review_head"):
-        return _review_from_rows(export_id, row["review_head"], band, check, flagged_only, limit, offset)
+        return _review_from_rows(export_id, row["review_head"], band, check, flagged_only, limit, offset,
+                                 partly_covered)
     # Exports reviewed before migration 0018: the stored document.
     doc = _review_doc(row["review_key"])
     entries = doc["register"]
-    if flagged_only:
+    if partly_covered:
+        entries = [e for e in entries if e.get("coverage")]
+    elif flagged_only:
         entries = [e for e in entries if e["checks"]]
     if band:
         entries = [e for e in entries if e["checks"] and e["band"] == band]

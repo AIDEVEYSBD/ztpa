@@ -127,13 +127,13 @@ def store_register(cur, export_id, review_doc: dict) -> int:
     export, in the caller's transaction. Idempotent: replaces any earlier rows."""
     from psycopg.types.json import Jsonb as _J
     cur.execute("DELETE FROM ztpa.review_entries WHERE export_id = %s", [export_id])
-    with cur.copy("COPY ztpa.review_entries (export_id, ord, rule_uid, flagged, band, severity, checks, entry) "
-                  "FROM STDIN") as cp:
+    with cur.copy("COPY ztpa.review_entries (export_id, ord, rule_uid, flagged, band, severity, checks, "
+                  "partly_covered, entry) FROM STDIN") as cp:
         for i, e in enumerate(review_doc["register"]):
             flagged = bool(e["checks"])
             cp.write_row((export_id, i, e["rule_uid"], flagged, e["band"] if flagged else None,
                           int(e.get("severity") or 0), sorted({c["check"] for c in e["checks"]}),
-                          json.dumps(e, default=str)))
+                          bool(e.get("coverage")), json.dumps(e, default=str)))
     head = {k: v for k, v in review_doc.items() if k != "register"}
     cur.execute("UPDATE ztpa.exports SET review_head = %s WHERE export_id = %s", [_J(head), export_id])
     return len(review_doc["register"])

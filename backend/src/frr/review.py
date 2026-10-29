@@ -71,6 +71,9 @@ class RegisterEntry:
     limitations: list[str] = field(default_factory=list)
     # NAT rules whose original or translated destination this rule reaches.
     nat: list[dict] = field(default_factory=list)
+    # Some, not all, of the rule's grants are already matched by rules above it
+    # (see _coverage). None when no grant is covered or the rule is shadowed.
+    coverage: Optional[dict] = None
 
     @property
     def severity(self) -> int:
@@ -193,7 +196,12 @@ def _shadowing_by_gateway(parsed: ParsedRulebase, graph, alias_map, ref: datetim
     propose removing live traffic. A rule whose grants were truncated at parse
     time is never claimed shadowed (its unanalysed grants may not be covered).
 
-    Returns ({uid: {partition: (coverer_uids, finding)}}, effective_policy,
+    A rule with SOME grants covered is partly covered there: those grants never
+    match on that gateway (taken by the earlier rule, allowed or denied), the
+    rest still depend on the rule.
+
+    Returns ({uid: {partition: (coverer_uids, finding)}},
+    {uid: {partition: (grants, [(grant, coverer_uid)])}}, effective_policy,
     degraded). Partitions with the same rule set share one computation, so a
     hundred gateways running one policy cost the same as one."""
     from ..analyzers import shadowing
@@ -205,6 +213,7 @@ def _shadowing_by_gateway(parsed: ParsedRulebase, graph, alias_map, ref: datetim
         by_rule_records.setdefault(rec.raw_ref, []).append(rec)
     memo: dict[frozenset, list] = {}
     covered: dict[str, dict] = {}
+    partial: dict[str, dict] = {}
     effective: list[dict] = []
     degraded: list[dict] = []
     gw_of = {r.uid: _gateways_of(r) for r in parsed.rules}
@@ -224,13 +233,17 @@ def _shadowing_by_gateway(parsed: ParsedRulebase, graph, alias_map, ref: datetim
                     degraded.append({"analyzer": "shadowing", "error": type(exc).__name__,
                                      "message": str(exc)})
                     memo[key] = []
-            shadowed_here = set()
+            shadowed_here, partly_here = set(), set()
             for f in memo[key]:
                 uid = f.signals.get("shadowed_ref")
-                if uid in truncated or \
-                        len(set(f.signals["shadowed_records"])) < len(by_rule_records.get(uid, ())):
-                    continue                           # some grant of this rule still matches here
-                covered.setdefault(uid, {})[(layer, g)] = (tuple(sorted(f.signals["shadowing_refs"])), f)
+                pairs = f.signals["covered_grants"]
+                grants = by_rule_records.get(uid, ())
+                if uid in truncated or len({rid for rid, _c in pairs}) < len(grants):
+                    # Some grant of this rule still matches here.
+                    partial.setdefault(uid, {})[(layer, g)] = (grants, pairs)
+                    partly_here.add(uid)
+                    continue
+                covered.setdefault(uid, {})[(layer, g)] = (tuple(sorted({c for _r, c in pairs})), f)
                 shadowed_here.add(uid)
             live = [r for r in here if r.enabled and not (r.expires_at and r.expires_at <= ref)]
             live_uids = {r.uid for r in live}
@@ -240,8 +253,31 @@ def _shadowing_by_gateway(parsed: ParsedRulebase, graph, alias_map, ref: datetim
                 "shadowed": [r.number for r in live if r.uid in shadowed_here],
                 "deny": [r.number for r in live if r.action == "deny" and r.uid not in shadowed_here],
                 "inactive": [r.number for r in here if r.uid not in live_uids],
+                "partly_covered": [r.number for r in live if r.uid in partly_here],
             })
-    return covered, effective, degraded
+    return covered, partial, effective, degraded
+
+
+COVERAGE_EXAMPLES = 10
+
+
+def _coverage(where: dict, number: dict, meta: dict) -> dict:
+    """The register's account of a partly covered rule, from the gateway where
+    most of it is covered: how many grants, which are taken by which earlier
+    rule (and whether that rule allows or denies them), up to ten examples."""
+    (layer, g), (grants, pairs) = max(where.items(), key=lambda kv: len(kv[1][1]))
+    rec = {x.id: x for x in grants}
+    by_grant = dict(pairs)                             # one coverer per grant (the earliest)
+    by_rules = sorted({number.get(c) for c in by_grant.values() if number.get(c) is not None})
+    examples = []
+    for rid, cov in list(by_grant.items())[:COVERAGE_EXAMPLES]:
+        x, m = rec.get(rid), meta.get(cov)
+        if x is None:
+            continue
+        examples.append({"source": x.source, "destination": x.destination, "service": x.service,
+                         "by_rule": number.get(cov), "by_action": m.action if m else None})
+    return {"grants": len(grants), "covered": len(by_grant), "gateway": g, "layer": layer,
+            "partly_covered_on": len(where), "by_rules": by_rules, "covered_grants": examples}
 
 
 def _inventory_checks(r: RuleMeta, ref: datetime) -> list[Check]:
@@ -275,7 +311,7 @@ def review(parsed: ParsedRulebase, *, now: Optional[datetime] = None) -> Review:
     idr = resolve_identities(res.entities, [])
     graph = build_graph(res.records, idr.assets, idr.alias_map)
     findings, degraded = _run_review_analyzers(res.records, graph, idr.alias_map)
-    covered, effective, shadow_degraded = _shadowing_by_gateway(parsed, graph, idr.alias_map, ref)
+    covered, partial, effective, shadow_degraded = _shadowing_by_gateway(parsed, graph, idr.alias_map, ref)
     degraded += shadow_degraded
 
     by_uid: dict[str, RegisterEntry] = {}
@@ -327,7 +363,7 @@ def review(parsed: ParsedRulebase, *, now: Optional[datetime] = None) -> Review:
                 entry.limitations.append(refuted)
             continue
         sig = dict(f.signals or {})
-        for k in ("shadowed_record", "shadowed_records", "shadowing_refs"):
+        for k in ("shadowed_record", "covered_grants"):
             sig.pop(k, None)                           # per-grant bookkeeping; the check is about the rule
         # The earliest coverer: a deny moved above it is above all of them.
         sig["covered_by_rule"] = number.get(first_cov)
@@ -338,6 +374,11 @@ def review(parsed: ParsedRulebase, *, now: Optional[datetime] = None) -> Review:
         entry.checks.append(Check("shadowed", f.severity, f.severity_band,
                                   f"never matched: {above} above it already cover"
                                   f"{'s' if len(cov_numbers) <= 1 else ''} it", sig, f.id))
+
+    for uid, where in partial.items():
+        entry = by_uid.get(uid)
+        if entry is not None and not any(c.check == "shadowed" for c in entry.checks):
+            entry.coverage = _coverage(where, number, meta)
 
     # Several grants of one rule can raise the same check (one per service in
     # a group); the register keeps the worst of each kind per rule.
@@ -355,6 +396,7 @@ def review(parsed: ParsedRulebase, *, now: Optional[datetime] = None) -> Review:
     stats = {
         "rules": len(register),
         "rules_with_findings": sum(1 for e in register if e.checks),
+        "rules_partly_covered": sum(1 for e in register if e.coverage),
         "by_check": {},
         "by_band": {b: sum(1 for e in register if e.checks and e.band == b)
                     for b in ("critical", "high", "medium", "low")},

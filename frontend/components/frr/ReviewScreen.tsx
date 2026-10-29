@@ -34,6 +34,7 @@ export function ReviewScreen({ exportId, onGoToExports }: { exportId: string; on
   const [band, setBand] = useState<Band | "">("");
   const [check, setCheck] = useState("");
   const [flaggedOnly, setFlaggedOnly] = useState(true);
+  const [partly, setPartly] = useState(false);
   const [limit, setLimit] = useState<number>(50);
   const [offset, setOffset] = useState(0);
   const [attempt, setAttempt] = useState(0);
@@ -78,12 +79,12 @@ export function ReviewScreen({ exportId, onGoToExports }: { exportId: string; on
     let live = true;
     setLoading(true);
     setErr(undefined);
-    frr.review(exportId, { band: band || undefined, check: check || undefined, flagged_only: flaggedOnly, limit, offset })
+    frr.review(exportId, { band: band || undefined, check: check || undefined, flagged_only: flaggedOnly, partly_covered: partly, limit, offset })
       .then((p) => { if (live) setPage(p); })
       .catch((e) => { if (live) { setPage(undefined); setErr(asApiError(e)); } })
       .finally(() => { if (live) setLoading(false); });
     return () => { live = false; };
-  }, [exportId, band, check, flaggedOnly, limit, offset, attempt]);
+  }, [exportId, band, check, flaggedOnly, partly, limit, offset, attempt]);
 
   const retry = () => setAttempt((n) => n + 1);
   const resetPaging = () => setOffset(0);
@@ -99,7 +100,7 @@ export function ReviewScreen({ exportId, onGoToExports }: { exportId: string; on
       </div>
       <Button size="sm" variant="quiet" tone="neutral" className="ml-auto" onClick={onGoToExports}>Change export</Button>
       <a className="focusable inline-flex items-center gap-1 rounded-md px-2 py-1 text-[12px] text-dim hover:text-fg"
-        href={frr.registerCsvUrl(exportId, { band: band || undefined, check: check || undefined, flagged_only: flaggedOnly })}
+        href={frr.registerCsvUrl(exportId, { band: band || undefined, check: check || undefined, flagged_only: flaggedOnly, partly_covered: partly })}
         download>Download CSV</a>
       <Button size="sm" variant="quiet" tone="neutral" onClick={retry} loading={loading}><RotateCw size={12} /> Refresh</Button>
     </div>
@@ -183,8 +184,11 @@ export function ReviewScreen({ exportId, onGoToExports }: { exportId: string; on
             {PAGE_SIZES.map((n) => <option key={n} value={n}>{n}</option>)}
           </Select>
         </Field>
-        <Checkbox className="mb-2" checked={flaggedOnly} disabled={!!band}
+        <Checkbox className="mb-2" checked={flaggedOnly && !partly} disabled={!!band || partly}
           onChange={(v) => { setFlaggedOnly(v); resetPaging(); }} label="Flagged rules only" />
+        <Checkbox className="mb-2" checked={partly}
+          onChange={(v) => { setPartly(v); resetPaging(); }}
+          label={`Partly covered above${stats?.rules_partly_covered != null ? ` (${stats.rules_partly_covered})` : ""}`} />
         <span className="mb-2 ml-auto text-[11.5px] text-faint">
           {page ? (page.total === 0 ? "0 rules" : `${first}–${last} of ${page.total} rules`) : "…"}
         </span>
@@ -198,7 +202,7 @@ export function ReviewScreen({ exportId, onGoToExports }: { exportId: string; on
         </div>
       ) : page.items.length === 0 ? (
         <EmptyState icon={ShieldCheck}
-          title={page.total === 0 ? (band || check ? "No rules match these filters" : flaggedOnly ? "No rule has a finding" : "The export has no rules") : "No rules on this page"}
+          title={page.total === 0 ? (band || check || partly ? "No rules match these filters" : flaggedOnly ? "No rule has a finding" : "The export has no rules") : "No rules on this page"}
           sub={page.total === 0
             ? "This is what the deterministic checks found within the limitations above — not a statement that the policy is safe."
             : "The register is shorter than this offset. Go back a page."} />

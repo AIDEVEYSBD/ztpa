@@ -175,10 +175,10 @@ def _lookup_keys(later: PolicyRecord) -> list:
 def analyze(records: list[PolicyRecord], g: nx.DiGraph, alias_map: dict[str, str], *,
             per_rule: bool = False) -> list[Finding]:
     """One finding per shadowed grant, or with `per_rule` one per rule (raw_ref):
-    the first covered grant's finding, carrying every covered grant's id in
-    `signals["shadowed_records"]` and every covering rule in
-    `signals["shadowing_refs"]`. A rulebase review needs only that, and a
-    finding per grant cost ~1 KiB each at hundreds of thousands of grants."""
+    the first covered grant's finding, carrying `signals["covered_grants"]`:
+    [grant id, covering rule] for every covered grant of the rule. A rulebase
+    review needs only that, and a finding per grant cost ~1 KiB each at
+    hundreds of thousands of grants."""
     by_tool: dict[str, list[PolicyRecord]] = {}
     for rec in records:
         if rec.order is None:
@@ -217,9 +217,7 @@ def analyze(records: list[PolicyRecord], g: nx.DiGraph, alias_map: dict[str, str
                     continue
                 seen = by_ref.get((tool, later.raw_ref)) if per_rule else None
                 if seen is not None:
-                    seen.signals["shadowed_records"].append(later.id)
-                    if earlier.raw_ref not in seen.signals["shadowing_refs"]:
-                        seen.signals["shadowing_refs"].append(earlier.raw_ref)
+                    seen.signals["covered_grants"].append((later.id, earlier.raw_ref))
                     break
 
                 d = alias_map.get(later.destination, later.destination)
@@ -300,8 +298,7 @@ def analyze(records: list[PolicyRecord], g: nx.DiGraph, alias_map: dict[str, str
                 ))
                 if per_rule:
                     f = findings[-1]
-                    f.signals["shadowed_records"] = [later.id]
-                    f.signals["shadowing_refs"] = [earlier.raw_ref]
+                    f.signals["covered_grants"] = [(later.id, earlier.raw_ref)]
                     by_ref[(tool, later.raw_ref)] = f
                 break   # earliest shadower is enough
             # Index AFTER the lookup: a rule never shadows itself.
