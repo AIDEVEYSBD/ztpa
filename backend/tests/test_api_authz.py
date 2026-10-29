@@ -628,6 +628,28 @@ def test_the_right_secret_admits_the_claimed_role(client, monkeypatch):
     assert r.status_code == 200
 
 
+def test_during_a_rotation_the_previous_secret_is_also_accepted(client, monkeypatch):
+    """The API takes the new secret first while the frontend still sends the
+    old one; nothing is refused while they roll. Afterwards the old one is not."""
+    monkeypatch.setenv("NPR_PROXY_SECRET", "new-secret-value")
+    monkeypatch.setenv("NPR_PROXY_SECRET_PREVIOUS", "old-secret-value")
+    for presented in ("new-secret-value", "old-secret-value"):
+        r = client.post("/api/actions/recompute", headers={"x-npr-role": "admin", "x-npr-proxy-secret": presented})
+        assert r.status_code == 200, presented
+    r = client.post("/api/actions/recompute", headers={"x-npr-role": "admin", "x-npr-proxy-secret": "guess"})
+    assert r.status_code == 401
+    monkeypatch.delenv("NPR_PROXY_SECRET_PREVIOUS")
+    r = client.post("/api/actions/recompute", headers={"x-npr-role": "admin", "x-npr-proxy-secret": "old-secret-value"})
+    assert r.status_code == 401
+
+
+def test_an_empty_previous_secret_admits_nothing(client, monkeypatch):
+    monkeypatch.setenv("NPR_PROXY_SECRET", "new-secret-value")
+    monkeypatch.setenv("NPR_PROXY_SECRET_PREVIOUS", "  ")
+    r = client.post("/api/actions/recompute", headers={"x-npr-role": "admin", "x-npr-proxy-secret": ""})
+    assert r.status_code == 401
+
+
 SECRET = {"x-npr-proxy-secret": "shared-secret-value"}
 
 

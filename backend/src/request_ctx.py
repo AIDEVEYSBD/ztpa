@@ -171,7 +171,14 @@ def verify_proxy_secret(presented: str | None) -> bool:
     expected = proxy_secret()
     if not expected:
         return True
-    return hmac.compare_digest(presented or "", expected)
+    # During a rotation the API also accepts the previous secret, so it can
+    # take the new one before the frontend does and nothing is refused while
+    # the two roll (docs/frr/RUNBOOK.md, "Rotate a secret"). Both are always
+    # compared, so timing does not say which one matched.
+    previous = (os.environ.get("NPR_PROXY_SECRET_PREVIOUS") or "").strip()
+    ok = hmac.compare_digest(presented or "", expected)
+    ok_previous = bool(previous) and hmac.compare_digest(presented or "", previous)
+    return ok or ok_previous
 
 
 def secret_required_for(path: str, method: str) -> bool:

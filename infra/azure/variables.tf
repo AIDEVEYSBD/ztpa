@@ -98,6 +98,13 @@ variable "byok_secrets" {
   sensitive   = true
 }
 
+variable "proxy_secret_previous" {
+  description = "Only during a proxy-secret rotation: the value being replaced. The backend accepts it as well as the new one while the frontend rolls; set back to \"\" afterwards (docs/frr/RUNBOOK.md)."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
 # --- capacity --------------------------------------------------------------------
 variable "db_sku" {
   type    = string

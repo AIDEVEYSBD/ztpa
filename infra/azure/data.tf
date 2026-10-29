@@ -177,7 +177,8 @@ locals {
       "sso-client-secret"  = var.sso_client_secret
     },
     { for k, v in nonsensitive(var.byok_secrets) : "byok-${lower(replace(k, "_", "-"))}" => v },
-    var.breakglass_email == "" ? {} : { "breakglass-password-hash" = var.breakglass_password_hash }
+    var.breakglass_email == "" ? {} : { "breakglass-password-hash" = var.breakglass_password_hash },
+    nonsensitive(var.proxy_secret_previous) == "" ? {} : { "proxy-secret-previous" = var.proxy_secret_previous }
   )
   byok_env = { for k in keys(nonsensitive(var.byok_secrets)) : k => "byok-${lower(replace(k, "_", "-"))}" }
 }

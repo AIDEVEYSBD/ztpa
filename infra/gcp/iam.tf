@@ -30,7 +30,8 @@ resource "google_service_account" "frontend" {
 }
 
 locals {
-  backend_secrets = concat(["database-url", "proxy-secret", "artifact-key"], values(local.byok_env))
+  backend_secrets = concat(["database-url", "proxy-secret", "artifact-key"], values(local.byok_env),
+  nonsensitive(var.proxy_secret_previous) == "" ? [] : ["proxy-secret-previous"])
   frontend_secrets = concat(["database-url", "auth-secret", "proxy-secret", "sso-client-secret"],
   var.breakglass_email == "" ? [] : ["breakglass-password-hash"])
   backend_roles = [

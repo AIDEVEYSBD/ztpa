@@ -18,7 +18,9 @@ locals {
     DATABASE_URL     = "database-url"
     NPR_PROXY_SECRET = "proxy-secret"
     NPR_ARTIFACT_KEY = "artifact-key"
-  }, local.byok_env)
+    }, local.byok_env,
+    # A rotation in progress: the old proxy secret is accepted too.
+  nonsensitive(var.proxy_secret_previous) == "" ? {} : { NPR_PROXY_SECRET_PREVIOUS = "proxy-secret-previous" })
 
   frontend_ingress = var.domain == "" ? "INGRESS_TRAFFIC_ALL" : "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER"
 }
