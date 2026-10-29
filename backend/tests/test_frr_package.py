@@ -97,3 +97,26 @@ def test_every_change_has_a_rollback_and_nothing_writes_to_a_device() -> None:
     src = Path(pk.__file__).read_text()
     for forbidden in ("httpx", "requests", "subprocess", "paramiko", "servicenow"):
         assert f"import {forbidden}" not in src
+
+
+def test_the_compact_package_input_drafts_the_same_package() -> None:
+    """Drafting reads package-input.json (rules + destination/service facts),
+    not the full parsed rulebase; the package must not change."""
+    e = fx.export()
+    p = cp.parse(e)
+    r = json.loads(json.dumps(review(p).to_jsonable()))
+    full = json.loads(json.dumps(p.to_jsonable()))
+    compact = pk.package_input(full)
+    assert len(compact["records"]) <= len(full["records"])
+    assert set(compact["records"][0]) == {"raw_ref", "dest_cidrs", "protocol", "port", "port_end", "service"}
+    assert pk.draft(r, compact) == pk.draft(r, full)
+
+
+def test_older_exports_without_a_package_input_fall_back_to_parsed(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("NPR_STORAGE_URL", f"file://{tmp_path}")
+    from src import storage
+    st = storage.store()
+    st.put_bytes("exports/abc/parsed.json", b'{"rules": [], "records": [{"raw_ref": "x"}]}', "application/json")
+    assert pk.load_input(st, "exports/abc/parsed.json")["records"] == [{"raw_ref": "x"}]
+    st.put_bytes(pk.input_key("exports/abc/parsed.json"), b'{"rules": [], "records": []}', "application/json")
+    assert pk.load_input(st, "exports/abc/parsed.json")["records"] == []

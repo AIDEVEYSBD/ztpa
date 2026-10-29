@@ -68,6 +68,13 @@ export function PackageScreen({ exportId, link, setLink, onGoToExports }: {
       .then((p) => setLink({ packageId: p.package_id, runId: undefined }))
       .catch((e) => {
         const err = asApiError(e);
+        if (err.status === 413) {
+          // Too large to draft inline: the same draft, in the background, shown
+          // through the run's steps like an agent run.
+          return frr.startRun(exportId, { narrate: false })
+            .then((r) => setLink({ runId: r.run_id }))
+            .catch((e2) => setStartErr({ action: "draft a change package in the background", error: asApiError(e2) }));
+        }
         setStartErr({ action: "draft a change package", error: err });
         if (err.status === 409) setConflictId(firstUuid(err.detail));
       })

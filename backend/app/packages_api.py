@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime
 from typing import Literal, Optional
 
@@ -48,14 +49,20 @@ def _run(fn, *args, **kw):
         raise HTTPException(e.status, str(e))
 
 
+# Drafting holds the rulebase in the API process (~1 GiB at 110,000 rules), and
+# the API runs several processes in 2 GiB. Above this, draft in the worker:
+# POST /api/exports/{id}/review-runs with {"narrate": false}.
+SYNC_DRAFT_MAX_RULES = int(os.environ.get("NPR_SYNC_DRAFT_MAX_RULES", "20000"))
+
+
 @router.post("/api/exports/{export_id}/change-package", status_code=201)
 def draft_package(export_id: str, supersede: bool = Query(False)):
     if request_ctx.role() not in ("admin", "analyst"):
         raise HTTPException(403, "drafting a change package requires the admin or analyst role")
     with get_conn() as conn, conn.cursor() as cur:
         try:
-            cur.execute("SELECT status, review_key, parsed_key FROM ztpa.exports WHERE export_id = %s",
-                        [export_id])
+            cur.execute("SELECT status, review_key, parsed_key, (summary->>'rules')::int AS rules "
+                        "FROM ztpa.exports WHERE export_id = %s", [export_id])
         except Exception:  # noqa: BLE001 — a malformed uuid is "no such export"
             conn.rollback()
             raise HTTPException(404, "no such export")
@@ -64,8 +71,13 @@ def draft_package(export_id: str, supersede: bool = Query(False)):
         raise HTTPException(404, "no such export")
     if row["status"] != "accepted":
         raise HTTPException(409, f"export is {row['status']}; only an accepted export has a register")
+    if (row["rules"] or 0) > SYNC_DRAFT_MAX_RULES:
+        raise HTTPException(413, f"the export has {row['rules']:,} rules; packages above "
+                                 f"{SYNC_DRAFT_MAX_RULES:,} rules are drafted in the background. Start a "
+                                 "review run instead (POST /api/exports/{id}/review-runs, "
+                                 '{"narrate": false} to skip narratives)')
     store = storage.store()
-    parsed = json.loads(store.get_bytes(row["parsed_key"]))
+    parsed = package_mod.load_input(store, row["parsed_key"])
     drafted = package_mod.draft(json.loads(store.get_bytes(row["review_key"])), parsed)
 
     def _create(cur):

@@ -198,6 +198,12 @@ def summarise_package(drafted: dict, p: Prompt, llm: Optional[Callable[..., Any]
             return out.model_dump() | {"by": f"{r.provider}:{r.model}", "prompt": p.version}
         except ValidationError:
             pass
+    return fallback_summary(drafted)
+
+
+def fallback_summary(drafted: dict) -> dict:
+    """The engine's own summary: counts and the worst items, no model."""
+    top = drafted["items"][:10]
     s = drafted["summary"]
     return {"summary": f"{s['items']} proposed changes. By availability impact: "
                        f"{', '.join(f'{k} {v}' for k, v in sorted(s['by_impact'].items()))}.",
@@ -245,7 +251,7 @@ def _review_run(ctx: JobContext, *, llm: Optional[Callable[..., Any]] = None) ->
         return {"status": "failed", "reason": f"export is {run['export_status']}"}
 
     store = storage.store()
-    parsed = json.loads(store.get_bytes(run["parsed_key"]))
+    parsed = package_mod.load_input(store, run["parsed_key"])
     _step(cur, run_id, "intake_parser", "done", rules=parsed["summary"]["rules"],
           grants=parsed["summary"]["grants"], limitations=len(parsed["limitations"]))
     review = json.loads(store.get_bytes(run["review_key"]))
@@ -265,9 +271,13 @@ def _review_run(ctx: JobContext, *, llm: Optional[Callable[..., Any]] = None) ->
     # model), and run one by one a 40-item package took minutes. Results are
     # collected by item id, so ordering and outcome do not depend on timing.
     from concurrent.futures import ThreadPoolExecutor, as_completed
-    top = drafted["items"][:NARRATE_TOP]
-    for item in drafted["items"][NARRATE_TOP:]:
-        narratives[item["item_id"]] = _fallback_impact(item) | {"fallback_reason": "outside top-N"}
+    # narrate=False ("draft without narratives"): the same pipeline, in the
+    # worker, with no model calls; the engine text stands for every item.
+    narrate = bool(ctx.payload.get("narrate", True))
+    top = drafted["items"][:NARRATE_TOP] if narrate else []
+    for item in drafted["items"][len(top):]:
+        narratives[item["item_id"]] = _fallback_impact(item) | {
+            "fallback_reason": "outside top-N" if narrate else "narration not requested"}
     contexts = {item["item_id"]: knowledge.search(cur, _query_for(item), k=RETRIEVAL_K) for item in top}
     done = 0
     with ThreadPoolExecutor(max_workers=max(1, NARRATE_PARALLEL)) as pool:
@@ -284,8 +294,8 @@ def _review_run(ctx: JobContext, *, llm: Optional[Callable[..., Any]] = None) ->
                 ctx.progress(step="impact_assessor", done=done, of=len(top))
                 ctx.check()
     _step(cur, run_id, "impact_assessor", "done", prompt=impact_prompt.version,
-          fingerprint=fingerprint("impact_assessor"), narrated=narrated,
-          fallbacks=fallbacks, deterministic=max(0, len(drafted["items"]) - NARRATE_TOP))
+          fingerprint=fingerprint("impact_assessor"), narrated=narrated, narrate=narrate,
+          fallbacks=fallbacks, deterministic=max(0, len(drafted["items"]) - len(top)))
 
     # Never discard human work: a package an owner has started deciding, or one
     # past draft, is not superseded by a re-run.
@@ -303,10 +313,13 @@ def _review_run(ctx: JobContext, *, llm: Optional[Callable[..., Any]] = None) ->
                     [run_id])
         return {"status": "failed", "reason": reason}
     pkg = workflow.create(cur, str(run["export_id"]), drafted, supersede=True)
-    for item_id, n in narratives.items():
-        cur.execute("UPDATE ztpa.change_package_items SET narrative = %s WHERE package_id = %s AND item_id = %s",
-                    [Jsonb(n), pkg["package_id"], item_id])
-    summary = summarise_package(drafted, pkg_prompt, llm)
+    # One statement, not one per item: a 110,000-rule review drafts ~55,000.
+    ids = list(narratives)
+    cur.execute("""UPDATE ztpa.change_package_items i SET narrative = v.n
+                     FROM unnest(%s::text[], %s::jsonb[]) AS v(item_id, n)
+                    WHERE i.package_id = %s AND i.item_id = v.item_id""",
+                [ids, [json.dumps(narratives[k], default=str) for k in ids], pkg["package_id"]])
+    summary = summarise_package(drafted, pkg_prompt, llm) if narrate else fallback_summary(drafted)
     cur.execute("UPDATE ztpa.change_packages SET narrative = %s WHERE package_id = %s",
                 [Jsonb(summary), pkg["package_id"]])
     _step(cur, run_id, "package_drafter", "done", package_id=str(pkg["package_id"]),

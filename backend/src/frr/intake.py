@@ -32,6 +32,7 @@ from psycopg.types.json import Jsonb
 from .. import storage
 from ..jobs import JobContext, handler
 from ..normalizers import checkpoint
+from . import package as package_mod
 from .review import review
 from .rulebase import ExportRejected, ParsedRulebase
 
@@ -112,9 +113,12 @@ def process(row: dict, *, now: datetime | None = None) -> tuple[str, dict]:
     summary = {**parsed.summary(), "review": result.stats,
                "limitations_total": len(result.limitations)
                + sum(len(e.limitations) for e in result.register)}
-    store.put_bytes(f"{base}/parsed.json", json.dumps(parsed.to_jsonable()).encode(),
-                    "application/json")
+    parsed_doc = parsed.to_jsonable()
     del parsed
+    store.put_bytes(f"{base}/parsed.json", json.dumps(parsed_doc).encode(), "application/json")
+    store.put_bytes(package_mod.input_key(f"{base}/parsed.json"),
+                    json.dumps(package_mod.package_input(parsed_doc)).encode(), "application/json")
+    del parsed_doc
     review_doc = result.to_jsonable()
     del result
     store.put_bytes(f"{base}/review.json", json.dumps(review_doc).encode(), "application/json")

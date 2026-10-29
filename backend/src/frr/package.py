@@ -27,6 +27,7 @@ Check Point `mgmt_cli`; rollback commands restore the rule exactly as exported
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 from dataclasses import asdict, dataclass, field
@@ -179,6 +180,41 @@ def _draft_item(n: int, entry: dict, rule: dict, numbers: dict[int, dict],
                 rollback=[f"mgmt_cli set access-rule {sel} time.1 Any",
                           f"mgmt_cli delete time name {_q(tname)}",
                           "# and delete the narrowed rule if it was added", *_publish()])
+
+
+# What drafting and context enrichment read of a grant. A full grant record has
+# ~25 fields (source space, notes, provenance); these are what packages use.
+_INPUT_GRANT_FIELDS = ("dest_cidrs", "protocol", "port", "port_end", "service")
+
+
+def package_input(parsed: dict) -> dict:
+    """The slice of a parsed rulebase (`ParsedRulebase.to_jsonable()`) a change
+    package is drafted from: rules, summary, limitations, and per rule its
+    distinct destination/service grant facts (sources dropped, so grants that
+    differ only in source collapse). At 110,000 rules parsed.json is 279 MiB and
+    ~1.6 GiB once loaded; drafting from it in a 2 GiB API process could not work."""
+    seen: set = set()
+    records = []
+    for r in parsed.get("records", []):
+        key = (r["raw_ref"], tuple(r.get("dest_cidrs") or ()), r.get("protocol"), r.get("port"),
+               r.get("port_end"), r.get("service"))
+        if key in seen:
+            continue
+        seen.add(key)
+        records.append({"raw_ref": r["raw_ref"], **{k: r.get(k) for k in _INPUT_GRANT_FIELDS}})
+    return {"summary": parsed.get("summary", {}), "limitations": parsed.get("limitations", []),
+            "rules": parsed.get("rules", []), "records": records}
+
+
+def input_key(parsed_key: str) -> str:
+    return parsed_key.rsplit("/", 1)[0] + "/package-input.json"
+
+
+def load_input(store, parsed_key: str) -> dict:
+    """The package input stored at ingest; exports ingested before it existed
+    fall back to the full parsed rulebase (same shape for every reader)."""
+    key = input_key(parsed_key)
+    return json.loads(store.get_bytes(key if store.exists(key) else parsed_key))
 
 
 def draft(review: dict, parsed: dict) -> dict:

@@ -82,7 +82,9 @@ export const frr = {
     })}`),
 
   // ── agent runs ────────────────────────────────────────────────────────────
-  startRun: (exportId: string) => j<FrrRun>(`/api/exports/${enc(exportId)}/review-runs`, postJson()),
+  /** `narrate: false` drafts in the background with no model calls (any rulebase size). */
+  startRun: (exportId: string, opts: { narrate?: boolean } = {}) =>
+    j<FrrRun>(`/api/exports/${enc(exportId)}/review-runs`, postJson(opts.narrate === false ? { narrate: false } : undefined)),
   run: (runId: string) => j<FrrRun>(`/api/frr/runs/${enc(runId)}`),
 
   // ── change packages ───────────────────────────────────────────────────────

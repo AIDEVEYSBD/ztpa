@@ -11,9 +11,10 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from pydantic import BaseModel
 
 from src import request_ctx
 from src.db import audit, get_conn
@@ -57,8 +58,15 @@ def list_agents():
     return {"agents": out, "narrate_top": agents.NARRATE_TOP}
 
 
+class RunBody(BaseModel):
+    # False: draft the package in the background without model narratives
+    # ("Draft without narratives"), the way to draft any size of rulebase.
+    narrate: bool = True
+
+
 @router.post("/api/exports/{export_id}/review-runs", status_code=202)
-def start_run(export_id: str):
+def start_run(export_id: str, body: Optional[RunBody] = None):
+    narrate = body.narrate if body else True
     if request_ctx.role() not in ("admin", "analyst"):
         raise HTTPException(403, "starting a review run requires the admin or analyst role")
     with get_conn() as conn, conn.cursor() as cur:
@@ -75,13 +83,14 @@ def start_run(export_id: str):
         cur.execute("INSERT INTO ztpa.frr_runs (export_id, created_by) VALUES (%s, %s) RETURNING *",
                     [export_id, _actor()])
         run = cur.fetchone()
-        job, _ = queue.enqueue(conn, "frr.review_run", {"run_id": str(run["run_id"])},
+        job, _ = queue.enqueue(conn, "frr.review_run", {"run_id": str(run["run_id"]), "narrate": narrate},
                                idempotency_key=f"frr-run:{run['run_id']}", priority=60,
                                created_by=_actor())
         cur.execute("UPDATE ztpa.frr_runs SET job_id = %s WHERE run_id = %s RETURNING *",
                     [job.job_id, run["run_id"]])
         run = cur.fetchone()
-        audit(cur, "frr_run_started", subject=str(run["run_id"]), detail={"export_id": export_id})
+        audit(cur, "frr_run_started", subject=str(run["run_id"]),
+              detail={"export_id": export_id, "narrate": narrate})
     return _jsonable(run)
 
 

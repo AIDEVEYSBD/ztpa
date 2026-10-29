@@ -218,3 +218,32 @@ def test_acting_as_never_leaks_into_the_next_job() -> None:
         with request_ctx.acting_as(sub="sub-y"):
             raise RuntimeError("job failed")
     assert request_ctx.current() == before and not request_ctx.on_behalf()
+
+
+
+@needs_db
+def test_a_run_without_narratives_drafts_in_the_background_with_no_model_calls(runner, monkeypatch) -> None:
+    c = runner
+    calls = []
+    monkeypatch.setattr(agents, "complete", lambda **kw: calls.append(kw) or None)
+    eid = _settle(c, _upload(c, _fresh()).json()["export"]["export_id"])["export_id"]
+    run = c.post(f"/api/exports/{eid}/review-runs", json={"narrate": False}, headers=ANALYST)
+    assert run.status_code == 202
+    done = _wait_run(c, run.json()["run_id"])
+    assert done["status"] == "succeeded", done
+    assessor = next(s for s in done["steps"] if s["agent"] == "impact_assessor" and s["status"] == "done")
+    assert assessor["narrate"] is False and assessor["narrated"] == 0
+    pkg = c.get(f"/api/change-packages/{done['package_id']}", headers=ANALYST).json()
+    assert pkg["narrative"]["by"] == "engine_fallback"
+    assert all(i["narrative"]["fallback_reason"] == "narration not requested" for i in pkg["items"])
+    assert calls == []
+
+
+@needs_db
+def test_a_large_export_is_not_drafted_in_the_api_process(runner, monkeypatch) -> None:
+    from app import packages_api
+    c = runner
+    monkeypatch.setattr(packages_api, "SYNC_DRAFT_MAX_RULES", 3)
+    eid = _settle(c, _upload(c, _fresh()).json()["export"]["export_id"])["export_id"]
+    r = c.post(f"/api/exports/{eid}/change-package", headers=ANALYST)
+    assert r.status_code == 413 and "review-runs" in r.json()["detail"]
