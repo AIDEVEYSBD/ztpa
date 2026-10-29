@@ -84,15 +84,25 @@ fingerprint and the models it passed on. `NPR_PROMPT_GATE_MIN_MODELS=2` requires
 **Rotate a secret**
 Add a new version in Secret Manager / Key Vault, then roll the services (re-run the deploy,
 or `gcloud run services update … --update-secrets` / `az containerapp update`).
-- `NPR_PROXY_SECRET`: roll frontend and API together.
+- `NPR_PROXY_SECRET`: roll frontend and API together. Rehearsed on Azure staging: `terraform apply
+  -replace='random_password.internal["proxy"]'` writes a new Key Vault version; the apps reference the
+  versionless secret but read it only at start, so restart the active revision of `-api`, `-web` and
+  `-worker` (`az containerapp revision restart`). Requests during the ~1 minute restart can time out;
+  no request was refused for a secret mismatch.
 - Database app password (`app-db-password` plus `database-url`): update both, run the migrate
   job (it resets the role's password), then roll the services.
 - `NPR_ARTIFACT_KEY`: roll, then trigger one recompute.
 
 **Restore the database**
 GCP: point-in-time clone (`gcloud sql instances clone <src> <dst> --point-in-time <ts>`), then
-switch `database-url`. Azure: `az postgres flexible-server restore --restore-time <ts>`, then
-switch `database-url`. Rehearse quarterly.
+switch `database-url`. Azure: `az postgres flexible-server restore -g <rg> -n <new> --source-server <src>
+--restore-time <ts>`, then switch `database-url`. Rehearse quarterly.
+
+Rehearsed on Azure staging (2026-10-30): the restore took ~10 minutes and joined the same private
+VNet; verified from a job inside the network (`scripts/azure/start-job.sh … python -c …`) that it held
+exactly the exports uploaded before `<ts>` (24 of 27; register and audit rows cut at the same point),
+then deleted. The roles and their passwords come back with the data, so the existing `database-url`
+works once its host is changed.
 
 **Scale**
 Raise `*_max_instances` / `*_max_replicas` and redeploy. Check the connection budget in the
