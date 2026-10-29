@@ -21,6 +21,7 @@ import json
 import os
 import re
 import tempfile
+import threading
 from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -184,6 +185,32 @@ def _ep_summary(head: dict) -> list:
     return effective_policy_summary(head.get("effective_policy", []))
 
 
+class _Totals:
+    """Register page totals per (export, filter). The rows of an accepted
+    export never change (a re-ingest rewrites the same content), so each count
+    is computed once per process; at 110,000 rules it was one of the database
+    queries every page paid for under load. Bounded; oldest entries go first."""
+
+    def __init__(self, size: int = 4096) -> None:
+        self._d: dict = {}
+        self._size = size
+        self._lock = threading.Lock()
+
+    def get(self, key):
+        with self._lock:
+            return self._d.get(key)
+
+    def put(self, key, value: int) -> int:
+        with self._lock:
+            if len(self._d) >= self._size:
+                self._d.pop(next(iter(self._d)))
+            self._d[key] = value
+        return value
+
+
+_TOTALS = _Totals()
+
+
 def _review_from_rows(export_id: str, head: dict, band, check, flagged_only, limit, offset,
                       partly_covered=False) -> dict:
     """One indexed count and one indexed page, whatever the rulebase size."""
@@ -200,8 +227,11 @@ def _review_from_rows(export_id: str, head: dict, band, check, flagged_only, lim
         params.append(check)
     clause = " AND ".join(where)
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute(f"SELECT count(*) AS n FROM ztpa.review_entries WHERE {clause}", params)
-        total = cur.fetchone()["n"]
+        key = (clause, tuple(str(p) for p in params))
+        total = _TOTALS.get(key)
+        if total is None:
+            cur.execute(f"SELECT count(*) AS n FROM ztpa.review_entries WHERE {clause}", params)
+            total = _TOTALS.put(key, cur.fetchone()["n"])
         # Keys from the index first, then only the page's rows: OFFSET over the
         # table itself read every skipped row (~100 MB at offset 50,000).
         cur.execute(f"""SELECT e.entry FROM (SELECT ord FROM ztpa.review_entries WHERE {clause}
