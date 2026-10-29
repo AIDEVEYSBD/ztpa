@@ -205,7 +205,8 @@ def fallback_summary(drafted: dict) -> dict:
     """The engine's own summary: counts and the worst items, no model."""
     top = drafted["items"][:10]
     s = drafted["summary"]
-    return {"summary": f"{s['items']} proposed changes. By availability impact: "
+    reviewed = f" from {s['rules_reviewed']} rules reviewed" if s.get("rules_reviewed") is not None else ""
+    return {"summary": f"{s['items']} proposed changes{reviewed}. By availability impact: "
                        f"{', '.join(f'{k} {v}' for k, v in sorted(s['by_impact'].items()))}.",
             "key_risks": [f"rule {i['rule_number']}: {i['check']} ({i['band']})" for i in top[:5]],
             "limitations_note": "; ".join(drafted["limitations"][:3]), "by": "engine_fallback"}
