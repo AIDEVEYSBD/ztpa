@@ -21,7 +21,10 @@ Operating it day to day: [RUNBOOK.md](RUNBOOK.md).
 | Alert policies | API 5xx rate, worker absent, database CPU |
 
 The model provider is the project's own **Vertex AI** (`ADVISORY_PROVIDER=auto` picks it on
-Cloud Run). BYOK keys are optional (`byok_secrets`).
+Cloud Run). BYOK keys are optional (`byok_secrets`, stored in Secret Manager and injected as
+environment variables): `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `AZURE_AI_API_KEY`, or a
+service-account key for another project's Vertex as its JSON in
+`GOOGLE_APPLICATION_CREDENTIALS_JSON`.
 
 ## One-time setup
 

@@ -238,16 +238,36 @@ _VERTEX_STATE: dict[str, Any] = {"credentials": None, "project": None, "token": 
                                  "client": None, "failed": None}
 
 
+def _key_credentials(raw: str):
+    """(credentials, project) from a service-account key's JSON (BYOK). Errors
+    name the problem and never echo the key."""
+    from google.oauth2 import service_account
+
+    try:
+        info = json.loads(raw)
+    except ValueError:
+        raise RuntimeError("the Vertex service-account key is not valid JSON") from None
+    if not isinstance(info, dict) or info.get("type") != "service_account":
+        raise RuntimeError("the Vertex key must be a service-account key (type service_account)")
+    try:
+        creds = service_account.Credentials.from_service_account_info(info, scopes=[_VERTEX_SCOPE])
+    except (ValueError, KeyError) as e:
+        raise RuntimeError(f"the Vertex service-account key is incomplete ({type(e).__name__})") from None
+    return creds, info.get("project_id")
+
+
 def _vertex_credentials():
-    """(credentials, project) from ADC, refreshed if expired. Raises when ADC is
-    absent -- `complete()` turns that into ok=False with the reason."""
+    """(credentials, project), refreshed if expired: a service-account key given
+    as content (BYOK, see settings.vertex_key_json) or else ADC. Raises when
+    neither resolves -- `complete()` turns that into ok=False with the reason."""
     import google.auth
     from google.auth.transport.requests import Request
 
     with _VERTEX_LOCK:
         creds, project = _VERTEX_STATE["credentials"], _VERTEX_STATE["project"]
         if creds is None:
-            creds, project = google.auth.default(scopes=[_VERTEX_SCOPE])
+            key = settings.vertex_key_json()
+            creds, project = _key_credentials(key) if key else google.auth.default(scopes=[_VERTEX_SCOPE])
             _VERTEX_STATE["credentials"], _VERTEX_STATE["project"] = creds, project
         if not creds.valid:
             creds.refresh(Request())

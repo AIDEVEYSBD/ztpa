@@ -222,3 +222,80 @@ def test_a_missing_credential_is_not_reprobed_on_every_call(monkeypatch: pytest.
     for _ in range(50):
         assert llm.vertex_ready()[0] is False
     assert len(calls) == 1
+
+
+# --- BYOK: a service-account key given as content -------------------------
+# Secret Manager and Key Vault inject a secret as an environment variable, so a
+# key reaches the process as its JSON, not as a file path.
+
+def _sa_key(project: str = "byok-project") -> str:
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    pem = rsa.generate_private_key(public_exponent=65537, key_size=2048).private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()).decode()
+    return json.dumps({"type": "service_account", "project_id": project, "private_key_id": "k1",
+                       "private_key": pem, "client_email": f"frr@{project}.iam.gserviceaccount.com",
+                       "client_id": "1", "token_uri": "https://oauth2.googleapis.com/token"})
+
+
+@pytest.fixture()
+def key_refresh(monkeypatch: pytest.MonkeyPatch):
+    """No network: a key credential's refresh just sets a token."""
+    import google.auth
+    from google.oauth2 import service_account
+
+    def refresh(self, _request):
+        self.token = "key-token"
+        self.expiry = None                                             # google-auth: no expiry = valid
+    monkeypatch.setattr(service_account.Credentials, "refresh", refresh)
+
+    def no_adc(*_a, **_k):
+        raise AssertionError("ADC must not be consulted when a key is given")
+    monkeypatch.setattr(google.auth, "default", no_adc)
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS_JSON", raising=False)
+
+
+def test_a_key_given_as_content_is_used_with_its_project(monkeypatch, key_refresh) -> None:
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS_JSON", _sa_key())
+    creds, project = llm._vertex_credentials()
+    assert project == "byok-project" and creds.token == "key-token"
+    assert "GOOGLE_APPLICATION_CREDENTIALS_JSON" in settings.byok_keys()
+
+
+def test_json_in_the_path_variable_is_read_as_content(monkeypatch, key_refresh) -> None:
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", _sa_key("from-gac"))
+    assert llm._vertex_credentials()[1] == "from-gac"
+
+
+def test_a_path_still_goes_through_adc(monkeypatch, adc) -> None:
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS_JSON", raising=False)
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "/secrets/key.json")
+    assert settings.vertex_key_json() == ""
+    assert llm._vertex_credentials()[1] == "adc-project"
+
+
+@pytest.mark.parametrize("raw,why", [
+    ('{"type": "service_account", "private_key": "SECRET-MATERIAL', "not valid JSON"),
+    ('{"type": "authorized_user", "refresh_token": "SECRET-MATERIAL"}', "service-account key"),
+    ('{"type": "service_account", "private_key": "SECRET-MATERIAL"}', "incomplete"),
+])
+def test_a_bad_key_is_refused_without_echoing_it(monkeypatch, key_refresh, raw, why) -> None:
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS_JSON", raw)
+    ok, reason = llm.vertex_ready()
+    assert not ok and why in reason and "SECRET-MATERIAL" not in reason
+
+
+def test_off_gcp_auto_uses_a_provided_key_but_never_a_bare_login(monkeypatch, adc, auto_nothing_else) -> None:
+    monkeypatch.setattr(settings, "NPR_PLATFORM", "local")
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS_JSON", raising=False)
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    assert settings.active_provider() != "vertex"                     # ADC alone is not consent
+    from google.oauth2 import service_account
+    monkeypatch.setattr(service_account.Credentials, "refresh",
+                        lambda self, _r: setattr(self, "token", "t") or setattr(self, "expiry", None))
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS_JSON", _sa_key())
+    llm.reset_vertex_caches()
+    ai_config.invalidate()
+    assert settings.active_provider() == "vertex"

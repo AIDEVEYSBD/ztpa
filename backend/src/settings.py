@@ -158,7 +158,9 @@ VERTEX_MODEL: str = os.environ.get("VERTEX_MODEL", "google/gemini-2.5-pro").stri
 # Vertex AI on GCP, Azure AI Foundry on Azure. 'auto' detects it from the
 # variables each runtime injects; set NPR_PLATFORM to override (e.g. on GKE/AKS,
 # which inject neither). BYOK keys (OPENAI_API_KEY, ANTHROPIC_API_KEY,
-# AZURE_AI_API_KEY, or a service-account file in GOOGLE_APPLICATION_CREDENTIALS)
+# AZURE_AI_API_KEY, or a Vertex service-account key: its JSON in
+# GOOGLE_APPLICATION_CREDENTIALS_JSON, as a secret store injects it, or a file
+# path in GOOGLE_APPLICATION_CREDENTIALS)
 # still work on any platform: an explicit ADVISORY_PROVIDER selects them, and
 # `auto` falls back to them when the native provider is not usable.
 NPR_PLATFORM: str = os.environ.get("NPR_PLATFORM", "auto").strip().lower() or "auto"
@@ -239,8 +241,20 @@ def jobs_inline() -> bool:
 def byok_keys() -> list[str]:
     """Names (never values) of the bring-your-own-key secrets present."""
     names = ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "AZURE_AI_API_KEY",
-             "GOOGLE_APPLICATION_CREDENTIALS")
+             "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_APPLICATION_CREDENTIALS_JSON")
     return [n for n in names if os.environ.get(n, "").strip()]
+
+
+def vertex_key_json() -> str:
+    """A Vertex service-account key given as its JSON content, or "". Secret
+    Manager and Key Vault inject a secret as an environment variable, i.e. the
+    content and not a path, so a key in GOOGLE_APPLICATION_CREDENTIALS is read
+    as content when it is JSON (google-auth would take it for a path)."""
+    raw = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON", "").strip()
+    if raw:
+        return raw
+    gac = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
+    return gac if gac.startswith("{") else ""
 
 
 def _vertex_ok() -> bool:
@@ -513,6 +527,10 @@ def active_provider() -> str:
         chosen, why, warn = "openai", "no local model; OPENAI_API_KEY is set", True
     elif has_anthropic():
         chosen, why, warn = "anthropic", "no local model; ANTHROPIC_API_KEY is set", True
+    elif vertex_key_json() and _vertex_ok():
+        # Off GCP, vertex only on a key somebody deliberately provided (never a
+        # developer's ADC login, see above).
+        chosen, why, warn = "vertex", "no local model; a Vertex service-account key is set", True
     else:
         # No provider at all. Still 'ollama' so every capability takes its
         # deterministic fallback rather than a hosted path that cannot work.

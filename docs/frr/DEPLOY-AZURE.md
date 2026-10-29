@@ -25,7 +25,11 @@ production path.
 The model provider is the subscription's own **Azure AI Foundry** deployment
 (`azure_ai_endpoint` / `azure_ai_deployment`); the backend identity is granted
 *Cognitive Services OpenAI User* on the account given in `azure_ai_account_id`. BYOK keys
-are optional (`byok_secrets`).
+are optional (`byok_secrets`, stored in Key Vault and injected as environment variables):
+`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or a Vertex service-account key as its JSON in
+`GOOGLE_APPLICATION_CREDENTIALS_JSON` (the project comes from the key). The native provider
+still wins under `ADVISORY_PROVIDER=auto`; set `ADVISORY_PROVIDER` (or the admin AI settings)
+to use a BYOK provider while Foundry is configured.
 
 ## One-time setup
 
