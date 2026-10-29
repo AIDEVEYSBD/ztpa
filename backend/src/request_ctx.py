@@ -61,7 +61,9 @@ from __future__ import annotations
 import contextvars
 import hmac
 import os
+from contextlib import contextmanager
 from dataclasses import dataclass
+from typing import Iterator
 
 VALID_ROLES = ("admin", "analyst", "viewer")
 
@@ -85,6 +87,8 @@ class Actor:
 
 _ctx: contextvars.ContextVar[Actor] = contextvars.ContextVar("npr_actor", default=Actor())
 _request_id: contextvars.ContextVar[str | None] = contextvars.ContextVar("npr_request_id", default=None)
+# True while background work acts for the person who started it (acting_as).
+_on_behalf: contextvars.ContextVar[bool] = contextvars.ContextVar("npr_on_behalf", default=False)
 
 
 def set_actor(role: str | None, email: str | None, sub: str | None = None) -> None:
@@ -96,6 +100,26 @@ def set_actor(role: str | None, email: str | None, sub: str | None = None) -> No
 
 def current() -> Actor:
     return _ctx.get()
+
+
+@contextmanager
+def acting_as(sub: str | None = None, email: str | None = None) -> Iterator[None]:
+    """Background work (a job) done for the person who requested it: what it
+    writes is attributed to them, and audit rows record it as agent work on
+    their behalf (`on_behalf()`), with no role claimed -- the job never checked
+    one. Restores the previous identity on exit, so a worker thread running many
+    jobs cannot carry one requester's identity into the next job."""
+    t1 = _ctx.set(Actor(email=(email or None), sub=(sub or None)))
+    t2 = _on_behalf.set(bool(sub or email))
+    try:
+        yield
+    finally:
+        _on_behalf.reset(t2)
+        _ctx.reset(t1)
+
+
+def on_behalf() -> bool:
+    return _on_behalf.get()
 
 
 def role() -> str:

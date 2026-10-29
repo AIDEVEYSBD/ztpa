@@ -613,3 +613,15 @@ Found while profiling memory. Shadowing is computed per grant (one per source ×
 
 The 300 MB byte cap did not bound memory: the raw JSON is ~1% of an ingest's peak, which follows grants. Measured 44.5 KiB a rule, so a 4 GiB worker would have been OOM-killed and retried in a loop near 85,000 rules. Now 20.8 KiB a rule (40k rules: 1.87 → 0.94 GiB): pydantic's per-instance field set shared on fully-specified grants and findings, network parsing cached, one shadowing finding per rule, stored documents serialized one at a time. `NPR_MAX_GRANTS` (450,000) rejects with the count before the review instead of crashing. Live check on a staging worker is T23 in the test backlog.
 
+### First browser walkthrough (2026-10-30)
+
+Headless Chromium through every FRR screen (`scripts/ui_walkthrough.py`): no console errors or failed requests at 1440, 1280 or 1024 px. Reading the screenshots found what no automated gate did:
+
+| Defect | Fix |
+|---|---|
+| The AI package summary told the approver "this review analyzed 183 firewall rules" — 183 was the number of proposed changes, of 400 rules reviewed | Counts passed under unmistakable names (`rules_reviewed`, `proposed_changes`); prompt `package.v2`; the narrative evaluator flags a misstated rules-reviewed count; the new prompt re-evaluated live before the CI gate accepted it |
+| Packages drafted by the agents showed "unattributed" | The run job acts for the person who started it (`request_ctx.acting_as`), audit rows marked `agent` on their behalf with no role claimed; identity reset after each job |
+| Checkboxes had no accessible name, and clicking their text did nothing | Shared `Checkbox` labelled via `aria-labelledby`; the whole row toggles |
+| Sign-out button left the user's name one letter wide | Icon button with an accessible name |
+| Register row detail ran off-screen at 1024 px; bulk buttons split across lines; package header showed only an id | Layout fixes; export file name shown |
+

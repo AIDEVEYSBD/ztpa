@@ -404,7 +404,9 @@ def _actor_identity() -> dict[str, str | None]:
     actor = request_ctx.current()
     if not (actor.email or actor.sub):
         return {"actor_email": None, "actor_sub": None, "actor_role": None}
-    return {"actor_email": actor.email, "actor_sub": actor.sub, "actor_role": actor.role}
+    return {"actor_email": actor.email, "actor_sub": actor.sub,
+            # A job acting for someone claims no role (request_ctx.acting_as).
+            "actor_role": None if request_ctx.on_behalf() else actor.role}
 
 
 def audit(cur: psycopg.Cursor, action: str, *_legacy: str, subject: str | None = None,
@@ -446,7 +448,8 @@ def audit(cur: psycopg.Cursor, action: str, *_legacy: str, subject: str | None =
 
     identity = _actor_identity()
     if actor_kind is None:
-        actor_kind = "user" if identity["actor_email"] or identity["actor_sub"] else "system"
+        actor_kind = ("agent" if request_ctx.on_behalf() else
+                      "user" if identity["actor_email"] or identity["actor_sub"] else "system")
     if actor_kind not in _ACTOR_KINDS:
         # The CHECK constraint would reject this anyway, several frames later and
         # with a message about a constraint name; failing here names the caller.

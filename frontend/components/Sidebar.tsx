@@ -179,9 +179,12 @@ export function Sidebar({ active, onSelect, counts }: {
           variant="solid"
           tone="err"
           title="Sign out"
+          aria-label="Sign out"
+          // Icon only: with the label, the button and theme toggle left the
+          // user's name ~10 px in the 232 px rail, truncated to one letter.
           onClick={() => { window.location.href = "/sso/logout"; }}
         >
-          <LogOut size={13} /> Sign out
+          <LogOut size={13} />
         </Button>
         <ThemeToggle />
       </div>

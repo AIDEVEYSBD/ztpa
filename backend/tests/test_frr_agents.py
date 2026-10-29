@@ -80,7 +80,7 @@ def test_failures_fall_back_to_labelled_engine_text(item, payload, ok, reason) -
 def test_package_summary_falls_back_with_exact_numbers() -> None:
     p = cp.parse(fx.export())
     d = pk.draft(json.loads(json.dumps(review(p).to_jsonable())), json.loads(json.dumps(p.to_jsonable())))
-    out = agents.summarise_package(d, agents.prompt("package.v1"), stub({}, ok=False))
+    out = agents.summarise_package(d, agents.agent_prompt("package_drafter"), stub({}, ok=False))
     assert out["by"] == "engine_fallback" and f"{d['summary']['items']} proposed changes" in out["summary"]
 
 
@@ -169,9 +169,20 @@ def test_an_orchestrated_run_hands_off_through_all_five_agents(runner) -> None:
                            "package_drafter", "orchestrator"]
     assessor = next(s for s in done["steps"] if s["agent"] == "impact_assessor" and s["status"] == "done")
     assert assessor["narrated"] == 7 and assessor["prompt"].startswith("impact.v1@")
+    assert assessor["fingerprint"] == agents.fingerprint("impact_assessor")
 
     pkg = c.get(f"/api/change-packages/{done['package_id']}", headers=ANALYST).json()
     assert pkg["narrative"]["summary"] == "pkg summary"
+    # Drafted by the job, attributed to whoever started the run, as agent work.
+    assert pkg["created_by"] == "sub-ada"
+    from tests.test_frr_intake import connect
+    conn = connect()
+    with conn.cursor() as cur:
+        cur.execute("SELECT actor, actor_sub, actor_role FROM ztpa.audit_log WHERE action = 'frr_package_drafted' "
+                    "AND subject = %s", [done["package_id"]])
+        row = cur.fetchone()
+    conn.close()
+    assert (row["actor"], row["actor_sub"], row["actor_role"]) == ("agent", "sub-ada", None)
     cited = [i["narrative"]["cites"] for i in pkg["items"] if i["narrative"]["cites"]]
     assert cited, "narratives should cite the retrieved standard"
     # Deterministic content untouched by the narrative.
@@ -195,3 +206,15 @@ def test_a_rerun_never_replaces_a_package_under_review(runner) -> None:
     assert second["status"] == "failed"
     assert "already under review" in second["steps"][-1]["reason"]
     assert c.get(f"/api/change-packages/{pkg['package_id']}", headers=ANALYST).json()["status"] == "draft"
+
+
+def test_acting_as_never_leaks_into_the_next_job() -> None:
+    from src import request_ctx
+    before = request_ctx.current()
+    with request_ctx.acting_as(sub="sub-x", email="x@example.com"):
+        assert request_ctx.current().sub == "sub-x" and request_ctx.on_behalf()
+    assert request_ctx.current() == before and not request_ctx.on_behalf()
+    with pytest.raises(RuntimeError):
+        with request_ctx.acting_as(sub="sub-y"):
+            raise RuntimeError("job failed")
+    assert request_ctx.current() == before and not request_ctx.on_behalf()

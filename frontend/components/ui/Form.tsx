@@ -1,6 +1,7 @@
 "use client";
 
 import type { InputHTMLAttributes, ReactNode, SelectHTMLAttributes, TextareaHTMLAttributes } from "react";
+import { useId } from "react";
 import { cn } from "@/lib/cn";
 
 const FIELD_BASE =
@@ -119,18 +120,24 @@ export function Checkbox({
   disabled?: boolean;
   className?: string;
 }) {
+  // Not a <label>: a label forwards clicks only to native inputs, so its text did
+  // nothing, and the custom checkbox inside it had no accessible name. The text
+  // names the box (aria-labelledby) and a click anywhere on the row toggles it.
+  const labelId = useId();
+  const toggle = () => { if (!disabled) onChange(!checked); };
   return (
-    <label className={cn("inline-flex cursor-pointer items-center gap-2 select-none", disabled && "opacity-40", className)}>
+    <span onClick={toggle}
+      className={cn("inline-flex cursor-pointer items-center gap-2 select-none", disabled && "opacity-40", className)}>
       <span
         role="checkbox"
         aria-checked={checked}
         aria-disabled={disabled || undefined}
+        aria-labelledby={label ? labelId : undefined}
         tabIndex={disabled ? -1 : 0}
-        onClick={() => !disabled && onChange(!checked)}
         onKeyDown={(e) => {
-          if (!disabled && (e.key === " " || e.key === "Enter")) {
+          if (e.key === " " || e.key === "Enter") {
             e.preventDefault();
-            onChange(!checked);
+            toggle();
           }
         }}
         className={cn(
@@ -144,8 +151,8 @@ export function Checkbox({
           </svg>
         ) : null}
       </span>
-      {label ? <span className="text-[13px] text-mist">{label}</span> : null}
-    </label>
+      {label ? <span id={labelId} className="text-[13px] text-mist">{label}</span> : null}
+    </span>
   );
 }
 

@@ -94,21 +94,44 @@ def score(item: dict, context: list[dict], narrative: dict) -> dict:
     }
 
 
+# "400 rules reviewed" / "analysed 183 firewall rules": a count presented as the
+# number of rules reviewed must be that number, not the number of changes.
+_RULES_COUNT = re.compile(r"(?:review(?:ed|s)?|analy[sz](?:ed|es|is)|examin(?:ed|es)|assess(?:ed|es))\D{0,20}?"
+                          r"(\d[\d,]*)\s+(?:firewall\s+|access\s+)?rules"
+                          r"|(\d[\d,]*)\s+(?:firewall\s+|access\s+)?rules\s+(?:were\s+|was\s+)?"
+                          r"(?:reviewed|analy[sz]ed|examined|assessed|in the export)", re.I)
+
+
+def miscounted_rules(text: str, rules_reviewed: int | None) -> list[str]:
+    if rules_reviewed is None:
+        return []
+    out = []
+    for m in _RULES_COUNT.finditer(text or ""):
+        n = int((m.group(1) or m.group(2)).replace(",", ""))
+        if n != rules_reviewed:
+            out.append(m.group(0))
+    return out
+
+
 def score_summary(drafted: dict, narrative: dict) -> dict:
-    facts_text = json.dumps({"stats": drafted["summary"], "items": drafted["items"][:10],
+    facts_text = json.dumps({"stats": agents.summary_stats(drafted), "items": drafted["items"][:10],
                              "limitations": drafted["limitations"][:20]}, default=str)
     text = " ".join([narrative.get("summary", ""), *narrative.get("key_risks", []),
                      narrative.get("limitations_note", "")])
     fb = narrative.get("by") == "engine_fallback"
     worst = {i["band"] for i in drafted["items"][:10]}
     soft = _SOFTENING.search(text) if not fb and worst & {"critical", "high"} else None
+    miscount = [] if fb else miscounted_rules(text, drafted["summary"].get("rules_reviewed"))
+    contradiction = (f"softens a package with critical/high items: '{soft.group(0)}'" if soft else
+                     f"misstates the rules reviewed ({drafted['summary']['rules_reviewed']}): '{miscount[0]}'"
+                     if miscount else None)
     return {"fallback": fb, "ungrounded": [] if fb else ungrounded_numbers(text, facts_text),
-            "contradiction": f"softens a package with critical/high items: '{soft.group(0)}'" if soft else None}
+            "contradiction": contradiction}
 
 
 def evaluate(items: list[dict], llm=None, parallel: int = 6, drafted: dict | None = None) -> dict[str, Any]:
     from concurrent.futures import ThreadPoolExecutor
-    p = agents.prompt("impact.v1")
+    p = agents.agent_prompt("impact_assessor")
     t0 = time.perf_counter()
     with ThreadPoolExecutor(max_workers=max(1, parallel)) as pool:
         narratives = list(pool.map(lambda it: agents.assess_item(it, CONTEXT, p, llm), items))
@@ -135,7 +158,7 @@ def evaluate(items: list[dict], llm=None, parallel: int = 6, drafted: dict | Non
     }
     if drafted is not None:
         out["package_summary"] = score_summary(
-            drafted, agents.summarise_package(drafted, agents.prompt("package.v1"), llm))
+            drafted, agents.summarise_package(drafted, agents.agent_prompt("package_drafter"), llm))
     return out
 
 

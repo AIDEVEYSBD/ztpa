@@ -37,6 +37,19 @@ export function PackageScreen({ exportId, link, setLink, onGoToExports }: {
   const [busy, setBusy] = useState<string | null>(null);
   const [conflictId, setConflictId] = useState<string>();
   const [pasted, setPasted] = useState("");
+  // The export's file name for the header; the id alone is not recognisable.
+  // On failure the short id stays and the header says the name could not be read.
+  const [filename, setFilename] = useState<string | null>(null);
+  const [nameErr, setNameErr] = useState<ApiError>();
+  useEffect(() => {
+    let live = true;
+    setFilename(null);
+    setNameErr(undefined);
+    frr.exportById(exportId)
+      .then((e) => { if (live) setFilename(e.filename ?? null); })
+      .catch((e) => { if (live) setNameErr(asApiError(e)); });
+    return () => { live = false; };
+  }, [exportId]);
 
   const startRun = () => {
     setBusy("run");
@@ -101,7 +114,10 @@ export function PackageScreen({ exportId, link, setLink, onGoToExports }: {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-[11.5px] text-faint">Export <span className="font-mono text-dim">{exportId.slice(0, 8)}</span></span>
+        <span className="text-[11.5px] text-faint">Export{" "}
+          {filename ? <span className="font-medium text-fg">{filename}</span> : null}
+          {nameErr ? <span className="text-faint" title={nameErr.message}>(name unavailable)</span> : null}{" "}
+          <span className="font-mono text-dim">{exportId.slice(0, 8)}</span></span>
         <Button size="sm" variant="quiet" tone="neutral" className="ml-auto" onClick={onGoToExports}>Change export</Button>
       </div>
       {me.status === "error" && <InlineError resource="your review duties" error={me.error} />}

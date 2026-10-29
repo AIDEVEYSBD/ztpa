@@ -99,15 +99,18 @@ export function PackageItemsList({ pkg, me, meLoading, onDecided }: {
       </div>
       {isOwner && page && page.total > 1 && (
         <div className="flex flex-wrap items-end gap-2 rounded-md border border-line bg-raise/40 p-2.5">
-          <div className="mb-1.5 text-[12px] text-dim">
+          <div className="basis-full text-[12px] text-dim">
             Decide every <strong className="text-fg">undecided</strong> item matching these filters at once:
           </div>
           <Field label="Note (required to reject)" htmlFor="pkg-bulk-note" className="min-w-[16rem] flex-1">
             <Input id="pkg-bulk-note" value={bulkNote} maxLength={4000} onChange={(e) => setBulkNote(e.target.value)} />
           </Field>
-          <Button size="sm" tone="ink" loading={bulkBusy} onClick={() => bulk("accept")}>Accept all</Button>
-          <Button size="sm" variant="outline" tone="ink" loading={bulkBusy} disabled={!bulkNote.trim()}
-            onClick={() => bulk("reject")}>Reject all</Button>
+          {/* One group, so the pair wraps together rather than splitting. */}
+          <div className="flex shrink-0 gap-2">
+            <Button size="sm" tone="ink" loading={bulkBusy} onClick={() => bulk("accept")}>Accept all</Button>
+            <Button size="sm" variant="outline" tone="ink" loading={bulkBusy} disabled={!bulkNote.trim()}
+              onClick={() => bulk("reject")}>Reject all</Button>
+          </div>
           {bulkDone && <p role="status" className="basis-full text-[11.5px] text-dim">{bulkDone}</p>}
           {bulkErr !== undefined && <ActionError action="apply the bulk decision" error={bulkErr} className="basis-full" />}
         </div>

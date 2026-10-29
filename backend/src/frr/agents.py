@@ -38,7 +38,7 @@ from typing import Any, Callable, Optional
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
-from .. import storage
+from .. import request_ctx, storage
 from ..advisory.client import complete, parse_json
 from ..jobs import JobContext, handler
 from . import knowledge, package as package_mod, workflow
@@ -70,12 +70,17 @@ class Prompt:
         return f"{self.name}@{hashlib.sha256(self.text.encode()).hexdigest()[:12]}"
 
 
+def agent_prompt(agent: str) -> Prompt:
+    """The prompt an agent runs with, from the registry (one place to change it)."""
+    return prompt(next(a.prompt for a in AGENTS if a.key == agent and a.prompt))
+
+
 def fingerprint(agent: str) -> str:
     """`agent@hash` over everything tuned for a model-backed agent: prompt text,
     sampling, and for the impact assessor retrieval depth, excerpt size and the
     retrieval query builder (part of its behaviour). Equal fingerprints mean the
     evaluated configuration is the one running."""
-    p = prompt(next(a.prompt for a in AGENTS if a.key == agent and a.prompt))
+    p = agent_prompt(agent)
     knobs = {"temperature": TEMPERATURE, "facts_chars": FACTS_CHARS}
     if agent == "impact_assessor":
         knobs |= {"retrieval_k": RETRIEVAL_K, "excerpt_chars": EXCERPT_CHARS,
@@ -102,7 +107,7 @@ AGENTS = (
     Agent("policy_checker", "effective policy and the deterministic rule-risk register", "deterministic"),
     Agent("impact_assessor", "availability and business impact narrative per item", "llm-narrative", "impact.v1"),
     Agent("package_drafter", "change package with rollback, plus its executive summary",
-          "deterministic + llm-narrative", "package.v1"),
+          "deterministic + llm-narrative", "package.v2"),
 )
 
 
@@ -169,10 +174,22 @@ def assess_item(item: dict, context: list[dict], p: Prompt,
     return out.model_dump() | {"by": f"{r.provider}:{r.model}", "prompt": p.version}
 
 
+def summary_stats(drafted: dict) -> dict:
+    """The package counts under names that cannot be mistaken for each other: a
+    bare `items` was summarised as "183 rules analysed" for 400 rules reviewed."""
+    s = drafted["summary"]
+    out = {"proposed_changes": s["items"],
+           "proposed_changes_by_availability_impact": s["by_impact"],
+           "proposed_changes_by_proposal": s["by_proposal"]}
+    if s.get("rules_reviewed") is not None:               # packages drafted before it was recorded
+        out = {"rules_reviewed": s["rules_reviewed"], **out}
+    return out
+
+
 def summarise_package(drafted: dict, p: Prompt, llm: Optional[Callable[..., Any]] = None) -> dict:
     top = [{k: i[k] for k in ("rule_number", "check", "band", "proposal", "availability_impact", "rationale")}
            for i in drafted["items"][:10]]
-    facts = {"stats": drafted["summary"], "top_items": top, "limitations": drafted["limitations"][:20]}
+    facts = {"stats": summary_stats(drafted), "top_items": top, "limitations": drafted["limitations"][:20]}
     r = (llm or complete)(system=p.text, user=json.dumps(facts, default=str)[:FACTS_CHARS], role="prose",
             temperature=TEMPERATURE, expect_json=True, capability="frr_package")
     if getattr(r, "ok", False):
@@ -197,6 +214,20 @@ def _step(cur, run_id: str, agent: str, status: str, **detail) -> None:
 
 @handler("frr.review_run")
 def review_run(ctx: JobContext, *, llm: Optional[Callable[..., Any]] = None) -> dict:
+    """Runs as the person who started the run: the package and its audit rows
+    are theirs (as agent work on their behalf), not unattributed."""
+    with ctx.conn.cursor() as cur:
+        # The run records the starter's sub (an opaque id under SSO); their email,
+        # when the user directory knows them, is what a reader recognises.
+        cur.execute("""SELECT r.created_by, u.email FROM ztpa.frr_runs r
+                         LEFT JOIN ztpa.app_users u ON u.sso_sub = r.created_by
+                        WHERE r.run_id = %s""", [ctx.payload["run_id"]])
+        row = cur.fetchone() or {}
+    with request_ctx.acting_as(sub=row.get("created_by"), email=row.get("email")):
+        return _review_run(ctx, llm=llm)
+
+
+def _review_run(ctx: JobContext, *, llm: Optional[Callable[..., Any]] = None) -> dict:
     run_id = ctx.payload["run_id"]
     cur = ctx.conn.cursor()
     cur.execute("SELECT r.*, e.status AS export_status, e.parsed_key, e.review_key "
@@ -226,7 +257,7 @@ def review_run(ctx: JobContext, *, llm: Optional[Callable[..., Any]] = None) -> 
     from . import context
     ctx_counts = context.enrich_package(cur, drafted, parsed)
     _step(cur, run_id, "impact_assessor", "context", **ctx_counts)
-    impact_prompt, pkg_prompt = prompt("impact.v1"), prompt("package.v1")
+    impact_prompt, pkg_prompt = agent_prompt("impact_assessor"), agent_prompt("package_drafter")
     narratives: dict[str, dict] = {}
     narrated = fallbacks = 0
     # Retrieval first, in order: it uses this job's one database cursor. Then the

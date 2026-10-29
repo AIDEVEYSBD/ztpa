@@ -30,7 +30,7 @@ def test_items_span_several_checks() -> None:
 
 
 def _summary(facts: dict, text: str | None = None) -> R:
-    return R(json.dumps({"summary": text or f"{facts['stats']['items']} proposed changes, worst first.",
+    return R(json.dumps({"summary": text or f"{facts['stats']['proposed_changes']} proposed changes, worst first.",
                          "key_risks": [], "limitations_note": ""}))
 
 
@@ -82,3 +82,23 @@ def test_fallbacks_are_counted_by_reason() -> None:
     m = ne.evaluate(ITEMS, lambda **kw: R("", ok=False, error="quota exceeded"))
     assert m["fallback_rate"] == 1.0 and m["fallback_reasons"] == {"quota exceeded": len(ITEMS)}
     assert m["contradictions"] == 0                    # engine text is never a contradiction
+
+
+def test_calling_proposed_changes_the_rules_reviewed_is_a_contradiction() -> None:
+    reviewed, changes = DRAFTED["summary"]["rules_reviewed"], DRAFTED["summary"]["items"]
+    assert reviewed != changes
+
+    def llm_with(text):
+        def llm(**kw):
+            if kw["capability"] == "frr_package":
+                facts = json.loads(kw["user"])
+                assert facts["stats"]["rules_reviewed"] == reviewed               # named, not a bare "items"
+                assert facts["stats"]["proposed_changes"] == changes and "items" not in facts["stats"]
+                return _summary(facts, text)
+            return R(json.dumps({"summary": "Flagged.", "availability_note": "", "owner_questions": [], "cites": []}))
+        return llm
+    wrong = ne.evaluate(ITEMS[:1], llm_with(f"This review analyzed {changes} firewall rules."), drafted=DRAFTED)
+    assert "misstates the rules reviewed" in " ".join(ne.gate(wrong))
+    right = ne.evaluate(ITEMS[:1], llm_with(f"Of {reviewed} rules reviewed, {changes} changes are proposed."),
+                        drafted=DRAFTED)
+    assert ne.gate(right) == []

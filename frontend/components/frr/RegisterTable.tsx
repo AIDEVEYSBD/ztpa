@@ -109,7 +109,7 @@ export function RegisterTable({ items, feedback }: {
                 {isOpen && (
                   <tr className="border-b border-line bg-raise/25">
                     <td colSpan={10} className="px-4 py-3">
-                      <div className="grid gap-3 lg:grid-cols-[1fr_1.4fr]">
+                      <div className="grid gap-3 xl:grid-cols-[1fr_1.4fr]">
                         <div className="space-y-1.5 text-[11.5px]">
                           <div><span className="text-faint">Sources </span><List xs={e.sources} /></div>
                           <div><span className="text-faint">Destinations </span><List xs={e.destinations} /></div>

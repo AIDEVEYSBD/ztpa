@@ -200,7 +200,7 @@ def draft(review: dict, parsed: dict) -> dict:
     for it in items:
         impact[it.availability_impact] = impact.get(it.availability_impact, 0) + 1
     return {"items": [asdict(i) for i in items],
-            "summary": {"items": len(items), "by_impact": impact,
+            "summary": {"items": len(items), "rules_reviewed": len(review.get("register", [])), "by_impact": impact,
                         "by_proposal": {p: sum(1 for i in items if i.proposal == p)
                                         for p in sorted({i.proposal for i in items})}},
             "limitations": review.get("limitations", []),
