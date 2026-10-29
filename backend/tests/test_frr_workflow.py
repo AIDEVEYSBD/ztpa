@@ -161,3 +161,27 @@ def test_four_eyes_is_a_database_constraint(matrix) -> None:
                         "decided_by='x' WHERE package_id = %s", [pkg["package_id"]])
     conn.rollback()
     conn.close()
+
+
+def test_large_packages_page_their_items_with_facets(matrix, monkeypatch) -> None:
+    from src.frr import workflow
+    monkeypatch.setattr(workflow, "ITEMS_INLINE", 3)                     # make the fixture package "large"
+    c = matrix
+    pkg = _draft(c, _accepted_export(c)).json()
+    assert pkg["items_inline"] is False and "items" not in pkg
+    f = pkg["facets"]
+    assert f["total"] == 7 and f["undecided"] == 7 and sum(f["by_band"].values()) == 7
+    page1 = c.get(f"/api/change-packages/{pkg['package_id']}/items", params={"limit": 4}, headers=ANALYST).json()
+    page2 = c.get(f"/api/change-packages/{pkg['package_id']}/items", params={"limit": 4, "offset": 4},
+                  headers=ANALYST).json()
+    assert page1["total"] == 7 and len(page1["items"]) == 4 and len(page2["items"]) == 3
+    assert not {i["item_id"] for i in page1["items"]} & {i["item_id"] for i in page2["items"]}
+    assert page1["items"][0]["band"] == "critical"
+    crit = c.get(f"/api/change-packages/{pkg['package_id']}/items", params={"band": "critical"}, headers=ANALYST).json()
+    assert crit["total"] == f["by_band"]["critical"]
+    it = page1["items"][0]
+    c.put(f"/api/change-packages/{pkg['package_id']}/items/{it['item_id']}",
+          json={"decision": "reject", "note": "known exception"}, headers=OWNER)
+    left = c.get(f"/api/change-packages/{pkg['package_id']}/items", params={"decided": "false"}, headers=ANALYST).json()
+    assert left["total"] == 6
+    assert c.get(f"/api/change-packages/{pkg['package_id']}", headers=ANALYST).json()["facets"]["undecided"] == 6

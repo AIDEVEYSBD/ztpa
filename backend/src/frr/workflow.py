@@ -18,6 +18,7 @@ yields a runbook a person executes.
 
 from __future__ import annotations
 
+import json
 from typing import Any, Optional
 
 import psycopg
@@ -93,28 +94,64 @@ def create(cur: psycopg.Cursor, export_id: str, drafted: dict, *, supersede: boo
                 [export_id, Jsonb(drafted["summary"]), Jsonb(drafted["limitations"]),
                  Jsonb(drafted["notes"]), actor()])
     pkg = cur.fetchone()
-    for it in drafted["items"]:
-        cur.execute(
-            """INSERT INTO ztpa.change_package_items
-                   (package_id, item_id, rule_uid, layer, rule_number, rule_name, check_kind, band,
-                    proposal, rationale, availability_impact, requires_owner_input, commands,
-                    rollback, evidence)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-            [pkg["package_id"], it["item_id"], it["rule_uid"], it["layer"], it["rule_number"],
-             it["rule_name"], it["check"], it["band"], it["proposal"], it["rationale"],
-             it["availability_impact"], Jsonb(it["requires_owner_input"]), Jsonb(it["commands"]),
-             Jsonb(it["rollback"]), Jsonb(it["evidence"])])
+    # COPY, not one INSERT per item: a 70,000-rule review drafts ~32,000 items.
+    with cur.copy("""COPY ztpa.change_package_items
+                       (package_id, item_id, rule_uid, layer, rule_number, rule_name, check_kind, band,
+                        proposal, rationale, availability_impact, requires_owner_input, commands,
+                        rollback, evidence) FROM STDIN""") as cp:
+        for it in drafted["items"]:
+            cp.write_row((pkg["package_id"], it["item_id"], it["rule_uid"], it["layer"], it["rule_number"],
+                          it["rule_name"], it["check"], it["band"], it["proposal"], it["rationale"],
+                          it["availability_impact"], json.dumps(it["requires_owner_input"]),
+                          json.dumps(it["commands"]), json.dumps(it["rollback"]),
+                          json.dumps(it["evidence"], default=str)))
     audit(cur, "frr_package_drafted", subject=str(pkg["package_id"]),
           detail={"export_id": export_id, "items": len(drafted["items"]), "superseded": bool(live)})
     return pkg
 
 
-def get(cur: psycopg.Cursor, package_id: str) -> dict:
+_ORDER = ("CASE band WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, "
+          "rule_number NULLS LAST, item_id")
+ITEMS_INLINE = 500           # packages up to this size return their items with the package
+
+
+def get(cur: psycopg.Cursor, package_id: str, *, with_items: Optional[bool] = None) -> dict:
+    """The package with its facet counts. Items are inlined for small packages;
+    large ones are read through `items()` a page at a time (a 32,000-item package
+    inlined was a 49 MiB response)."""
     pkg = _package(cur, package_id)
-    cur.execute("SELECT * FROM ztpa.change_package_items WHERE package_id = %s ORDER BY "
-                "CASE band WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, "
-                "rule_number NULLS LAST", [package_id])
-    return {**pkg, "items": cur.fetchall()}
+    cur.execute("SELECT count(*) AS total, count(*) FILTER (WHERE owner_decision IS NULL) AS undecided "
+                "FROM ztpa.change_package_items WHERE package_id = %s", [package_id])
+    f = cur.fetchone()
+    facets = {"total": f["total"], "undecided": f["undecided"]}
+    for col in ("band", "proposal", "availability_impact", "layer", "owner_decision"):
+        cur.execute(f"SELECT coalesce({col}, 'undecided') AS k, count(*) AS n FROM ztpa.change_package_items "
+                    f"WHERE package_id = %s GROUP BY 1", [package_id])
+        facets[f"by_{col}"] = {r["k"]: r["n"] for r in cur.fetchall()}
+    inline = facets["total"] <= ITEMS_INLINE if with_items is None else with_items
+    out = {**pkg, "facets": facets, "items_inline": inline}
+    if inline:
+        cur.execute(f"SELECT * FROM ztpa.change_package_items WHERE package_id = %s ORDER BY {_ORDER}", [package_id])
+        out["items"] = cur.fetchall()
+    return out
+
+
+def items(cur: psycopg.Cursor, package_id: str, *, band=None, proposal=None, impact=None, layer=None,
+          decided: Optional[bool] = None, limit: int = 100, offset: int = 0) -> dict:
+    _package(cur, package_id)
+    where, params = ["package_id = %s"], [package_id]
+    for col, val in (("band", band), ("proposal", proposal), ("availability_impact", impact), ("layer", layer)):
+        if val:
+            where.append(f"{col} = %s")
+            params.append(val)
+    if decided is not None:
+        where.append("owner_decision IS NOT NULL" if decided else "owner_decision IS NULL")
+    clause = " AND ".join(where)
+    cur.execute(f"SELECT count(*) AS n FROM ztpa.change_package_items WHERE {clause}", params)
+    total = cur.fetchone()["n"]
+    cur.execute(f"SELECT * FROM ztpa.change_package_items WHERE {clause} ORDER BY {_ORDER} LIMIT %s OFFSET %s",
+                params + [limit, offset])
+    return {"total": total, "items": cur.fetchall(), "limit": limit, "offset": offset}
 
 
 def decide_item(cur: psycopg.Cursor, package_id: str, item_id: str, decision: str,
@@ -198,7 +235,7 @@ def decide(cur: psycopg.Cursor, package_id: str, decision: str, note: Optional[s
 def runbook(cur: psycopg.Cursor, package_id: str) -> str:
     """The approved package as the text an engineer executes: accepted and
     modified items only, each with its rollback, under the approval record."""
-    pkg = get(cur, package_id)
+    pkg = get(cur, package_id, with_items=True)
     if pkg["status"] != "approved":
         raise WorkflowError(409, f"package is {pkg['status']}; a runbook exists only once approved")
     lines = [f"# Firewall rule review change package {package_id}",

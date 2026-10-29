@@ -9,7 +9,7 @@ import { requestJson as j, requestText } from "./api";
 import type {
   ApproverGrant, ChangePackage, ExportList, FrrExport, FrrMe, FrrRun, KnowledgeDoc, KnowledgeHit,
   KnowledgeKind, OwnerDecision, OwnerInput, PackageItem, ReviewPage, ReviewQuery, UploadResult,
-  FrrDuty, FeedbackBand, FeedbackList, FeedbackRow, FeedbackVerdict, ContextDataset, ContextKind, EffectivePolicyGateway, CompareResult,
+  FrrDuty, FeedbackBand, FeedbackList, FeedbackRow, FeedbackVerdict, ContextDataset, ContextKind, EffectivePolicyGateway, CompareResult, PackageItemPage,
 } from "./frrTypes";
 
 const enc = encodeURIComponent;
@@ -88,6 +88,9 @@ export const frr = {
   draftPackage: (exportId: string, supersede = false) =>
     j<ChangePackage>(`/api/exports/${enc(exportId)}/change-package${supersede ? "?supersede=true" : ""}`, postJson()),
   pkg: (id: string) => j<ChangePackage>(`/api/change-packages/${enc(id)}`),
+  pkgItems: (id: string, q: { band?: string; impact?: string; proposal?: string; layer?: string;
+                              decided?: boolean; limit?: number; offset?: number } = {}) =>
+    j<PackageItemPage>(`/api/change-packages/${enc(id)}/items${query({ ...q, limit: q.limit ?? 50, offset: q.offset ?? 0 })}`),
   decideItem: (pkgId: string, itemId: string, body: { decision: OwnerDecision; input?: OwnerInput; note?: string }) =>
     j<PackageItem>(`/api/change-packages/${enc(pkgId)}/items/${enc(itemId)}`, postJson(body, "PUT")),
   validate: (pkgId: string, note?: string) =>

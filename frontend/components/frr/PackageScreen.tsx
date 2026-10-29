@@ -17,10 +17,10 @@ import { Bot, FileStack, RotateCw } from "lucide-react";
 import { asApiError, type ApiError } from "@/lib/api";
 import { frr } from "@/lib/frr";
 import type { ChangePackage, FrrMe, FrrRun, PackageItem } from "@/lib/frrTypes";
-import { Banner, Button, Chip, EmptyState, Field, Input, Panel, Skeleton } from "../ui";
+import { Banner, Button, Chip, Field, Input, Panel, Skeleton } from "../ui";
 import { ErrorState, InlineError } from "../ui/Feedback";
-import { ActionError, BANDS, IMPACT, PACKAGE_STATUS, firstUuid, hasDuty, impactMeta, proposalLabel, useFrrMe, when, AuthorChip, authorLabel } from "./bits";
-import { PackageItemCard } from "./PackageItemCard";
+import { ActionError, IMPACT, PACKAGE_STATUS, firstUuid, impactMeta, proposalLabel, useFrrMe, when, AuthorChip, authorLabel } from "./bits";
+import { PackageItemsList } from "./PackageItemsList";
 import { PackageActions } from "./PackageWorkflow";
 import { RunSteps } from "./RunSteps";
 import type { FrrLink } from "./selection";
@@ -141,8 +141,8 @@ function PackageLoader({ packageId, me, meLoading, footer }: {
   }, [packageId, attempt]);
 
   const reload = () => setAttempt((n) => n + 1);
-  const onItem = (it: PackageItem) =>
-    setPkg((p) => (p ? { ...p, items: p.items.map((x) => (x.item_id === it.item_id ? { ...x, ...it } : x)) } : p));
+  // A decision changes the facet counts (undecided, by decision): refresh the header.
+  const onItem = (_it: PackageItem) => reload();
 
   if (err && !pkg) return <div className="space-y-4"><ErrorState resource={`change package ${packageId.slice(0, 8)}`} error={err} onRetry={reload} />{footer}</div>;
   if (!pkg) return <div className="space-y-3"><Skeleton className="h-[120px] w-full rounded-lg" /><Skeleton className="h-[220px] w-full rounded-lg" /></div>;
@@ -152,7 +152,7 @@ function PackageLoader({ packageId, me, meLoading, footer }: {
       {err && <InlineError resource="the latest package state" error={err} onRetry={reload} />}
       <PackageHeader pkg={pkg} onReload={reload} />
       <PackageActions pkg={pkg} me={me} onChanged={reload} />
-      <PackageItems pkg={pkg} me={me} meLoading={meLoading} onItem={onItem} />
+      <PackageItemsList pkg={pkg} me={me} meLoading={meLoading} onDecided={onItem} />
       {pkg.status === "draft" || pkg.status === "rejected" || pkg.status === "superseded" ? footer : null}
     </div>
   );
@@ -193,7 +193,7 @@ function PackageHeader({ pkg, onReload }: { pkg: ChangePackage; onReload: () => 
       <div className="flex flex-wrap gap-x-8 gap-y-3 rounded-lg border border-line bg-surface px-4 py-3 elev-1">
         <div>
           <div className="text-[10.5px] text-faint">Items</div>
-          <div className="tnum text-[20px] font-semibold">{pkg.summary?.items ?? pkg.items.length}</div>
+          <div className="tnum text-[20px] font-semibold">{pkg.facets?.total ?? pkg.summary?.items ?? 0}</div>
         </div>
         <div>
           <div className="text-[10.5px] text-faint">By availability impact</div>
@@ -222,38 +222,6 @@ function PackageHeader({ pkg, onReload }: { pkg: ChangePackage; onReload: () => 
           </ul>
         </Banner>
       )}
-    </div>
-  );
-}
-
-function PackageItems({ pkg, me, meLoading, onItem }: {
-  pkg: ChangePackage;
-  me: FrrMe | undefined;
-  meLoading: boolean;
-  onItem: (it: PackageItem) => void;
-}) {
-  if (pkg.items.length === 0) {
-    return <EmptyState icon={FileStack} title="This package has no items" sub="The register produced no change proposals for this export." />;
-  }
-  return (
-    <div className="space-y-5">
-      {BANDS.map((b) => {
-        const xs = pkg.items.filter((i) => i.band === b);
-        if (xs.length === 0) return null;
-        return (
-          <section key={b} className="space-y-2.5" aria-label={`${b} items`}>
-            <h3 className="text-[11px] font-medium tracking-[0.08em] text-faint uppercase">{b} · {xs.length}</h3>
-            {xs.map((it) => {
-              const owner = hasDuty(me, "network_owner", it.layer);
-              const canDecide = pkg.status === "draft" && owner;
-              const decideNote = pkg.status !== "draft" ? undefined
-                : meLoading ? "Checking your duties…"
-                  : `Deciding needs the network_owner duty for layer ${it.layer}.`;
-              return <PackageItemCard key={it.item_id} pkgId={pkg.package_id} item={it} canDecide={canDecide} decideNote={decideNote} onDecided={onItem} />;
-            })}
-          </section>
-        );
-      })}
     </div>
   );
 }

@@ -78,7 +78,21 @@ def draft_package(export_id: str, supersede: bool = Query(False)):
 
 @router.get("/api/change-packages/{package_id}")
 def get_package(package_id: str):
+    """Header, summary, narrative and facet counts; items inline when the
+    package is small (`items_inline`), otherwise from /items."""
     return _jsonable(_run(wf.get, package_id))
+
+
+@router.get("/api/change-packages/{package_id}/items")
+def get_package_items(package_id: str,
+                      band: Optional[str] = Query(None, pattern="^(critical|high|medium|low)$"),
+                      proposal: Optional[str] = Query(None, max_length=40),
+                      impact: Optional[str] = Query(None, max_length=40),
+                      layer: Optional[str] = Query(None, max_length=200),
+                      decided: Optional[bool] = Query(None),
+                      limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0)):
+    return _jsonable(_run(wf.items, package_id, band=band, proposal=proposal, impact=impact, layer=layer,
+                          decided=decided, limit=limit, offset=offset))
 
 
 class ItemDecision(BaseModel):

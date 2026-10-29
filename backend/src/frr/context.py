@@ -286,6 +286,44 @@ def observed_sources(cur, dest_cidrs: list[str], proto: str, port_lo: Optional[i
             "truncated": len(ranked) > SUGGEST_MAX}
 
 
+def _owners_batch(cur, dataset_id, nets: list[str]) -> dict[str, list[dict]]:
+    """CMDB rows overlapping each of `nets`, in ONE query (the per-item version
+    was 32,000 round trips -- 16.7 s -- on a 70,000-rule package)."""
+    if not nets:
+        return {}
+    cur.execute("""SELECT q.net::text AS q, host(a.net) || '/' || masklen(a.net) AS net, a.owner, a.application,
+                          a.environment, a.zone, a.criticality, masklen(a.net) AS plen
+                     FROM unnest(%s::cidr[]) AS q(net)
+                     JOIN ztpa.cmdb_assets a ON a.dataset_id = %s AND a.net && q.net""", [nets, dataset_id])
+    out: dict[str, list[dict]] = defaultdict(list)
+    for r in cur.fetchall():
+        out[str(ipaddress.ip_network(r.pop("q"), strict=False))].append(r)
+    return out
+
+
+def _observed_batch(cur, dataset_id, probes: list[tuple[int, str, str, Optional[int], Optional[int]]],
+                    since: datetime) -> dict[int, dict[str, dict]]:
+    """Observed sources per probe key, grouped /24 (IPv4) or /64 (IPv6), in ONE
+    query over every narrowing grant. probes = (key, dst cidr, proto, port lo, hi)."""
+    if not probes:
+        return {}
+    k, d, p, lo, hi = (list(x) for x in zip(*probes))
+    cur.execute("""SELECT q.k,
+                          network(set_masklen(f.src, CASE WHEN family(f.src) = 4 THEN 24 ELSE 64 END))::text AS grp,
+                          count(DISTINCT f.src) AS sources, sum(f.flows) AS flows
+                     FROM unnest(%s::int[], %s::cidr[], %s::text[], %s::int[], %s::int[]) AS q(k, dst, proto, lo, hi)
+                     JOIN ztpa.flows f ON f.dataset_id = %s AND f.last_seen >= %s AND f.dst <<= q.dst
+                                      AND (q.proto = 'any' OR f.proto = q.proto)
+                                      AND (q.lo IS NULL OR f.port BETWEEN q.lo AND coalesce(q.hi, q.lo))
+                    GROUP BY q.k, grp""", [k, d, p, lo, hi, dataset_id, since])
+    out: dict[int, dict[str, dict]] = defaultdict(dict)
+    for r in cur.fetchall():
+        g = out[r["k"]].setdefault(r["grp"], {"cidr": r["grp"], "sources": 0, "flows": 0})
+        g["sources"] += int(r["sources"])
+        g["flows"] += int(r["flows"])
+    return out
+
+
 def enrich_package(cur, drafted: dict, parsed: dict, *, now: Optional[datetime] = None) -> dict:
     """Attach context to drafted items, in place:
 
@@ -294,40 +332,54 @@ def enrich_package(cur, drafted: dict, parsed: dict, *, now: Optional[datetime] 
       `evidence.suggested_input` -- the observed source groups and the rule's
       services, as a PREFILL the network owner confirms or edits. Flows are
       evidence of use, not proof of need, so nothing is accepted on their basis.
+
+    Two set-based queries for the whole package, whatever its size.
     Returns counts for the run log."""
     grants: dict[str, list[dict]] = defaultdict(list)
     for rec in parsed.get("records", []):
         grants[rec["raw_ref"]].append(rec)
-    has_flows = active(cur, "flows") is not None
+    cmdb, flows_ds = active(cur, "cmdb"), active(cur, "flows")
     counts = {"owners": 0, "observed": 0, "no_flows": 0}
-    for item in drafted["items"]:
-        recs = grants.get(item["rule_uid"], [])
-        dest = sorted({c for r in recs for c in r.get("dest_cidrs") or []} - {"0.0.0.0/0", "::/0"})
-        owners = owners_for(cur, dest)
-        if owners:
-            item["evidence"]["dest_owners"] = owners[:10]
-            counts["owners"] += 1
-        if item["proposal"] != "time_bound_and_narrow":
-            continue
-        if not has_flows:
-            counts["no_flows"] += 1
-            continue
-        suggested: dict[str, dict] = {}
-        services: list[str] = []
-        for r in recs:
-            services.append(r["service"])
-            obs = observed_sources(cur, r.get("dest_cidrs") or [], r.get("protocol") or "any",
-                                   r.get("port"), r.get("port_end"), now=now)
-            for g in (obs or {}).get("suggested", []):
-                cur_g = suggested.setdefault(g["cidr"], {"cidr": g["cidr"], "sources": 0, "flows": 0})
-                cur_g["sources"] += g["sources"]
-                cur_g["flows"] += g["flows"]
-        top = sorted(suggested.values(), key=lambda g: -g["flows"])[:SUGGEST_MAX]
+
+    def dests(item) -> list[str]:
+        return sorted({str(ipaddress.ip_network(c, strict=False)) for r in grants.get(item["rule_uid"], [])
+                       for c in r.get("dest_cidrs") or []} - {"0.0.0.0/0", "::/0"})
+
+    if cmdb:
+        all_nets = sorted({n for it in drafted["items"] for n in dests(it)})
+        by_net = _owners_batch(cur, cmdb["dataset_id"], all_nets)
+        for item in drafted["items"]:
+            rows: dict[str, dict] = {}
+            for n in dests(item):
+                for r in by_net.get(n, []):
+                    rows.setdefault(r["net"], r)
+            if rows:
+                ordered = sorted(rows.values(), key=lambda r: -r["plen"])[:10]
+                item["evidence"]["dest_owners"] = [{k: v for k, v in r.items() if k != "plen"} for r in ordered]
+                counts["owners"] += 1
+
+    narrowing = [(i, it) for i, it in enumerate(drafted["items"]) if it["proposal"] == "time_bound_and_narrow"]
+    if not flows_ds:
+        counts["no_flows"] = len(narrowing)
+        drafted.setdefault("limitations", []).append(
+            "no flow data loaded: narrowing proposals carry no observed sources")
+        return counts
+    probes = []
+    for i, it in narrowing:
+        for r in grants.get(it["rule_uid"], []):
+            for c in r.get("dest_cidrs") or []:
+                probes.append((i, c, r.get("protocol") or "any", r.get("port"), r.get("port_end")))
+    since = (now or datetime.now(timezone.utc)) - timedelta(days=FLOW_WINDOW_DAYS)
+    observed = _observed_batch(cur, flows_ds["dataset_id"], probes, since)
+    for i, item in narrowing:
+        groups = observed.get(i, {})
+        top = sorted(groups.values(), key=lambda g: -g["flows"])[:SUGGEST_MAX]
+        services = sorted(dict.fromkeys(r["service"] for r in grants.get(item["rule_uid"], [])))
         item["evidence"]["observed_sources"] = {"window_days": FLOW_WINDOW_DAYS, "groups": top,
-                                                "truncated": len(suggested) > SUGGEST_MAX}
+                                                "truncated": len(groups) > SUGGEST_MAX}
         if top:
             item["evidence"]["suggested_input"] = {"allowed_sources": [g["cidr"] for g in top],
-                                                   "allowed_services": sorted(dict.fromkeys(services))}
+                                                   "allowed_services": services}
             item["rationale"] += (f" Flows over the last {FLOW_WINDOW_DAYS} days show "
                                   f"{sum(g['sources'] for g in top)} source(s) in {len(top)} group(s) using it; "
                                   "they are offered as the narrowed sources for the owner to confirm.")
@@ -335,7 +387,4 @@ def enrich_package(cur, drafted: dict, parsed: dict, *, now: Optional[datetime] 
             item["rationale"] += (f" No flows matched this rule in the last {FLOW_WINDOW_DAYS} days; if that "
                                   "is accurate, the owner may prefer to remove it.")
         counts["observed"] += 1
-    if not has_flows:
-        drafted.setdefault("limitations", []).append(
-            "no flow data loaded: narrowing proposals carry no observed sources")
     return counts

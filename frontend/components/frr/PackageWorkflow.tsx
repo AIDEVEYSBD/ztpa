@@ -46,8 +46,10 @@ export function PackageTimeline({ pkg }: { pkg: ChangePackage }) {
 }
 
 export function PackageActions({ pkg, me, onChanged }: { pkg: ChangePackage; me: FrrMe | undefined; onChanged: () => void }) {
-  const layers = Array.from(new Set(pkg.items.map((i) => i.layer)));
-  const undecided = pkg.items.filter((i) => !i.owner_decision).length;
+  // From the facets, not the items: a large package's items are paged.
+  const layers = Object.keys(pkg.facets?.by_layer ?? {});
+  const undecided = pkg.facets?.undecided ?? 0;
+  const total = pkg.facets?.total ?? 0;
   const isOwner = hasDutyForAll(me, "network_owner", layers);
   const isApprover = hasDutyForAll(me, "security_approver", layers);
   const myEmail = me?.email?.toLowerCase() ?? "";
@@ -90,7 +92,7 @@ export function PackageActions({ pkg, me, onChanged }: { pkg: ChangePackage; me:
         <p className="text-[12.5px] text-dim">
           {undecided === 0
             ? "Every item has a decision. Validating hands the package to a security approver; items can no longer be changed."
-            : `${undecided} of ${pkg.items.length} item${pkg.items.length === 1 ? "" : "s"} still need a decision before the package can be validated.`}
+            : `${undecided} of ${total} item${total === 1 ? "" : "s"} still need a decision before the package can be validated.`}
         </p>
         <Field label="Validation note (optional)" htmlFor="frr-validate-note">
           <Textarea id="frr-validate-note" rows={2} value={note} onChange={(e) => setNote(e.target.value)} />

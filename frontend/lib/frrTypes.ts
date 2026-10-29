@@ -294,7 +294,27 @@ export interface ChangePackage {
   decided_by: string | null;
   decided_at: string | null;
   decision_note: string | null;
+  /** Present only when `items_inline` (small packages); otherwise page through /items. */
+  items?: PackageItem[];
+  items_inline?: boolean;
+  facets?: PackageFacets;
+}
+
+export interface PackageFacets {
+  total: number;
+  undecided: number;
+  by_band: Record<string, number>;
+  by_proposal: Record<string, number>;
+  by_availability_impact: Record<string, number>;
+  by_layer: Record<string, number>;
+  by_owner_decision: Record<string, number>;
+}
+
+export interface PackageItemPage {
+  total: number;
   items: PackageItem[];
+  limit: number;
+  offset: number;
 }
 
 export interface OwnerInput {
