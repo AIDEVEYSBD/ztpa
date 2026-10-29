@@ -291,7 +291,8 @@ resource "azurerm_container_app" "frontend" {
   }
 
   dynamic "secret" {
-    for_each = toset(["auth-secret", "proxy-secret", "database-url", "sso-client-secret"])
+    for_each = toset(concat(["auth-secret", "proxy-secret", "database-url", "sso-client-secret"],
+    var.breakglass_email == "" ? [] : ["breakglass-password-hash"]))
     content {
       name                = secret.value
       key_vault_secret_id = azurerm_key_vault_secret.s[secret.value].versionless_id
@@ -325,7 +326,7 @@ resource "azurerm_container_app" "frontend" {
       memory = "2Gi"
 
       dynamic "env" {
-        for_each = {
+        for_each = merge({
           BACKEND_URL     = "https://${azurerm_container_app.api.ingress[0].fqdn}"
           AUTH_URL        = var.app_url
           APP_URL         = var.app_url
@@ -335,19 +336,23 @@ resource "azurerm_container_app" "frontend" {
           SSO_ROLE_MAP    = var.sso_role_map
           # Only Front Door's own requests are served when it is in front (frontend/middleware.ts).
           NPR_EDGE_ID = var.domain == "" ? "" : azurerm_cdn_frontdoor_profile.fd[0].resource_guid
-        }
+          }, var.breakglass_email == "" ? {} : {
+          AUTH_LOCAL_LOGIN           = "true"
+          BREAKGLASS_EMAIL           = var.breakglass_email
+          BREAKGLASS_SESSION_MAX_AGE = "3600"
+        })
         content {
           name  = env.key
           value = env.value
         }
       }
       dynamic "env" {
-        for_each = {
+        for_each = merge({
           AUTH_SECRET       = "auth-secret"
           NPR_PROXY_SECRET  = "proxy-secret"
           DATABASE_URL      = "database-url"
           SSO_CLIENT_SECRET = "sso-client-secret"
-        }
+        }, var.breakglass_email == "" ? {} : { BREAKGLASS_PASSWORD_HASH = "breakglass-password-hash" })
         content {
           name        = env.key
           secret_name = env.value

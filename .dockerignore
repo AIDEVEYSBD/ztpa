@@ -88,3 +88,10 @@ render.yaml
 **/Dockerfile.*
 .dockerignore
 **/docker-compose*.yml
+
+# Not part of the backend image (which copies only backend/ and db/). The
+# frontend builds from its own context and frontend/.dockerignore.
+infra
+loadtest
+frontend
+*.bundle

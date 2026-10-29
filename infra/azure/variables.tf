@@ -165,3 +165,22 @@ variable "frr_mode" {
   type        = bool
   default     = true
 }
+
+variable "breakglass_email" {
+  description = "Arms the break-glass password login (docs/BREAKGLASS.md). Empty = off. Staging without an IdP, or recovery; never leave it set in prod."
+  type        = string
+  default     = ""
+}
+
+variable "breakglass_password_hash" {
+  description = "bcrypt hash of the break-glass password (stored in Key Vault)."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "db_storage_tier" {
+  description = "Premium SSD performance tier for the database disk; must suit db_storage_mb (P4 for 32 GiB ... P30 for 1 TiB)."
+  type        = string
+  default     = "P30"
+}

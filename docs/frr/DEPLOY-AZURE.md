@@ -108,6 +108,21 @@ terraform apply -target=azurerm_container_registry.acr -var-file=staging.tfvars 
 
 Set `ACR_NAME` from `terraform output registry`, then run the workflow.
 
+## Notes from the first deployment
+
+- **One-off job runs** (migrations, the smoke test) go through `scripts/azure/start-job.sh`,
+  which calls the REST API. `az containerapp job start --args` passes a whole command line as
+  one argument and reads arguments beginning with `-` as its own options.
+- **Images** can be built inside Azure with ACR Tasks, uploading only the source:
+  `az acr build -r <acr> -t backend:<sha> -f backend/Dockerfile --platform linux/amd64 .` and
+  `az acr build -r <acr> -t frontend:<sha> --platform linux/amd64 frontend`.
+- **Scale to zero** (`*_min_replicas = 0`) makes the first request after idle take ~30 s.
+  Keep `frontend_min_replicas = 1` wherever people use the product.
+- **Staging without an identity provider:** set `breakglass_email` and pass a bcrypt hash in
+  `TF_VAR_breakglass_password_hash`; never in production.
+- **Small staging database:** `db_sku = "B_Standard_B1ms"`, `db_storage_mb = 32768`,
+  `db_storage_tier = "P4"`.
+
 ## Releasing
 
 GitHub → Actions → **Deploy (Azure)** → environment. The workflow builds and pushes both

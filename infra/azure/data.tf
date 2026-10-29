@@ -12,7 +12,7 @@ resource "azurerm_postgresql_flexible_server" "pg" {
   version                       = "16"
   sku_name                      = var.db_sku
   storage_mb                    = var.db_storage_mb
-  storage_tier                  = "P30"
+  storage_tier                  = var.db_storage_tier
   auto_grow_enabled             = true
   delegated_subnet_id           = azurerm_subnet.pg.id
   private_dns_zone_id           = azurerm_private_dns_zone.z["pg"].id
@@ -176,7 +176,8 @@ locals {
       "artifact-key"       = random_password.internal["artifact"].result
       "sso-client-secret"  = var.sso_client_secret
     },
-    { for k, v in nonsensitive(var.byok_secrets) : "byok-${lower(replace(k, "_", "-"))}" => v }
+    { for k, v in nonsensitive(var.byok_secrets) : "byok-${lower(replace(k, "_", "-"))}" => v },
+    var.breakglass_email == "" ? {} : { "breakglass-password-hash" = var.breakglass_password_hash }
   )
   byok_env = { for k in keys(nonsensitive(var.byok_secrets)) : k => "byok-${lower(replace(k, "_", "-"))}" }
 }

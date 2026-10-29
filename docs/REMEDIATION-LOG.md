@@ -585,7 +585,7 @@ is the empty-vs-unknown conflation appearing where it is least affordable.
 ### ⚠️ Carried forward
 
 - Recompute, dataset switch and merge still rebuild on the request path (now published to all replicas); moving them onto jobs needs the frontend to poll (tracker PLAT-4).
-- ~~Not yet applied to a real cloud~~ — GCP staging applied 2026-10-29 and exercised end to end; Azure still validated/planned only, and the deploy workflows are linted but not yet run on GitHub.
+- ~~Not yet applied to a real cloud~~ — GCP and Azure staging both applied 2026-10-29 and exercised end to end; the deploy workflows are linted but not yet run on GitHub.
 - Load testing (PLAT-15), Azure Front Door + WAF (PLAT-18), OpenTelemetry export.
 
 ### First real deployment (GCP staging, 2026-10-29) — what only a real cloud showed
@@ -600,4 +600,8 @@ is the empty-vs-unknown conflation appearing where it is least affordable.
 | No request spans: Cloud Run's unsampled trace parent was obeyed | Ratio applies under unsampled parents |
 
 Server-side API latency under the staging load test: p50 8 ms, p95 11 ms; 0 errors in 3,515 requests.
+
+### Azure staging (2026-10-29)
+
+First apply created all 55 resources without error; migrations ran on Flexible Server with the role fix from GCP. One defect found: `az containerapp job start --args` delivers a command line as a single argument and parses `-m` as its own flag, so the deploy workflow's migrate and smoke steps would have failed on first run; replaced by `scripts/azure/start-job.sh` (REST, env and secret references carried over). Docker build context trimmed (Terraform provider caches were being uploaded).
 

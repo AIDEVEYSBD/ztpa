@@ -95,8 +95,8 @@ jobs:
         run: |
           job="caj-$PREFIX-migrate"
           if az containerapp job show -n "$job" -g "$RG" >/dev/null 2>&1; then
-            exec_name=$(az containerapp job start -n "$job" -g "$RG" --image "$BACKEND_IMAGE" \
-              --command python --args "/app/db/migrate.py --bootstrap --ensure-app-role" --query name -o tsv)
+            exec_name=$(./scripts/azure/start-job.sh "$RG" "$job" "$BACKEND_IMAGE" \
+              python /app/db/migrate.py --bootstrap --ensure-app-role)
             ./scripts/azure/wait-job.sh "$RG" "$job" "$exec_name"
             echo "ran=true" >> "$GITHUB_OUTPUT"
           else
@@ -138,8 +138,10 @@ jobs:
       - name: Smoke test
         run: |
           job="caj-$PREFIX-migrate"
-          exec_name=$(az containerapp job start -n "$job" -g "$RG" --image "$BACKEND_IMAGE" \
-            --command python --args "-m src.smoke --api-url https://$API_FQDN" --query name -o tsv)
+          # start-job.sh, not `az containerapp job start --args`: the CLI passes a
+          # command line as one argument and reads "-m" as its own option.
+          exec_name=$(./scripts/azure/start-job.sh "$RG" "$job" "$BACKEND_IMAGE" \
+            python -m src.smoke --api-url "https://$API_FQDN")
           ./scripts/azure/wait-job.sh "$RG" "$job" "$exec_name"
 
       - name: Public endpoint answers

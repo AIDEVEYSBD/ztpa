@@ -25,7 +25,7 @@ Feature status lives in [TRACKER.md](TRACKER.md); this file is only about verifi
 | T7 | Stealthwatch flow export and CMDB/IPAM extract in their real column layouts | Column aliases are guesses from typical exports | Sample files |
 | T8 | Skybox export | Parser not built: format unknown | A sample export (01.1b) |
 | T9 | Evaluation on the reviewers' labelled rulebase; decide the severity-tuning signal (broad internal admin, internet-exposed DB ports) | Current eval set is labelled by construction | Labelled rulebase (FRR-01.5) |
-| T22 | Narrative eval on the client's own rules and documents, and on the Azure AI Foundry model | First live run used the synthetic rulebase and two sample excerpts on Vertex | T6, T10, T12 |
+| T22 | Narrative eval on the client's own rules and documents | Live runs so far (Vertex gemini-2.5-pro, Azure gpt-4.1-mini, both clean) used the synthetic rulebase and two sample excerpts | T6, T10 |
 | T10 | Knowledge base with the client's standards, exceptions and runbooks; check retrieval picks the right passages | Retrieval tested on a two-section sample | Client documents |
 
 ## Needs a deployment or environment
@@ -33,12 +33,11 @@ Feature status lives in [TRACKER.md](TRACKER.md); this file is only about verifi
 | # | What | Why it matters | Unblocked by |
 |---|---|---|---|
 | T11 | SSO with the client's identity provider: login, role map, logout | Staging uses break-glass | IdP app registration (docs/SSO.md) |
-| T12 | Azure staging: Terraform apply, Container Apps, KEDA queue scaling, managed identity to AI Foundry, Blob, Key Vault references, Front Door + edge lock | Azure is validated and planned only | Go-ahead to deploy Azure staging |
+| T12 | Azure: KEDA queue-depth scale-out under load, and Front Door + edge lock (needs a domain) | Staging is deployed and exercised, but worker scaling stayed at 1 replica and Front Door was not enabled | A burst of jobs in staging; a domain |
 | T13 | GCP edge: HTTPS load balancer + managed certificate + Cloud Armor + IAP | Staging uses the run.app URL through the IAM proxy | A domain for staging |
 | T14 | GitHub Actions: CI (`ci.yml`) and both deploy workflows on GitHub | Linted with actionlint, never run | Push the branch; configure environments |
 | T15 | Autoscaling under load: API instances scaling out, worker scaling, Cloud SQL connection budget at max instances | Staging load test stayed within a couple of instances | A load test from inside the VPC at production size |
 | T23 | Streaming parse for exports above 300 MB | One-pass JSON parse is refused above `NPR_MAX_PARSE_BYTES`; very large estates must upload per layer | Build an incremental parser (ijson) if real exports exceed it |
-| T24 | Multipart on Azure Blob (staged blocks) and GCS compose against the real services | GCS compose fold is tested with a fake bucket, Azure block commit not exercised | T12 for Azure; GCS covered by T16 |
 | T17 | Alerts reach a real channel (5xx, worker down, DB CPU) | Policies exist, no channel attached | A notification channel |
 | T18 | Point-in-time restore rehearsal and secret rotation (runbook steps) | Documented, never performed | A staging window |
 | T19 | Model provider failure in the cloud (quota / 429 / outage) degrades to labelled engine text | Fallback tested offline with stubs | Temporarily point staging at an invalid model |
@@ -50,4 +49,7 @@ Feature status lives in [TRACKER.md](TRACKER.md); this file is only about verifi
 |---|---|---|---|
 | T16 | Large upload in the cloud: 36.1 MiB / 70,000-rule export through the staging frontend | 2026-10-29 | Single request refused 413 by Cloud Run (cap confirmed); multipart 5 parts in 20 s, finalized in 24.5 s, accepted and reviewed 88 s after start. Found: register pages 1.5–2.5 s on large reviews (whole-document load per process) → moved to indexed rows |
 | T16b | Register pages at 70,000 rules in staging, after moving to rows + summarised effective policy + gzip | 2026-10-29 | Server-side p50 178 ms (was ~2 s); end-user 470–650 ms over a ~365 ms network floor (was 1.3–2.5 s) |
+| T12a | Azure staging end to end: Terraform apply (55 resources), migrations on Flexible Server, in-VNet smoke test, break-glass through the public frontend, FRR flow, AI Foundry narratives via managed identity, Key Vault references, Application Insights | 2026-10-29 | Export accepted 5.5 s; agent run 12 s, 7/7 narrated on gpt-4.1-mini; 40k-rule export reviewed 32 s, register page 290 ms. Found: `az containerapp job start --args` mangles command lines → `scripts/azure/start-job.sh` |
+| T24 | Multipart on Azure Blob staged blocks (and GCS compose, T16) against the real services | 2026-10-29 | 20.5 MiB in 3 parts committed as blocks, finalized and reviewed |
+| T22a | Narrative eval on Azure gpt-4.1-mini | 2026-10-29 | 20 items: fallback 0, ungrounded 0, contradictions 0, citation 1.0 |
 | — | GCP staging deploy, migrations, smoke test, end-to-end FRR flow, Vertex narratives, tracing, staging load test | 2026-10-29 | [TRACKER.md](TRACKER.md) changelog; REMEDIATION-LOG "First real deployment" |
