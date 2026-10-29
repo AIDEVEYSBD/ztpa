@@ -124,6 +124,8 @@ telemetry.configure(app)
 from app.jobs_api import router as _jobs_router  # noqa: E402
 from app.limits import LLM_LIMITED, BodyLimitMiddleware  # noqa: E402
 app.include_router(_jobs_router)
+from app.uploads_api import router as _uploads_router  # noqa: E402
+app.include_router(_uploads_router)                    # before exports: /uploads must not match /{export_id}
 from app.exports_api import router as _exports_router  # noqa: E402
 app.include_router(_exports_router)
 from app.packages_api import router as _packages_router  # noqa: E402

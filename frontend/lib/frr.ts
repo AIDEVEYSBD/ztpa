@@ -39,6 +39,39 @@ export const frr = {
       headers: { "content-type": "application/json" },
       body: file,
     }),
+  /** Large files: a multipart session (Cloud Run caps one request at 32 MiB).
+   *  Parts go three at a time; `onProgress` gets the fraction sent. Resolves
+   *  once the server has assembled, hashed and registered the export. */
+  uploadExportMultipart: async (file: Blob, p: { source: string; filename: string; exported_at?: string },
+                                onProgress?: (fraction: number) => void): Promise<UploadResult> => {
+    const s = await j<{ upload_id: string; part_size: number }>("/api/exports/uploads",
+      postJson({ source: p.source, filename: p.filename, exported_at: p.exported_at }));
+    const total = Math.max(1, Math.ceil(file.size / s.part_size));
+    let sent = 0;
+    let next = 1;
+    const worker = async () => {
+      while (next <= total) {
+        const n = next++;
+        const blob = file.slice((n - 1) * s.part_size, Math.min(file.size, n * s.part_size));
+        await j(`/api/exports/uploads/${enc(s.upload_id)}/parts/${n}`,
+          { method: "PUT", headers: { "content-type": "application/octet-stream" }, body: blob });
+        sent += 1;
+        onProgress?.(sent / total);
+      }
+    };
+    await Promise.all([worker(), worker(), worker()]);
+    await j(`/api/exports/uploads/${enc(s.upload_id)}/complete`, postJson({ parts: total }));
+    for (let i = 0; i < 600; i++) {
+      const st = await j<{ status: string; export_id: string | null; duplicate: boolean; failure_reason: string | null }>(
+        `/api/exports/uploads/${enc(s.upload_id)}`);
+      if (st.status === "done" && st.export_id) {
+        return { export: await j<FrrExport>(`/api/exports/${enc(st.export_id)}`), job: null, duplicate: st.duplicate };
+      }
+      if (st.status === "failed") throw new Error(st.failure_reason ?? "the upload could not be assembled");
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    throw new Error("the upload was assembled but not registered within 10 minutes; check Exports later");
+  },
   exports: (p: { limit?: number; before?: string } = {}) =>
     j<ExportList>(`/api/exports${query({ limit: p.limit ?? 50, before: p.before })}`),
   exportById: (id: string) => j<FrrExport>(`/api/exports/${enc(id)}`),

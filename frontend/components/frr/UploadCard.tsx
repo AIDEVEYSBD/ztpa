@@ -27,6 +27,8 @@ export function localToIso(v: string): string | undefined {
   return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
 }
 
+const MULTIPART_ABOVE = 16 * 1024 * 1024;
+
 export function UploadCard({ canUpload, roleNote, onUploaded }: {
   canUpload: boolean;
   /** Why uploading is not offered, when it is not. */
@@ -40,6 +42,7 @@ export function UploadCard({ canUpload, roleNote, onUploaded }: {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<ApiError>();
   const [result, setResult] = useState<{ export: FrrExport; duplicate: boolean }>();
+  const [progress, setProgress] = useState<number | null>(null);
 
   const iso = localToIso(exportedAt);
   const badDate = !!exportedAt && !iso;
@@ -49,7 +52,12 @@ export function UploadCard({ canUpload, roleNote, onUploaded }: {
     setBusy(true);
     setErr(undefined);
     setResult(undefined);
-    frr.uploadExport(file, { source, filename: safeFilename(file.name), exported_at: iso })
+    const params = { source, filename: safeFilename(file.name), exported_at: iso };
+    // One request up to 16 MiB; above that, a multipart session (Cloud Run caps a request at 32 MiB).
+    const upload = file.size > MULTIPART_ABOVE
+      ? frr.uploadExportMultipart(file, params, (f) => setProgress(f))
+      : frr.uploadExport(file, params);
+    upload
       .then((r) => {
         setResult({ export: r.export, duplicate: r.duplicate });
         onUploaded(r.export, r.duplicate);
@@ -57,7 +65,7 @@ export function UploadCard({ canUpload, roleNote, onUploaded }: {
         if (fileRef.current) fileRef.current.value = "";
       })
       .catch((e) => setErr(asApiError(e)))
-      .finally(() => setBusy(false));
+      .finally(() => { setBusy(false); setProgress(null); });
   };
 
   return (
@@ -89,6 +97,11 @@ export function UploadCard({ canUpload, roleNote, onUploaded }: {
               <Upload size={13} /> Upload
             </Button>
           </div>
+          {progress !== null && (
+            <div className="text-[11.5px] text-dim" role="status" aria-live="polite">
+              {progress < 1 ? `Sending in parts… ${Math.round(progress * 100)}%` : "Assembling and hashing the upload…"}
+            </div>
+          )}
           {file && safeFilename(file.name) !== file.name && (
             <p className="text-[11.5px] text-faint">
               The file name will be recorded as <span className="font-mono text-dim">{safeFilename(file.name)}</span> (the API accepts letters, digits, spaces and . _ - ( ) only).

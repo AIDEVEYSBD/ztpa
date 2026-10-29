@@ -67,3 +67,51 @@ def test_url_dispatch(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
         storage.from_url("az://frrstore")
     with pytest.raises(StorageError, match="unsupported"):
         storage.from_url("s3://bucket")
+
+
+def test_local_multipart_assembles_in_order_and_cleans_parts(store: LocalStore) -> None:
+    for n, data in ((2, b"world"), (1, b"hello "), (3, b"!")):        # out of order
+        store.put_part("uploads/u1/data", n, data)
+    assert store.complete_parts("uploads/u1/data", 3, "text/plain") == 12
+    assert store.get_bytes("uploads/u1/data") == b"hello world!"
+    assert not [p for p in store.root.rglob("*.parts/*")]
+    assert b"".join(store.iter_chunks("uploads/u1/data", 4)) == b"hello world!"
+
+
+def test_part_numbers_are_bounded(store: LocalStore) -> None:
+    for n in (0, storage.MAX_PARTS + 1):
+        with pytest.raises(StorageError, match="part number"):
+            store.put_part("uploads/u2/data", n, b"x")
+
+
+def test_gcs_compose_folds_more_than_32_parts() -> None:
+    """GCS compose accepts at most 32 sources: 70 parts need three calls."""
+    calls: list[list[str]] = []
+
+    class Blob:
+        def __init__(self, bucket, name, **_):
+            self.bucket, self.name, self.size, self.content_type = bucket, name, None, None
+
+        def compose(self, sources):
+            assert len(sources) <= 32
+            calls.append([s.name for s in sources])
+
+        def delete(self):
+            self.bucket.deleted.append(self.name)
+
+        def reload(self):
+            self.size = 70
+
+    class Bucket:
+        def __init__(self):
+            self.deleted = []
+
+        def blob(self, name, **kw):
+            return Blob(self, name, **kw)
+
+    g = storage.GCSStore.__new__(storage.GCSStore)
+    g._bucket, g._prefix = Bucket(), "frr"
+    assert g.complete_parts("uploads/u/data", 70, "application/octet-stream") == 70
+    assert [len(c) for c in calls] == [32, 32, 8]                     # 32, then dest + 31, then dest + the last 7
+    assert calls[1][0] == calls[2][0] == "frr/uploads/u/data"
+    assert len(g._bucket.deleted) == 70

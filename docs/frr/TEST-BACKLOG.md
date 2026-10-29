@@ -37,7 +37,9 @@ Feature status lives in [TRACKER.md](TRACKER.md); this file is only about verifi
 | T13 | GCP edge: HTTPS load balancer + managed certificate + Cloud Armor + IAP | Staging uses the run.app URL through the IAM proxy | A domain for staging |
 | T14 | GitHub Actions: CI (`ci.yml`) and both deploy workflows on GitHub | Linted with actionlint, never run | Push the branch; configure environments |
 | T15 | Autoscaling under load: API instances scaling out, worker scaling, Cloud SQL connection budget at max instances | Staging load test stayed within a couple of instances | A load test from inside the VPC at production size |
-| T16 | Large upload in the cloud (≈100 MB export) through the frontend and Cloud Run request limits | 5 MB tested locally only; Cloud Run caps request bodies at 32 MB | Generate a large export; may need signed-URL uploads |
+| T16 | Large upload in the cloud through the frontend (multipart) | Multipart built and tested locally; Cloud Run caps one request at 32 MiB | Staging run with a > 32 MiB export (in progress) |
+| T23 | Streaming parse for exports above 300 MB | One-pass JSON parse is refused above `NPR_MAX_PARSE_BYTES`; very large estates must upload per layer | Build an incremental parser (ijson) if real exports exceed it |
+| T24 | Multipart on Azure Blob (staged blocks) and GCS compose against the real services | GCS compose fold is tested with a fake bucket, Azure block commit not exercised | T12 for Azure; GCS covered by T16 |
 | T17 | Alerts reach a real channel (5xx, worker down, DB CPU) | Policies exist, no channel attached | A notification channel |
 | T18 | Point-in-time restore rehearsal and secret rotation (runbook steps) | Documented, never performed | A staging window |
 | T19 | Model provider failure in the cloud (quota / 429 / outage) degrades to labelled engine text | Fallback tested offline with stubs | Temporarily point staging at an invalid model |

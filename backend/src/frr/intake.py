@@ -38,6 +38,10 @@ from .rulebase import ExportRejected, ParsedRulebase
 log = logging.getLogger("npr.api.intake")
 
 MAX_AGE_DAYS = int(os.environ.get("NPR_EXPORT_MAX_AGE_DAYS", "30"))
+# Exports are parsed in one pass (JSON in memory, several times its size as
+# Python objects). Above this the worker would risk running out of memory and
+# being killed mid-job, retried, killed again: refuse with a reason instead.
+MAX_PARSE_BYTES = int(os.environ.get("NPR_MAX_PARSE_BYTES", str(300 * 1024 * 1024)))
 _FUTURE_SLACK = timedelta(hours=24)
 
 # source_type -> parser(export_json, exported_at) -> ParsedRulebase
@@ -65,6 +69,10 @@ def _check_age(when: datetime | None, now: datetime) -> None:
 def process(row: dict, *, now: datetime | None = None) -> tuple[str, dict]:
     """(status, fields to update). Pure apart from storage reads/writes."""
     now = now or datetime.now(timezone.utc)
+    if row["size_bytes"] > MAX_PARSE_BYTES:
+        return "rejected", {"rejection_reason": f"the export is {row['size_bytes']:,} bytes; exports above "
+                                                f"{MAX_PARSE_BYTES:,} bytes are not parsed in one pass yet. "
+                                                "Export each access layer separately and upload them one by one"}
     store = storage.store()
     data = store.get_bytes(row["storage_key"])
     if hashlib.sha256(data).hexdigest() != row["sha256"]:
@@ -120,3 +128,47 @@ def ingest(ctx: JobContext) -> dict:
                                         "status": status, "reason": fields.get("rejection_reason")})
     return {"status": status, "reason": fields.get("rejection_reason"),
             "summary": fields.get("summary")}
+
+
+@handler("export.finalize")
+def finalize_upload(ctx: JobContext) -> dict:
+    """An assembled multipart upload -> an export: stream-hash it, reuse an
+    existing export with the same bytes, otherwise register it and enqueue
+    ingest. The object stays where it was assembled; `storage_key` points at it."""
+    from ..jobs import queue
+
+    cur = ctx.conn.cursor()
+    cur.execute("SELECT * FROM ztpa.export_uploads WHERE upload_id = %s", [ctx.payload["upload_id"]])
+    up = cur.fetchone()
+    if up is None or up["status"] != "completing":
+        return {"skipped": f"upload is {up['status'] if up else 'gone'}"}
+    h, size = hashlib.sha256(), 0
+    for chunk in storage.store().iter_chunks(up["storage_key"]):
+        h.update(chunk)
+        size += len(chunk)
+        ctx.check()
+    digest = h.hexdigest()
+    if size != up["bytes"]:
+        reason = f"assembled object is {size} bytes, expected {up['bytes']}"
+        cur.execute("UPDATE ztpa.export_uploads SET status='failed', failure_reason=%s WHERE upload_id=%s",
+                    [reason, up["upload_id"]])
+        return {"status": "failed", "reason": reason}
+    cur.execute("SELECT export_id FROM ztpa.exports WHERE sha256 = %s", [digest])
+    existing = cur.fetchone()
+    if existing:
+        storage.store().delete(up["storage_key"])
+        cur.execute("UPDATE ztpa.export_uploads SET status='done', export_id=%s, duplicate=true WHERE upload_id=%s",
+                    [existing["export_id"], up["upload_id"]])
+        return {"status": "duplicate", "export_id": str(existing["export_id"])}
+    cur.execute("""INSERT INTO ztpa.exports (sha256, source_type, filename, size_bytes, storage_key,
+                                             declared_exported_at, uploaded_by)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING export_id""",
+                [digest, up["source_type"], up["filename"], size, up["storage_key"],
+                 up["declared_exported_at"], up["uploaded_by"]])
+    eid = cur.fetchone()["export_id"]
+    job, _ = queue.enqueue(ctx.conn, "export.ingest", {"export_id": str(eid)},
+                           idempotency_key=f"export:{digest}", priority=50, created_by=up["uploaded_by"])
+    cur.execute("UPDATE ztpa.exports SET job_id = %s WHERE export_id = %s", [job.job_id, eid])
+    cur.execute("UPDATE ztpa.export_uploads SET status='done', export_id=%s WHERE upload_id=%s",
+                [eid, up["upload_id"]])
+    return {"status": "registered", "export_id": str(eid), "bytes": size}

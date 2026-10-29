@@ -31,12 +31,19 @@ import shutil
 import tempfile
 import threading
 from pathlib import Path
-from typing import BinaryIO, Protocol
+from typing import BinaryIO, Iterator, Protocol
 from urllib.parse import urlparse
 
 from . import settings
 
 _KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,511}$")
+MAX_PARTS = 2000                       # x 8 MiB parts: well past any real export
+
+
+def _part_key(key: str, n: int) -> str:
+    if not 1 <= n <= MAX_PARTS:
+        raise StorageError(f"part number must be 1..{MAX_PARTS}")
+    return f"{key}.parts/{n:05d}"
 _CHUNK = 8 * 1024 * 1024
 
 
@@ -59,6 +66,12 @@ class BlobStore(Protocol):
     def open(self, key: str) -> BinaryIO: ...
     def exists(self, key: str) -> bool: ...
     def delete(self, key: str) -> None: ...
+    # Multipart: parts of one object, numbered from 1, assembled in order by
+    # `complete_parts`. Lets an upload larger than a platform's request limit
+    # (Cloud Run: 32 MiB) arrive in pieces, with no public storage endpoint.
+    def put_part(self, key: str, n: int, data: bytes) -> None: ...
+    def complete_parts(self, key: str, parts: int, content_type: str) -> int: ...
+    def iter_chunks(self, key: str, size: int = ...) -> Iterator[bytes]: ...
 
 
 class LocalStore:
@@ -111,6 +124,34 @@ class LocalStore:
     def delete(self, key: str) -> None:
         self._path(key).unlink(missing_ok=True)
 
+    def put_part(self, key: str, n: int, data: bytes) -> None:
+        self.put_bytes(_part_key(key, n), data, "application/octet-stream")
+
+    def complete_parts(self, key: str, parts: int, content_type: str) -> int:
+        dest = self._path(key)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=dest.parent, prefix=".tmp-")
+        size = 0
+        try:
+            with os.fdopen(fd, "wb") as out:
+                for n in range(1, parts + 1):
+                    with self.open(_part_key(key, n)) as fh:
+                        while chunk := fh.read(_CHUNK):
+                            out.write(chunk)
+                            size += len(chunk)
+            os.replace(tmp, dest)
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            raise
+        for n in range(1, parts + 1):
+            self.delete(_part_key(key, n))
+        return size
+
+    def iter_chunks(self, key: str, size: int = _CHUNK) -> Iterator[bytes]:
+        with self.open(key) as fh:
+            while chunk := fh.read(size):
+                yield chunk
+
 
 class GCSStore:
     def __init__(self, bucket: str, prefix: str) -> None:
@@ -152,6 +193,35 @@ class GCSStore:
             self._bucket.blob(self._name(key)).delete()
         except NotFound:
             pass
+
+    def put_part(self, key: str, n: int, data: bytes) -> None:
+        self.put_bytes(_part_key(key, n), data, "application/octet-stream")
+
+    def complete_parts(self, key: str, parts: int, content_type: str) -> int:
+        """GCS compose takes at most 32 sources per call, so parts are folded
+        into the destination 31 at a time (the destination is the 32nd)."""
+        names = [self._name(_part_key(key, n)) for n in range(1, parts + 1)]
+        from google.api_core.exceptions import NotFound
+        dest = self._bucket.blob(self._name(key))
+        dest.content_type = content_type
+        # Fold: compose the first 32 parts, then the destination plus the next 31.
+        batch, rest = names[:32], names[32:]
+        dest.compose([self._bucket.blob(n) for n in batch])
+        while rest:
+            batch, rest = rest[:31], rest[31:]
+            dest.compose([dest] + [self._bucket.blob(n) for n in batch])
+        for n in names:
+            try:
+                self._bucket.blob(n).delete()
+            except NotFound:
+                pass                           # already gone: the assembled object is what matters
+        dest.reload()
+        return int(dest.size or 0)
+
+    def iter_chunks(self, key: str, size: int = _CHUNK) -> Iterator[bytes]:
+        with self._bucket.blob(self._name(key), chunk_size=size).open("rb") as fh:
+            while chunk := fh.read(size):
+                yield chunk
 
 
 class AzureBlobStore:
@@ -197,6 +267,30 @@ class AzureBlobStore:
     def delete(self, key: str) -> None:
         self._container.delete_blob(self._name(key), delete_snapshots="include") \
             if self.exists(key) else None
+
+    @staticmethod
+    def _block_id(n: int) -> str:
+        import base64
+        return base64.b64encode(f"part-{n:05d}".encode()).decode()
+
+    def put_part(self, key: str, n: int, data: bytes) -> None:
+        _part_key(key, n)                                   # validates n
+        self._container.get_blob_client(self._name(key)).stage_block(self._block_id(n), data)
+
+    def complete_parts(self, key: str, parts: int, content_type: str) -> int:
+        """Native block blobs: commit the staged blocks in order."""
+        from azure.storage.blob import BlobBlock, ContentSettings
+        bc = self._container.get_blob_client(self._name(key))
+        bc.commit_block_list([BlobBlock(block_id=self._block_id(n)) for n in range(1, parts + 1)],
+                             content_settings=ContentSettings(content_type=content_type))
+        return int(bc.get_blob_properties().size)
+
+    def iter_chunks(self, key: str, size: int = _CHUNK) -> Iterator[bytes]:
+        from azure.core.exceptions import ResourceNotFoundError
+        try:
+            yield from self._container.download_blob(self._name(key)).chunks()
+        except ResourceNotFoundError as e:
+            raise StorageError(f"no object {key!r}") from e
 
 
 def from_url(url: str) -> BlobStore:
