@@ -111,8 +111,14 @@ then deleted. The roles and their passwords come back with the data, so the exis
 works once its host is changed.
 
 **Scale**
-Raise `*_max_instances` / `*_max_replicas` and redeploy. Check the connection budget in the
-deploy guide first; the database is the shared limit.
+Raise `*_max_instances` / `*_max_replicas` and redeploy. The database is the shared limit, and
+Terraform now checks it: peak connections at full scale-out (API replicas × `api_processes` ×
+`db_pool_max`, workers × (slots × 2 + 2), frontend × 3, 10 reserved) must fit `db_max_connections`,
+or the plan fails with the arithmetic. Fix by lowering `db_pool_max` (queries take milliseconds;
+2–4 per process carries a lot), lowering a maximum, or using a larger database and raising
+`db_max_connections` to match (on GCP it is the instance flag; on Azure it follows the SKU).
+Overload is shed, not queued: a request waits `DB_POOL_TIMEOUT` (5 s) for a connection, then gets
+503 + Retry-After (`event=db_pool_exhausted` in the API log), which the console retries for reads.
 
 ## Pausing a non-production environment
 

@@ -635,3 +635,16 @@ Headless Chromium through every FRR screen (`scripts/ui_walkthrough.py`): no con
 | Model provider down | Fallback works; a draining revision still takes jobs during a switch | Noted in the backlog |
 | Rate limit across 3 replicas | Holds exactly (30 of 90) | — |
 
+### Load at staging size (2026-10-30)
+
+160 concurrent clients through the Azure staging frontend against a 110,000-rule export, 5 minutes each:
+
+| Run | Change | Throughput | Success |
+|---|---|---|---|
+| 1 | — | 5.6 req/s | 4.5% (PoolTimeout after 30 s; database CPU 30%, no I/O, no refused connections) |
+| 2 | Index-only paging (items had an unindexable ORDER BY: 262 ms + 70 MB sort per page; deep OFFSET read 100 MB); 5 s pool wait, 503 + Retry-After | 36.9 req/s | 99.7% |
+| 3 | Review head 375 KB → 980 B (per-gateway lists in their own column) | 87.4 req/s | 99.996% |
+| 4 | Register totals cached per export and filter | 124.8 req/s | 99.99% |
+
+Also found: staging's own settings could open ~100 connections against a 50-connection server; Terraform now refuses such a plan on both clouds. The remaining limit is the 1-vCore burstable staging database.
+
