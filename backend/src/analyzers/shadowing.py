@@ -172,6 +172,25 @@ def _lookup_keys(later: PolicyRecord) -> list:
     return keys
 
 
+def _union_cover(partial: list[int], snets: list, later_nets: list) -> list[int] | None:
+    """Earlier rules that each cover a grant's destination and service but only
+    part of its sources can still take ALL of its traffic together (two /25
+    allows above a /24 allow). Returns the contributing rules, in order, when
+    the union of their sources contains the grant's; else None. Union along the
+    source dimension only: sound (every packet of the grant matches one of
+    them), not complete."""
+    import ipaddress
+    contributing = [k for k in partial if any(a.overlaps(b) for a in snets[k] for b in later_nets
+                                              if a.version == b.version)]
+    if len(contributing) < 2:
+        return None
+    union = []
+    for version in (4, 6):
+        nets = [n for k in contributing for n in snets[k] if n.version == version]
+        union += list(ipaddress.collapse_addresses(nets))
+    return contributing if covers(union, later_nets) else None
+
+
 def analyze(records: list[PolicyRecord], g: nx.DiGraph, alias_map: dict[str, str], *,
             per_rule: bool = False) -> list[Finding]:
     """One finding per shadowed grant, or with `per_rule` one per rule (raw_ref):
@@ -208,17 +227,27 @@ def analyze(records: list[PolicyRecord], g: nx.DiGraph, alias_map: dict[str, str
                     sup = first.supernet(new_prefix=plen)
                     for k in look:
                         cand.update(by_net.get((sup, k), ()))
+            hit: list[int] | None = None
+            partial: list[int] = []          # cover dest + service, part of the sources
             for j in sorted(cand):
                 earlier = recs[j]
                 if not _dest_covers(dnets[j], dnets[i], earlier, later, alias_map):
                     continue
-                if not _service_covers(earlier, later) or \
-                        not _source_covers(snets[j], snets[i], earlier, later):
+                if not _service_covers(earlier, later):
                     continue
-                seen = by_ref.get((tool, later.raw_ref)) if per_rule else None
-                if seen is not None:
-                    seen.signals["covered_grants"].append((later.id, earlier.raw_ref))
+                if _source_covers(snets[j], snets[i], earlier, later):
+                    hit = [j]
                     break
+                if per_rule and snets[j] and snets[i]:
+                    partial.append(j)
+            if hit is None and len(partial) > 1:
+                hit = _union_cover(partial, snets, snets[i])
+            seen = by_ref.get((tool, later.raw_ref)) if (per_rule and hit) else None
+            if seen is not None:
+                seen.signals["covered_grants"].extend((later.id, recs[k].raw_ref) for k in hit)
+            elif hit:                            # the earliest coverer describes the finding
+                earlier = recs[hit[0]]
+                j = hit[0]
 
                 d = alias_map.get(later.destination, later.destination)
                 s = alias_map.get(later.source, later.source)
@@ -298,9 +327,10 @@ def analyze(records: list[PolicyRecord], g: nx.DiGraph, alias_map: dict[str, str
                 ))
                 if per_rule:
                     f = findings[-1]
-                    f.signals["covered_grants"] = [(later.id, earlier.raw_ref)]
+                    f.signals["covered_grants"] = [(later.id, recs[k].raw_ref) for k in hit]
+                    if len(hit) > 1:
+                        f.signals["union_of"] = [recs[k].raw_ref for k in hit]
                     by_ref[(tool, later.raw_ref)] = f
-                break   # earliest shadower is enough
             # Index AFTER the lookup: a rule never shadows itself.
             for k in _index_keys(later):
                 by_dest.setdefault((canon, k), []).append(i)

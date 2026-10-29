@@ -133,8 +133,10 @@ def _draft_item(n: int, entry: dict, rule: dict, numbers: dict[int, dict],
                         commands=[f"mgmt_cli set access-rule {sel} new-position {cover}", *_publish()],
                         rollback=[f"mgmt_cli set access-rule {sel} new-position {entry['number']}", *_publish()])
         return Item(**base, proposal="remove",
-                    rationale=f"never matched: {who} above it already allow"
-                              f"{'s' if len(all_cov) == 1 else ''} everything this rule allows. "
+                    # "match", not "allow": a covering rule may deny, and the rule
+                    # still never matches.
+                    rationale=f"never matched: {who} above it already match"
+                              f"{'es' if len(all_cov) == 1 else ''} all of this rule's traffic. "
                               "Removing it changes no traffic.",
                     availability_impact="none",
                     commands=[f"mgmt_cli delete access-rule {sel}", *_publish()],

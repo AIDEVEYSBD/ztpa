@@ -117,7 +117,7 @@ def generate(n: int, seed: int = 1, exported_at: datetime | None = None) -> tupl
         return uid
 
     mix = ["clean"] * 50 + ["internet_admin"] * 6 + ["internal_broad_admin"] * 6 + ["internet_data"] * 4 + \
-          ["redundant_unused"] * 8 + ["partly_covered"] * 4 + ["expired"] * 6 + ["disabled"] * 6 + ["unused"] * 8 + ["stale"] * 6
+          ["redundant_unused"] * 8 + ["partly_covered"] * 4 + ["union_redundant"] * 3 + ["expired"] * 6 + ["disabled"] * 6 + ["unused"] * 8 + ["stale"] * 6
     while len(rules) < n - 2:
         cat = rnd.choice(mix)
         if cat == "clean":
@@ -147,6 +147,21 @@ def generate(n: int, seed: int = 1, exported_at: datetime | None = None) -> tupl
             objs.append({"uid": narrow, "name": f"{o['name']}-sub", "type": "network",
                          "subnet4": o["subnet4"], "mask-length4": 28})
             add("unused", {"unused"}, [narrow], [h], ["s-https", "s-alt-https"], hits=(0, None))
+        elif cat == "union_redundant":
+            # Two /25 halves above, each covering half the sources: together
+            # they take all of the /24 rule's traffic, so it never matches.
+            h, whole = host(), net(24)
+            o = next(x for x in objs if x["uid"] == whole)
+            halves = []
+            for k, last in (("lo", 0), ("hi", 128)):
+                uid = f"{whole}-{k}"
+                base = o["subnet4"].rsplit(".", 1)[0]
+                objs.append({"uid": uid, "name": f"{o['name']}-{k}", "type": "network",
+                             "subnet4": f"{base}.{last}", "mask-length4": 25})
+                halves.append(uid)
+            add("clean", set(), [halves[0]], [h], ["s-https"])
+            add("clean", set(), [halves[1]], [h], ["s-https"])
+            add("redundant_unused", {"shadowed", "unused"}, [whole], [h], ["s-https"], hits=(0, None))
         elif cat == "expired":
             add(cat, {"expired"}, [net(24)], [host()], ["s-https"], time=["t-past"])
         elif cat == "disabled":

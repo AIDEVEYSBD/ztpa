@@ -68,7 +68,7 @@ def test_the_package_removal_names_every_coverer() -> None:
     pkg = draft(json.loads(json.dumps(r.to_jsonable())), json.loads(json.dumps(p.to_jsonable())))
     item = next(i for i in pkg["items"] if i["rule_number"] == 3)
     assert item["proposal"] == "remove", item
-    assert "rules 1, 2 above it already allow everything" in item["rationale"]
+    assert "rules 1, 2 above it already match all of this rule's traffic" in item["rationale"]
 
 
 def test_a_truncated_rule_is_never_claimed_shadowed(monkeypatch) -> None:
@@ -103,3 +103,50 @@ def test_a_shadowed_rule_carries_no_partial_coverage() -> None:
                  fx._rule(2, "https again", ["n-dc"], ["h-web1"], ["s-https"]),
                  _cleanup(3)])
     assert _entry(r, 2).coverage is None and r.stats["rules_partly_covered"] == 0
+
+
+def _with_halves(rules):
+    """The fixture plus two /25 halves of dc-servers (10.30.0.0/24)."""
+    e = fx.export()
+    objs = e["access_layers"][0]["objects-dictionary"]
+    objs += [fx._o("n-lo", "dc-low", "network", subnet4="10.30.0.0", **{"mask-length4": 25}),
+             fx._o("n-hi", "dc-high", "network", subnet4="10.30.0.128", **{"mask-length4": 25})]
+    e["access_layers"][0].update(rulebase=rules, to=len(rules), total=len(rules))
+    e["nat_packages"] = []
+    return review(cp.parse(e))
+
+
+def test_two_halves_above_together_shadow_the_whole() -> None:
+    r = _with_halves([fx._rule(1, "low half", ["n-lo"], ["h-web1"], ["s-https"]),
+                      fx._rule(2, "high half", ["n-hi"], ["h-web1"], ["s-https"]),
+                      fx._rule(3, "whole", ["n-dc"], ["h-web1"], ["s-https"]),
+                      _cleanup(4)])
+    c = next(c for c in _entry(r, 3).checks if c.check == "shadowed")
+    assert c.evidence["covered_by_rules"] == [1, 2] and "rules 1, 2" in c.title
+    assert c.evidence["union_of"] == ["rule-1", "rule-2"]
+
+
+def test_halves_that_leave_a_gap_do_not_shadow() -> None:
+    r = _with_halves([fx._rule(1, "low half", ["n-lo"], ["h-web1"], ["s-https"]),
+                      fx._rule(2, "high half, other port", ["n-hi"], ["h-web1"], ["s-ssh"]),
+                      fx._rule(3, "whole", ["n-dc"], ["h-web1"], ["s-https"]),
+                      _cleanup(4)])
+    e = _entry(r, 3)
+    assert "shadowed" not in [c.check for c in e.checks]
+
+
+def test_a_deny_and_an_allow_together_shadow_and_the_package_says_match() -> None:
+    rules = [fx._rule(1, "deny low half", ["n-lo"], ["h-web1"], ["s-https"], action="act-drop"),
+             fx._rule(2, "allow high half", ["n-hi"], ["h-web1"], ["s-https"]),
+             fx._rule(3, "whole", ["n-dc"], ["h-web1"], ["s-https"]),
+             _cleanup(4)]
+    e = fx.export()
+    e["access_layers"][0]["objects-dictionary"] += [
+        fx._o("n-lo", "dc-low", "network", subnet4="10.30.0.0", **{"mask-length4": 25}),
+        fx._o("n-hi", "dc-high", "network", subnet4="10.30.0.128", **{"mask-length4": 25})]
+    e["access_layers"][0].update(rulebase=rules, to=len(rules), total=len(rules))
+    e["nat_packages"] = []
+    p = cp.parse(e)
+    pkg = draft(json.loads(json.dumps(review(p).to_jsonable())), json.loads(json.dumps(p.to_jsonable())))
+    item = next(i for i in pkg["items"] if i["rule_number"] == 3)
+    assert item["proposal"] == "remove" and "already match all of this rule's traffic" in item["rationale"]
