@@ -8,7 +8,7 @@ disabled by an FRR policy switch, not deleted.
 
 Status: ✅ done · 🟡 partial · ⬜ not started · 🔧 in progress
 
-_Last updated: 2026-10-30_ · What still needs testing (UI in a browser, real data, Azure, CI…): [TEST-BACKLOG.md](TEST-BACKLOG.md)
+_Last updated: 2026-11-13_ · What still needs testing (UI in a browser, real data, Azure, CI…): [TEST-BACKLOG.md](TEST-BACKLOG.md)
 
 ## Changelog
 
@@ -60,6 +60,19 @@ _Last updated: 2026-10-30_ · What still needs testing (UI in a browser, real da
 | 2026-10-28 | PLAT-1 | Live Vertex call verified via ADC; default model set to `google/gemini-2.5-pro` (2.5-flash not enabled on the sandbox project) |
 | 2026-10-28 | PLAT-2 | Live call verified against the sandbox Azure AI Foundry account (`gpt-4.1-mini`, identity auth) |
 | 2026-10-28 | PLAT-1 | Google Vertex AI provider (ADC auth, OpenAI-compatible endpoint, never chosen by `auto`), migration 0008, Configuration-page option, 11 offline tests |
+
+## Open decisions and follow-ups
+
+Items waiting on a decision, access or data. Verification items live in [TEST-BACKLOG.md](TEST-BACKLOG.md); feature status is in the sections below (🟡 / ⬜).
+
+| # | Item | Waiting on | Next step |
+|---|---|---|---|
+| D1 | The FRR screens still show the legacy console's demo controls in the header ("Demo: Retail estate under review", "Reset demo", "Recompute"); the legacy console runs on simulated data | Product decision: hide in FRR deployments (behind `NPR_FRR_MODE`) or keep | Once decided, gate the header controls and the legacy navigation on the FRR switch (additive: off by default elsewhere) |
+| D2 | Rerun the Azure staging rehearsals on GCP: load test (T15), point-in-time restore and secret rotation (T18) | `gcloud auth login` (CLI) as well as application-default login | Resume Cloud SQL, redeploy (`gcloud builds`), rerun the same scripts; GCP plan is already clean |
+| D3 | Vertex BYOK from a secret store (T27) | A Vertex service-account key | Put it in `byok_secrets` on Azure staging as `GOOGLE_APPLICATION_CREDENTIALS_JSON`, run the narrative eval |
+| D4 | First CI and deploy-workflow runs on GitHub (T14) | Repository variables/secrets and `azure-*` / `gcp-*` environments (see the deploy guides) | Check the CI run on `main`; configure environments before running deploy workflows |
+| D5 | 02.3a remainder: shadowing by union along destination or service, sub-grant partial coverage (one grant's /16 minus an earlier /24), NAT applied to access rules | Real exports to size the value (T6) and a Check Point engineer on NAT order (T21) | Build after T6/T21 |
+| D6 | Staging is paused on both clouds (databases stopped, workers at 0) | — | Resume per RUNBOOK "Pausing a non-production environment"; Azure restarts a stopped server by itself after 7 days |
 
 ## FRR-01 · Requirements, exports and evaluation rulebase
 
