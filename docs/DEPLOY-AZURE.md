@@ -1,5 +1,9 @@
 # Deploying Network Policy Reviewer on Azure Container Apps
 
+> **Legacy demo deployment.** This deploys the original console demo. The production Firewall
+> Rule Review platform is deployed with Terraform per cloud: [docs/frr/DEPLOY-GCP.md](frr/DEPLOY-GCP.md)
+> and [docs/frr/DEPLOY-AZURE.md](frr/DEPLOY-AZURE.md).
+
 One command, one resource group, no VMs:
 
 ```bash

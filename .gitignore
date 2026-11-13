@@ -30,3 +30,4 @@ backend/data/store/
 
 # git bundles used to move commits between machines; never committed
 *.bundle
+sample-export.json

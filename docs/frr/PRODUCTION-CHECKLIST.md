@@ -24,14 +24,16 @@ Go-live gate for an environment. ✅ = enforced in code or CI; ☐ = to verify p
 - ☐ Terraform state bucket/account is versioned and readable only by deployers.
 - ☐ SSO redirect URI registered; role mapping tested for every product role.
 - ☐ Break-glass procedure tested and its secret held offline ([../BREAKGLASS.md](../BREAKGLASS.md)).
-- ☐ Database HA on (prod); a point-in-time restore rehearsed.
+- ☐ Database HA on (prod); a point-in-time restore rehearsed (procedure measured on Azure
+  staging, RUNBOOK "Restore the database"; repeat it for this environment).
 - ☐ Alerts route to a monitored channel; a test alert received.
 - ☐ Custom domain with TLS; WAF in front of the frontend (GCP: Cloud Armor, Azure: Front Door
   Premium WAF — both via `domain`).
 - ☐ Model provider test passes from Admin → AI configuration; data-residency of the chosen
   provider/location accepted by the security owner.
-- ☐ Load test run against this environment's size (tracker PLAT-15) and the connection
-  budget checked.
+- ☐ Load test run against this environment's size (tracker PLAT-15; staging-size results in
+  TEST-BACKLOG T15a). The connection budget is checked by Terraform at plan time.
+- ☐ Proxy-secret rotation rehearsed with the three-step procedure (RUNBOOK "Rotate a secret").
 - ☐ FRR evaluation suite passed on the labelled test rulebase (tracker 04.5) before UAT.
 
 ## Not yet in place (tracked)

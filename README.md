@@ -1,5 +1,100 @@
 # Network Policy Reviewer
 
+## Start here (current state, November 2026)
+
+This repository now holds two products on one codebase:
+
+1. **Firewall Rule Review (FRR)** — the active work. A network owner uploads a firewall policy
+   export (Check Point today); a deterministic engine reconstructs the effective policy per
+   gateway and builds a rule-risk register (any-any, admin ports exposed, broad sources, unused,
+   expired, disabled, shadowed — including by several rules together — and partly covered);
+   agents draft a change package with exact `mgmt_cli` commands and rollback; the network owner
+   validates it and a security approver decides (four eyes, server-enforced). Nothing is ever
+   written to a firewall. Production-ready on **GCP** (Cloud Run, Cloud SQL, GCS, Vertex AI) and
+   **Azure** (Container Apps, Flexible Server, Blob, AI Foundry), one cloud per deployment,
+   bring-your-own-key supported.
+2. **The original cross-tool console** (AlgoSec / Guardicore / Wiz, described from *What it does*
+   below). Kept working; FRR deployments set `NPR_FRR_MODE=1`, which removes auto-approval and
+   device push from it.
+
+The rule that governs both: **the engine owns facts and math, the model owns language.** Model
+output is schema-validated, may only cite what it was given, and falls back to labelled engine
+text when the model is unavailable.
+
+### Where things are
+
+| You want to… | Read |
+|---|---|
+| Know what is done, partial, or waiting on a decision | [docs/frr/TRACKER.md](docs/frr/TRACKER.md) (status per backlog item, changelog, **Open decisions**) |
+| Know what still has to be tested, and what unblocks it | [docs/frr/TEST-BACKLOG.md](docs/frr/TEST-BACKLOG.md) |
+| Understand the system | [docs/frr/ARCHITECTURE.md](docs/frr/ARCHITECTURE.md); engine math in [docs/ENGINE.md](docs/ENGINE.md) |
+| Deploy | [docs/frr/DEPLOY-GCP.md](docs/frr/DEPLOY-GCP.md), [docs/frr/DEPLOY-AZURE.md](docs/frr/DEPLOY-AZURE.md), [docs/frr/PRODUCTION-CHECKLIST.md](docs/frr/PRODUCTION-CHECKLIST.md) |
+| Operate it (incidents, rotation, restore, scaling, pausing staging) | [docs/frr/RUNBOOK.md](docs/frr/RUNBOOK.md) |
+| Run acceptance with users | [docs/frr/UAT.md](docs/frr/UAT.md) |
+| See what went wrong before and how it was fixed | [docs/REMEDIATION-LOG.md](docs/REMEDIATION-LOG.md) |
+| Sign-in (SSO, break-glass) | [docs/SSO.md](docs/SSO.md), [docs/BREAKGLASS.md](docs/BREAKGLASS.md) |
+
+`docs/DEPLOY.md` (Render/Vercel/Neon) and `docs/DEPLOY-AZURE.md` (the older single-script
+Azure demo) deploy the original console demo, not FRR.
+
+### Run FRR locally
+
+```bash
+python tasks.py setup                                   # venv, backend + frontend deps, .env from .env.example
+
+# Postgres 16 (pgvector image, as CI uses)
+docker run -d --name npr-pg -p 55433:5432 -e POSTGRES_USER=npr -e POSTGRES_PASSWORD=nprdev \
+  -e POSTGRES_DB=npr pgvector/pgvector:pg16
+
+# Schema + least-privilege runtime role, exactly as the deploy's migrate job does
+DATABASE_URL=postgresql://npr:nprdev@localhost:55433/npr NPR_APP_DB_PASSWORD=<choose one> \
+  backend/.venv/bin/python db/migrate.py --bootstrap --ensure-app-role
+
+# .env: DATABASE_URL=postgresql://npr:nprdev@localhost:55433/npr?sslmode=disable, NPR_FRR_MODE=1
+python tasks.py dev                                     # API :8000 (runs the job worker inline) + UI :3000
+```
+
+Sign in locally with break-glass (`AUTH_LOCAL_LOGIN=true`, `BREAKGLASS_EMAIL`,
+`BREAKGLASS_PASSWORD`; see docs/BREAKGLASS.md), grant yourself the `network_owner` and
+`security_approver` duties under **Approvers**, then **Exports → upload**. A synthetic,
+labelled Check Point export, dated now (exports older than 30 days are refused):
+
+```bash
+cd backend && .venv/bin/python -c "import json; from datetime import datetime, timezone; \
+from src.frr.evals import generate; \
+print(json.dumps(generate(400, exported_at=datetime.now(timezone.utc))[0]))" > ../sample-export.json
+```
+
+### Checks (all run in CI; run them before you push)
+
+```bash
+cd backend
+.venv/bin/python -m pytest                                          # offline suite
+NPR_TEST_DATABASE_URL=postgresql://npr_app:<password>@localhost:55433/npr \
+  .venv/bin/python -m pytest                                        # + real-Postgres tests, as the runtime role
+.venv/bin/python -m src.frr.evals --rules 2000 --gate               # precision/recall gate on the labelled rulebase
+NPR_PROMPT_GATE_MIN_MODELS=2 .venv/bin/python -m src.frr.prompt_gate  # prompts/retrieval changes need a recorded eval
+cd ../frontend && npm run typecheck && npm run lint && npm test && npm run build
+```
+
+Changing a prompt, retrieval or sampling setting changes the agent's fingerprint; record a
+passing live evaluation on both clouds (`python -m src.frr.narrative_eval --items 20 --gate
+--record`) or CI fails — see RUNBOOK "Change a prompt". `scripts/ui_walkthrough.py` drives every
+FRR screen in headless Chromium and saves screenshots; `loadtest/run.py` is the load generator.
+
+### Conventions
+
+- Additive: features are built alongside, never removed; behaviour that conflicts goes behind a
+  switch (`NPR_FRR_MODE`).
+- Every FRR change updates `docs/frr/TRACKER.md` (and `TEST-BACKLOG.md` when it adds something
+  to verify); remediation phases are logged in `docs/REMEDIATION-LOG.md`.
+- Production-grade bar: measured at scale (the largest tested export is 110,000 rules) and under
+  load before it is called done.
+- The client is never named in code, docs, commits or resource names.
+
+---
+
+
 One unified, cross-tool view of network-policy risk — assembled from **AlgoSec**, **Guardicore**, and **Wiz**, then **explained**, **prioritized**, and **gated** by a local-first AI advisory layer. It surfaces attack paths that cross all three tools and that no single console can show — **within a stated scope**, set out under *What it does* below and in full in [docs/ENGINE.md §10](docs/ENGINE.md).
 
 > **The one rule that governs the whole codebase:** the deterministic engine owns all **facts and math** (normalization, entity resolution, CIDR/subnet math, reachability, shadowing, effective policy, the delta of a proposed change). The AI/agent owns only **language and judgment** (explaining, ranking, classifying, drafting). **The model never computes reachability or subnet math — it calls deterministic tools and reasons over their structured results.**
@@ -168,6 +263,24 @@ docs/              ENGINE.md       # core logic, calculations & math (the determ
                    PROD-READINESS-AUDIT.md   # the standing gap register these docs are held to
                    DEMO.md         # the ten-minute demo script, beat by beat
 tasks.py  README.md                # tasks.py = cross-platform runner (no make required)
+```
+
+Added for FRR and production:
+
+```
+backend/src/frr/        rulebase review, NAT, change package, workflow (owner/approver), agents,
+                        knowledge base, context data (CMDB/flows), intake, evals, prompt gate,
+                        prompts/ (versioned prompts + eval-ledger.json)
+backend/src/jobs/       Postgres job queue (SKIP LOCKED, leases, retries) and the worker
+backend/src/            storage.py (file/gs/az), snapshot_artifacts.py, ratelimit.py, telemetry.py,
+                        preflight.py, smoke.py
+backend/app/            exports_api, uploads_api, register_api, packages_api, frr_api,
+                        feedback_api, context_api, jobs_api, limits
+db/migrations/          numbered migrations (0008 onwards are the production platform and FRR)
+infra/gcp, infra/azure  Terraform per cloud (+ .github/workflows/deploy-*.yml)
+scripts/azure/          start-job.sh / wait-job.sh for Container Apps jobs
+scripts/ui_walkthrough.py, loadtest/run.py
+docs/frr/               tracker, test backlog, architecture, deploy guides, runbook, UAT
 ```
 
 ---
