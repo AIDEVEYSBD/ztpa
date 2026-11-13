@@ -27,3 +27,6 @@ backend/data/store/
 # Agent worktrees / local tooling scratch
 .claude/
 .env.before-local-demo
+
+# git bundles used to move commits between machines; never committed
+*.bundle
