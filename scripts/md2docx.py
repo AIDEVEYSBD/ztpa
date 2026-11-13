@@ -6,8 +6,8 @@ structures rather than printed pixels: true Heading 1-4 styles so the Navigation
 pane and any inserted TOC work, real tables you can sort and comment on, and the
 hand-written contents list wired to real bookmarks so it is clickable in Word.
 
-Usage:  python scripts/md2docx.py docs/REQUIREMENTS.md docs/REQUIREMENTS.docx
-        python scripts/md2docx.py docs/REQUIREMENTS.md out.docx --page-break-sections
+Usage:  python scripts/md2docx.py docs/frr/ARCHITECTURE.md ARCHITECTURE.docx
+        python scripts/md2docx.py docs/frr/RUNBOOK.md out.docx --page-break-sections
 Needs:  pip install python-docx
 
 --page-break-sections starts every "## " section on a fresh page (what md2pdf

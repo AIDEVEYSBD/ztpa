@@ -28,10 +28,9 @@ Region defaults to `centralindia`; everything lands in one resource group
 > ## Read this before you show it to anyone
 >
 > **This is a demo / staging environment carrying the seeded demo dataset.** It is
-> not a production deployment of this product, and the reason is the product, not
-> the infrastructure. The independent round-2 audit —
-> [`PROD-READINESS-AUDIT-2.md`](PROD-READINESS-AUDIT-2.md) — leaves **8 open
-> blockers** and its verdict is unambiguous:
+> not a production deployment. (Written in September 2026 against the round-2
+> readiness audit, since remediated — see [REMEDIATION-LOG.md](REMEDIATION-LOG.md). Its
+> verdict at the time:)
 >
 > > *"The core engine is not production-ready, and I would not put this in front of
 > > a client yet… the maths is trustworthy, the plumbing between the maths and the
@@ -504,9 +503,8 @@ from the product's own 8 blockers:
 - **Log retention is the workspace default** and nothing is alerting on anything.
 
 None of that matters for a demo carrying seeded data. All of it matters before a
-customer's export goes anywhere near it — and by then
-[`PROD-READINESS-AUDIT-2.md`](PROD-READINESS-AUDIT-2.md) has to be closed out
-first, because the infrastructure being sound would not make a silently wrong
+customer's export goes anywhere near it — which is what the Terraform
+deployment ([frr/DEPLOY-AZURE.md](frr/DEPLOY-AZURE.md)) is for, because the infrastructure being sound would not make a silently wrong
 answer any less wrong.
 
 ---
@@ -516,5 +514,5 @@ answer any less wrong.
 - [DEPLOY.md](DEPLOY.md) — the earlier Render + Vercel + Neon deployment, and the
   migration runner's contract (`db/migrate.py`), which is unchanged here.
 - [SSO.md](SSO.md) — AutoX OIDC setup, app roles, and the role-mapping override.
-- [PROD-READINESS-AUDIT-2.md](PROD-READINESS-AUDIT-2.md) — what is actually wrong
-  with the product, in detail, with reproductions.
+- [REMEDIATION-LOG.md](REMEDIATION-LOG.md) — what the readiness audits found and how
+  each finding was fixed.

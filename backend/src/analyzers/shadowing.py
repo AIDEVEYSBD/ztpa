@@ -30,7 +30,7 @@ does not shadow a later any/any rule, it only shadows part of it. Shadowing mean
 the earlier rule matches EVERYTHING the later one would, so every leg of the test
 asks "does earlier cover later", never "do they intersect".
 
-Deliberately still out of scope (Phase 3, see docs/PROD-READINESS-AUDIT.md): the
+Deliberately still out of scope (Phase 3 of the September 2026 readiness audit; see docs/REMEDIATION-LOG.md): the
 full 5-tuple test, deny-before-deny (the prose below assumes the shadower is an
 allow), and rulebase/device scoping finer than the source tool.
 

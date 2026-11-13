@@ -804,7 +804,7 @@ Where a gap has been measured, the measurement is printed instead of an adjectiv
 and the input shape that produced it is named so you can reproduce it.
 
 Item numbers are stable: §10.1 … §10.4 are the original four and are referenced
-from `REQUIREMENTS.md` and §7. New disclosures are appended, never renumbered.
+from the September 2026 requirements spec (retired; in git history) and §7. New disclosures are appended, never renumbered.
 
 1. **Deny precedence not implemented** (`graph/build.py:build_graph`) — effective
    policy = union of allow edges; a non-shadowed deny that should subtract an
@@ -903,7 +903,7 @@ from `REQUIREMENTS.md` and §7. New disclosures are appended, never renumbered.
 6. **Rule state the canonical model does not carry — `enabled` / `disabled` and
    negated address fields — is now REFUSED rather than honoured.** `PolicyRecord`
    still has no enable flag and no negation flag, and honouring the semantics is
-   scheduled work (`REQUIREMENTS.md` `FUT-P3-2` / `FUT-P3-4`, the same phase as the
+   scheduled work (requirements `FUT-P3-2` / `FUT-P3-4`, the same phase as the
    ingest path). What changed is the failure mode: both were **silently dropped**,
    and the two wrong answers that produced point in opposite directions —
 

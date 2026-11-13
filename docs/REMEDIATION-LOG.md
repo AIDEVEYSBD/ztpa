@@ -1,6 +1,6 @@
 # Remediation Log
 
-Running record of work against `docs/PROD-READINESS-AUDIT.md` (155 surviving findings, 19 blockers).
+Running record of work against the September 2026 production-readiness audit (155 surviving findings, 19 blockers; the audit documents are retired and in git history, this log is the record).
 One entry per phase. Updated as each phase completes.
 
 **Started:** 2026-09-01 · **Branch:** `remediation/prod-readiness`, merged to `main` 2026-09-15 · **Baseline commit:** `c0789d6`
@@ -344,7 +344,7 @@ are retained but unreadable.
 
 ## Network Analyser revamp ✅
 
-**Branch:** `feature/network-analyser` · **Plan:** `docs/NETWORK-ANALYSER-PLAN.md`
+**Branch:** `feature/network-analyser` · **Plan:** `docs/NETWORK-ANALYSER-PLAN.md` (delivered; retired)
 
 The console could describe policy and could not describe the network the policy
 runs on. `grep -rn vlan backend/` returned nothing, so "which VLAN is this host

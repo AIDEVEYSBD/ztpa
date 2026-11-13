@@ -11,7 +11,7 @@
 #
 # WHAT THIS IS. A demo / staging environment carrying the seeded demo dataset.
 # It is not a production deployment of this product and docs/DEPLOY-AZURE.md is
-# explicit about why (docs/PROD-READINESS-AUDIT-2.md, 8 open blockers).
+# explicit about why. Production deployments use Terraform: docs/frr/DEPLOY-AZURE.md.
 #
 # -----------------------------------------------------------------------------
 # THE SECURITY INVARIANT THIS SCRIPT EXISTS TO GET RIGHT
@@ -1210,7 +1210,7 @@ cat <<SUMMARY
        bash scripts/azure/teardown.sh        # deletes everything
 
   This is a DEMO/STAGING environment carrying the seeded demo dataset. The
-  product has 8 open blockers (docs/PROD-READINESS-AUDIT-2.md); do not put a
-  real customer's export in it. docs/DEPLOY-AZURE.md has the details.
+  production platform is deployed with Terraform (docs/frr/DEPLOY-AZURE.md);
+  do not put a real customer's export in this one. docs/DEPLOY-AZURE.md has the details.
 
 SUMMARY

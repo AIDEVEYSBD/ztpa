@@ -260,7 +260,7 @@ docs/              ENGINE.md       # core logic, calculations & math (the determ
                    AGENTS.md       # what each agent does, and which provider can actually run it
                    SSO.md          # AutoX OIDC integration + the app-role model
                    DEPLOY.md       # Render + Vercel + Neon deployment
-                   PROD-READINESS-AUDIT.md   # the standing gap register these docs are held to
+                   REMEDIATION-LOG.md        # audit findings and how each was fixed
                    DEMO.md         # the ten-minute demo script, beat by beat
 tasks.py  README.md                # tasks.py = cross-platform runner (no make required)
 ```
